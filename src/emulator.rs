@@ -41,12 +41,25 @@ pub enum Register {
     Pc,
 }
 
+/// Various faults that can occur during program execution. These can be syscalls, bugs, or other
+/// non-standard behaviors that require kernel involvement
 #[derive(Clone, Copy, Debug)]
 pub enum Fault {
+    /// Syscall
+    Syscall,
+
+    /// Fault occurs when an attempt is made to write to an address without Perms::WRITE set
     WriteFault(usize),
 
+    /// Fault occurs when an attempt is made to read from an address without Perms::READ set
+    ReadFault(usize),
+
+    /// Fault occurs when some operation results in an integer overflow
     IntegerOverflow,
 
+    /// Fault occurs when a free fails. Occurs when an invalid address is attempted to be free'd
+    /// or when a free is used on a chunk of memory that does not contain the Perms::ISALLOC
+    /// permission in its metadata
     InvalidFree(usize),
 }
 
@@ -90,7 +103,7 @@ impl Emulator {
     }
 
     pub fn load_segment(&mut self, segment: elfparser::ProgramHeader, data: &[u8]) -> Option<()> {
-        self.memory.load_mem(segment, data)
+        self.memory.load_segment(segment, data)
     }
 
     pub fn allocate(&mut self, size: usize) -> Option<usize> {

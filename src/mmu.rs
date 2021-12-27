@@ -1,4 +1,3 @@
-use elfparser;
 use crate::{
     emulator::{Fault},
 };
@@ -73,18 +72,28 @@ impl Mmu {
 
     /// If perms::WRITE are set, write {size} bytes from {data} into the memory space at {addr}
     fn write_mem(&mut self, addr: usize, data: &[u8], size: usize) -> Result<(), Fault> {
+        if size > data.len() { return Err(Fault::WriteFault(data.len())); }
         let end_addr = addr.checked_add(size).ok_or(Fault::IntegerOverflow)?;
         for i in addr..end_addr {
             Mmu::check_perms(self.permissions[i], Perms::WRITE).ok_or(Fault::WriteFault(i))?;
         }
-        for i in 0..size {
-            self.memory[addr.checked_add(i).ok_or(Fault::IntegerOverflow)?] = data[i];
+        self.memory[addr..end_addr].copy_from_slice(&data[0..size]);
+        Ok(())
+    }
+
+    /// If perms::READ are set, read {size} bytes from the memory space into the {data} reference
+    fn read_mem(&mut self, addr: usize, data: &mut [u8], size: usize) -> Result<(), Fault> {
+        if size > data.len() { return Err(Fault::ReadFault(data.len())); }
+        let end_addr = addr.checked_add(size).ok_or(Fault::IntegerOverflow)?;
+        for i in addr..end_addr {
+            Mmu::check_perms(self.permissions[i], Perms::READ).ok_or(Fault::ReadFault(i))?;
         }
+        data.copy_from_slice(&self.memory[addr..end_addr]);
         Ok(())
     }
 
     /// Load a given segment into memory
-    pub fn load_mem(&mut self, segment: elfparser::ProgramHeader, data: &[u8]) -> Option<()> {
+    pub fn load_segment(&mut self, segment: elfparser::ProgramHeader, data: &[u8]) -> Option<()> {
         // Set permissions to perms::WRITE to avoid errors during write_mem and perform the write
         self.set_permissions(segment.vaddr as usize, segment.memsz, Perms::WRITE)?;
         self.write_mem(segment.vaddr, data, segment.filesz as usize).ok()?;
@@ -166,7 +175,7 @@ mod tests {
         let mut mem = Mmu::new(8 * 1024 * 1024);
 
         if mem.allocate(0x40).is_none() {
-            assert!(false, "Something went wrong during allocation");
+            panic!("Something went wrong during allocation");
         }
     }
 
@@ -175,7 +184,7 @@ mod tests {
         let mut mem = Mmu::new(8 * 1024 * 1024);
 
         if mem.allocate(8 * 1024 * 1024).is_some() {
-            assert!(false, "Should have errored out due to large size");
+            panic!("Should have errored out due to large size");
         }
     }
 
@@ -196,51 +205,51 @@ mod tests {
     #[test]
     fn zero_allocation() {
         let mut mem = Mmu::new(8 * 1024 * 1024);
-        let mut addr1: usize = 0;
-        let mut addr2: usize = 0;
+        let mut _addr1: usize = 0;
+        let mut _addr2: usize = 0;
 
         if let Some(x) = mem.allocate(0) {
-            addr1 = x;
+            _addr1 = x;
         } else {
-            assert!(false, "Size of zero should still return minimum allocation");
+            panic!("Size of zero should still return minimum allocation");
         }
         if let Some(x) = mem.allocate(0) {
-            addr2 = x;
+            _addr2 = x;
         } else {
-            assert!(false, "Size of zero should still return minimum allocation");
+            panic!("Size of zero should still return minimum allocation");
         }
 
         // Can't easily check the size, but we can make sure that the second 0 allocation
         // is allocated at a higher address than the first
-        assert!(addr1 < addr2);
+        assert!(_addr1 < _addr2);
     }
 
     #[test]
     fn normal_valid_allocation_check_perms() {
         let mut mem = Mmu::new(8 * 1024 * 1024);
-        let mut addr: usize = 0;
+        let mut _addr: usize = 0;
 
         if let Some(x) = mem.allocate(0x40) {
-            addr = x;
+            _addr = x;
         } else {
-            assert!(false, "Something went wrong during allocation");
+            panic!("Something went wrong during allocation");
         }
-        assert!(Mmu::check_perms(mem.permissions[addr+0x20], Perms::WRITE).is_some());
+        assert!(Mmu::check_perms(mem.permissions[_addr+0x20], Perms::WRITE).is_some());
     }
 
     #[test]
     fn normal_valid_free() {
         let mut mem = Mmu::new(8 * 1024 * 1024);
-        let mut addr: usize = 0;
+        let mut _addr: usize = 0;
 
         if let Some(x) = mem.allocate(0x40) {
-            addr = x;
+            _addr = x;
         } else {
-            assert!(false, "failure during allocation");
+            panic!("failure during allocation");
         }
 
-        if let Err(e) = mem.free(addr) {
-            assert!(false, "unexpected failure during first free: {:?}", e);
+        if let Err(e) = mem.free(_addr) {
+            panic!("unexpected failure during first free: {:?}", e);
         }
     }
 
@@ -250,28 +259,28 @@ mod tests {
         if let Err(v) = mem.free(1024) {
             match v {
                 Fault::InvalidFree(_) => {},
-                _ => { assert!(false, "Free threw the wrong type of error"); }
+                _ => { panic!("Free threw the wrong type of error"); }
             }
-        } else { assert!(false, "Free did not throw any error at all"); }
+        } else { panic!("Free did not throw any error at all"); }
     }
     
     #[test]
     fn double_free() {
         let mut mem = Mmu::new(8 * 1024 * 1024);
-        let mut addr: usize = 0;
+        let mut _addr: usize = 0;
 
         if let Some(x) = mem.allocate(0x40) {
-            addr = x;
+            _addr = x;
         } else {
-            assert!(false, "failure during allocation");
+            panic!("failure during allocation");
         }
 
-        if let Err(e) = mem.free(addr) {
-            assert!(false, "unexpected failure during first free: {:?}", e);
+        if let Err(e) = mem.free(_addr) {
+            panic!("unexpected failure during first free: {:?}", e);
         }
 
-        if let Ok(()) = mem.free(addr) {
-            assert!(false, "Second free on same memory should have given an error");
+        if let Ok(()) = mem.free(_addr) {
+            panic!("Second free on same memory should have given an error");
         }
     }
 
@@ -289,8 +298,166 @@ mod tests {
 
         while let Some(x) = addrs.pop() {
             if let Err(e) = mem.free(x) {
-                assert!(false, "unexpected failure during one of the free's: {:?}", e);
+                panic!("unexpected failure during one of the free's: {:?}", e);
             }
         }
+    }
+
+    #[test]
+    fn normal_valid_segmentloader() {
+        let mut mem = Mmu::new(8 * 1024 * 1024);
+        let seg = elfparser::ProgramHeader {
+            seg_type: 0x1,
+            flags:    0x5,
+            offset:   0x0,
+            vaddr:    0x400000,
+            paddr:    0x400000,
+            filesz:   0x100,
+            memsz:    0x100,
+            align:    0x1000,
+        };
+        let data = vec![0x41u8; 0x200];
+        let len = 0x20;
+        let mut read_buf = vec![0; len];
+
+        if mem.load_segment(seg, &data).is_none() { panic!("Error during initial load"); }
+
+        if let Err(e) = mem.read_mem(0x400000, &mut read_buf, 0x20) { 
+            panic!("Error while attempting to read memory with fault: {:?}", e); 
+        }
+        
+        read_buf.iter().for_each(|e| assert_eq!(*e, 0x41));
+    }
+
+    #[test]
+    fn load_multiple_segments() {
+        let mut mem = Mmu::new(8 * 1024 * 1024);
+        let seg1 = elfparser::ProgramHeader {
+            seg_type: 0x1,
+            flags:    0x5,
+            offset:   0x0,
+            vaddr:    0x400000,
+            paddr:    0x400000,
+            filesz:   0x100,
+            memsz:    0x100,
+            align:    0x1000,
+        };
+        let seg2 = elfparser::ProgramHeader {
+            seg_type: 0x1,
+            flags:    0x5,
+            offset:   0x0,
+            vaddr:    0x410000,
+            paddr:    0x410000,
+            filesz:   0x100,
+            memsz:    0x100,
+            align:    0x1000,
+        };
+        let data1 = vec![0x41u8; 0x200];
+        let data2 = vec![0x42u8; 0x200];
+        let len = 0x20;
+        let mut read_buf = vec![0; len];
+
+        if mem.load_segment(seg1, &data1).is_none() { panic!("Error during seg1 load"); }
+        if mem.load_segment(seg2, &data2).is_none() { panic!("Error during seg2 load"); }
+
+        if let Err(e) = mem.read_mem(0x400000, &mut read_buf, 0x20) {
+            panic!("Error while attempting to read memory from seg1 with fault: {:?}", e); 
+        }
+        read_buf.iter().for_each(|e| assert_eq!(*e, 0x41));
+
+        if let Err(e) = mem.read_mem(0x410000, &mut read_buf, 0x20) {
+            panic!("Error while attempting to read memory from seg2 with fault: {:?}", e); 
+        }
+        read_buf.iter().for_each(|e| assert_eq!(*e, 0x42));
+    }
+
+    #[test]
+    fn valid_write_mem() {
+        let mut mem = Mmu::new(8 * 1024 * 1024);
+        let seg = elfparser::ProgramHeader {
+            seg_type: 0x1,
+            flags:    0x2,
+            offset:   0x0,
+            vaddr:    0x400000,
+            paddr:    0x400000,
+            filesz:   0x200,
+            memsz:    0x200,
+            align:    0x1000,
+        };
+        let load_data = vec![0x41u8; 0x200];
+        let write_data = vec![0x42u8; 0x20];
+        if mem.load_segment(seg, &load_data).is_none() { panic!("Error during seg load"); }
+        
+        if let Err(e) = mem.write_mem(0x400000, &write_data, 0x20) {
+            panic!("Error occured while writing memory: {:?}", e);
+        }
+    }
+
+    #[test]
+    fn write_to_nonwriteable_memory() {
+        let mut mem = Mmu::new(8 * 1024 * 1024);
+        let seg = elfparser::ProgramHeader {
+            seg_type: 0x1,
+            flags:    0x1,
+            offset:   0x0,
+            vaddr:    0x400000,
+            paddr:    0x400000,
+            filesz:   0x200,
+            memsz:    0x200,
+            align:    0x1000,
+        };
+        let load_data = vec![0x41u8; 0x200];
+        let write_data = vec![0x42u8; 0x20];
+        if mem.load_segment(seg, &load_data).is_none() { panic!("Error during seg load"); }
+        
+        if let Ok(_) = mem.write_mem(0x400000, &write_data, 0x20) {
+            panic!("write_mem did not properly return an error on invalid write");
+        }
+    }
+
+    #[test]
+    fn valid_read_mem() {
+        let mut mem = Mmu::new(8 * 1024 * 1024);
+        let seg = elfparser::ProgramHeader {
+            seg_type: 0x1,
+            flags:    0x4,
+            offset:   0x0,
+            vaddr:    0x400000,
+            paddr:    0x400000,
+            filesz:   0x200,
+            memsz:    0x200,
+            align:    0x1000,
+        };
+        let load_data = vec![0x41u8; 0x200];
+        let mut read_buf = vec![0x0u8; 0x20];
+        if mem.load_segment(seg, &load_data).is_none() { panic!("Error during seg load"); }
+        
+        if let Err(e) = mem.read_mem(0x400000, &mut read_buf, 0x20) {
+            panic!("Error occured while reading memory: {:?}", e);
+        }
+        read_buf.iter().for_each(|e| assert_eq!(*e, 0x41));
+    }
+
+    #[test]
+    fn read_from_nonreadable_memory() {
+        let mut mem = Mmu::new(8 * 1024 * 1024);
+        let seg = elfparser::ProgramHeader {
+            seg_type: 0x1,
+            flags:    0x2,
+            offset:   0x0,
+            vaddr:    0x400000,
+            paddr:    0x400000,
+            filesz:   0x200,
+            memsz:    0x200,
+            align:    0x1000,
+        };
+        let load_data = vec![0x41u8; 0x200];
+        let mut read_buf = vec![0x21u8; 0x20];
+        if mem.load_segment(seg, &load_data).is_none() { panic!("Error during seg load"); }
+        
+        if let Ok(_) = mem.read_mem(0x400000, &mut read_buf, 0x20) {
+            panic!("read_mem did not properly return an error on invalid write");
+        }
+        read_buf.iter().for_each(|e| assert_eq!(*e, 0x21));
     }
 }
