@@ -7,3 +7,4 @@ edition = "2021"
 
 [dependencies]
 byteorder = "1.4"
+elfparser = { path = "../local_crates/elfparser" }

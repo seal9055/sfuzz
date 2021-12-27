@@ -1,13 +1,16 @@
-use crate::ProgramHeader;
-use byteorder::{LittleEndian, BigEndian, WriteBytesExt, ReadBytesExt};
-use std::io::Cursor;
+use elfparser;
+use crate::{
+    emulator::{Fault},
+};
 
+/// The starting address for our memory allocator
 const FIRSTALLOCATION: usize = 0x10000 - 0x8;
 
+/// Used in this manner, the permissions can easily be used for bitflag permission checks
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy)]
-struct perms;
-impl perms {
+struct Perms;
+impl Perms {
     pub const UNSET:   u8 = 0;
     pub const EXECUTE: u8 = 0x1;
     pub const WRITE:   u8 = 0x2;
@@ -15,6 +18,7 @@ impl perms {
     pub const ISALLOC: u8 = 0x8;
 }
 
+/// Describes the virtual memory space that each emulator uses (each emulator has their own)
 #[derive(Debug, Clone)]
 pub struct Mmu {
     /// Block of memory used by an emulator instance, contains the actual memory
@@ -28,6 +32,7 @@ pub struct Mmu {
 }
 
 impl Mmu {
+    /// Allocate initial memory space
     pub fn new(size: usize) -> Self {
         Mmu {
             memory:       vec![0u8; size],
@@ -36,6 +41,7 @@ impl Mmu {
         }
     }
 
+    /// Fork the mmu's memory
     pub fn fork(&self) -> Self {
         Mmu {
             memory:      self.memory.clone(),
@@ -44,17 +50,20 @@ impl Mmu {
         }
     }
 
+    /// Reset the mmu's memory
     pub fn reset(&mut self, other: &Mmu) {
         self.memory = other.memory.clone();
     }
 
-    pub fn set_permissions(&mut self, addr: usize, size: usize, p: u8) -> Option<()> {
+    /// Set permissions at {addr} to {p} for {size} bytes
+    fn set_permissions(&mut self, addr: usize, size: usize, p: u8) -> Option<()> {
         if size == 0 { return Some(()); }
         let end_addr = addr.checked_add(size)?;
         for i in addr..end_addr { self.permissions[i as usize] = p; }
         Some(())
     }
 
+    /// Validate that a byte in memory has a certain permission
     fn check_perms(perm_to_check: u8, control: u8) -> Option<()> {
         if perm_to_check & control != control {
             return None;
@@ -62,28 +71,33 @@ impl Mmu {
         Some(())
     }
 
-    pub fn write_mem(&mut self, addr: usize, data: &[u8], size: usize) -> Option<()> {
-        let end_addr = addr.checked_add(size)?;
+    /// If perms::WRITE are set, write {size} bytes from {data} into the memory space at {addr}
+    fn write_mem(&mut self, addr: usize, data: &[u8], size: usize) -> Result<(), Fault> {
+        let end_addr = addr.checked_add(size).ok_or(Fault::IntegerOverflow)?;
         for i in addr..end_addr {
-            Mmu::check_perms(self.permissions[i], perms::WRITE)
-                .expect("Error on permission check in mmu.write_mem");
+            Mmu::check_perms(self.permissions[i], Perms::WRITE).ok_or(Fault::WriteFault(i))?;
         }
-
         for i in 0..size {
-            self.memory[addr + i] = data[i];
+            self.memory[addr.checked_add(i).ok_or(Fault::IntegerOverflow)?] = data[i];
         }
-        Some(())
+        Ok(())
     }
 
-    pub fn load_mem(&mut self, section: ProgramHeader, data: &[u8]) {
-        self.set_permissions(section.vaddr as usize, section.memsz, perms::WRITE);
+    /// Load a given segment into memory
+    pub fn load_mem(&mut self, segment: elfparser::ProgramHeader, data: &[u8]) -> Option<()> {
+        // Set permissions to perms::WRITE to avoid errors during write_mem and perform the write
+        self.set_permissions(segment.vaddr as usize, segment.memsz, Perms::WRITE)?;
+        self.write_mem(segment.vaddr, data, segment.filesz as usize).ok()?;
 
-        self.write_mem(section.vaddr, data, section.filesz as usize);
+        // ELF files can contain padding that needs to be loaded into memory but does not exist
+        // in the file on disk, we still need to fill it up in memory though
+        let padding = vec![0u8; (segment.memsz - segment.filesz) as usize];
+        self.write_mem(segment.vaddr.checked_add(segment.filesz as usize)?, 
+                       &padding, padding.len()).ok()?;
 
-        let padding = vec![0u8; (section.memsz - section.filesz) as usize];
-        self.write_mem(section.vaddr+section.filesz as usize, &padding, padding.len());
-
-        self.set_permissions(section.vaddr, section.memsz, section.flags as u8);
+        // Set the permissions to the proper values as specified by the segment header information
+        self.set_permissions(segment.vaddr, segment.memsz, segment.flags as u8)?;
+        Some(())
     }
     
     /// Allocate some new RW memory, memory is never repeated, each allocation returns fresh memory,
@@ -95,49 +109,188 @@ impl Mmu {
         let base = self.alloc_addr + 8;
 
         // Cannot allocate without running out of memory
-        if base >= self.memory.len() || (base + aligned_size) >= self.memory.len() { return None; }
+        if base >= self.memory.len() || base.checked_add(aligned_size)? >= self.memory.len() { 
+            return None; 
+        }
 
         // Write sizefield into memory region 8 bytes prior to allocation (inline metadata)
         unsafe {
-            *(((self.memory.as_ptr() as usize) + base - 8) as *mut usize) = aligned_size;
+            *(((self.memory.as_ptr() as usize).checked_add(base)? - 8) as *mut usize) 
+                = aligned_size; 
         };
 
         // Set Write permissions on allocated memory region and increase the next allocation addr
-        self.set_permissions(base, size, perms::WRITE | perms::READ);
+        self.set_permissions(base, size, Perms::WRITE | Perms::READ);
         self.alloc_addr = self.alloc_addr.checked_add(aligned_size)?;
 
         // Overwrite the size_field meta_data with special permission to indicate that it was
         // properly allocated using malloc. This allows us to check for invalid free's if the
         // permission is not set
         unsafe {
-            *(((self.permissions.as_ptr() as usize) + base - 8) as *mut usize) 
-                = perms::ISALLOC as usize;
+            *(((self.permissions.as_ptr() as usize).checked_add(base)? - 8) as *mut usize)
+                = Perms::ISALLOC as usize;
         };
-
-        println!("Allocated 0x{:x} bytes at 0x{:x} for a call with size 0x{:x}", aligned_size, base, size);
 
         Some(base)
     }
 
     /// Free a region of previously allocated memory
-    pub fn free(&mut self, addr: usize) -> Option<()> {
+    pub fn free(&mut self, addr: usize) -> Result<(), Fault> {
+        if addr > self.memory.len() { return Err(Fault::InvalidFree(addr)); }
 
         // Retrieve sizefield that was stored as inlined metadata 8 bytes prior to the chunk
-        let size = unsafe { *(((self.memory.as_ptr() as usize) + addr - 8) as *const usize) };
-
-        if addr > self.memory.len() { return None; }
+        let size = unsafe { *(((self.memory.as_ptr() as usize).checked_add(addr)
+                               .ok_or(Fault::IntegerOverflow)? - 8) as *const usize) };
 
         // Verify that the permissions at the specified size field match up with a valid allocation
         unsafe {
-            if *(((self.permissions.as_ptr() as usize) + addr - 8) as *const usize) != 
-                perms::ISALLOC as usize { return None; }
+            if *(((self.permissions.as_ptr() as usize).checked_add(addr)
+                  .ok_or(Fault::IntegerOverflow)? - 8) as *const usize) != 
+                Perms::ISALLOC as usize { return Err(Fault::InvalidFree(addr)); }
         };
 
         // Unset all permissions including metadata
-        self.set_permissions(addr-8, size, perms::UNSET);
+        self.set_permissions(addr-8, size, Perms::UNSET);
         
-        println!("Free'd 0x{:x} bytes at 0x{:x}", size, addr);
+        Ok(())
+    }
+}
 
-        Some(())
+/// Some simple unit tests to test individual functions of the mmu module
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normal_valid_allocation() {
+        let mut mem = Mmu::new(8 * 1024 * 1024);
+
+        if mem.allocate(0x40).is_none() {
+            assert!(false, "Something went wrong during allocation");
+        }
+    }
+
+    #[test]
+    fn very_large_allocation() {
+        let mut mem = Mmu::new(8 * 1024 * 1024);
+
+        if mem.allocate(8 * 1024 * 1024).is_some() {
+            assert!(false, "Should have errored out due to large size");
+        }
+    }
+
+    #[test]
+    fn multiple_allocations() {
+        let mut mem = Mmu::new(8 * 1024 * 1024);
+        let mut addrs = Vec::new();
+        let mut i = 0;
+
+        while let Some(x) = mem.allocate(0x40) {
+            if i >= 5 { break; }
+            i += 1;
+            addrs.push(x);
+        }
+        assert_eq!(addrs.len(), 5);
+    }
+
+    #[test]
+    fn zero_allocation() {
+        let mut mem = Mmu::new(8 * 1024 * 1024);
+        let mut addr1: usize = 0;
+        let mut addr2: usize = 0;
+
+        if let Some(x) = mem.allocate(0) {
+            addr1 = x;
+        } else {
+            assert!(false, "Size of zero should still return minimum allocation");
+        }
+        if let Some(x) = mem.allocate(0) {
+            addr2 = x;
+        } else {
+            assert!(false, "Size of zero should still return minimum allocation");
+        }
+
+        // Can't easily check the size, but we can make sure that the second 0 allocation
+        // is allocated at a higher address than the first
+        assert!(addr1 < addr2);
+    }
+
+    #[test]
+    fn normal_valid_allocation_check_perms() {
+        let mut mem = Mmu::new(8 * 1024 * 1024);
+        let mut addr: usize = 0;
+
+        if let Some(x) = mem.allocate(0x40) {
+            addr = x;
+        } else {
+            assert!(false, "Something went wrong during allocation");
+        }
+        assert!(Mmu::check_perms(mem.permissions[addr+0x20], Perms::WRITE).is_some());
+    }
+
+    #[test]
+    fn normal_valid_free() {
+        let mut mem = Mmu::new(8 * 1024 * 1024);
+        let mut addr: usize = 0;
+
+        if let Some(x) = mem.allocate(0x40) {
+            addr = x;
+        } else {
+            assert!(false, "failure during allocation");
+        }
+
+        if let Err(e) = mem.free(addr) {
+            assert!(false, "unexpected failure during first free: {:?}", e);
+        }
+    }
+
+    #[test]
+    fn free_on_memory_not_allocated_by_alloc() {
+        let mut mem = Mmu::new(1024 * 1024);
+        if let Err(v) = mem.free(1024) {
+            match v {
+                Fault::InvalidFree(_) => {},
+                _ => { assert!(false, "Free threw the wrong type of error"); }
+            }
+        } else { assert!(false, "Free did not throw any error at all"); }
+    }
+    
+    #[test]
+    fn double_free() {
+        let mut mem = Mmu::new(8 * 1024 * 1024);
+        let mut addr: usize = 0;
+
+        if let Some(x) = mem.allocate(0x40) {
+            addr = x;
+        } else {
+            assert!(false, "failure during allocation");
+        }
+
+        if let Err(e) = mem.free(addr) {
+            assert!(false, "unexpected failure during first free: {:?}", e);
+        }
+
+        if let Ok(()) = mem.free(addr) {
+            assert!(false, "Second free on same memory should have given an error");
+        }
+    }
+
+    #[test]
+    fn multiple_frees() {
+        let mut mem = Mmu::new(8 * 1024 * 1024);
+        let mut addrs = Vec::new();
+        let mut i = 0;
+
+        while let Some(x) = mem.allocate(0x40) {
+            if i > 5 { break; }
+            i += 1;
+            addrs.push(x);
+        }
+
+        while let Some(x) = addrs.pop() {
+            if let Err(e) = mem.free(x) {
+                assert!(false, "unexpected failure during one of the free's: {:?}", e);
+            }
+        }
     }
 }

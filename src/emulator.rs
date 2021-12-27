@@ -1,9 +1,6 @@
 use crate::{
     mmu::{Mmu},
-    ProgramHeader,
-    emulator::{
-        Register::{Pc},
-    },
+    elfparser,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -42,6 +39,15 @@ pub enum Register {
     T5,
     T6,
     Pc,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum Fault {
+    WriteFault(usize),
+
+    IntegerOverflow,
+
+    InvalidFree(usize),
 }
 
 #[repr(C)]
@@ -83,21 +89,21 @@ impl Emulator {
         self.state.regs[reg as usize]
     }
 
-    pub fn load_section(&mut self, section: ProgramHeader, data: &[u8]) {
-        self.memory.load_mem(section, data);
+    pub fn load_segment(&mut self, segment: elfparser::ProgramHeader, data: &[u8]) -> Option<()> {
+        self.memory.load_mem(segment, data)
     }
 
-    pub fn allocate(&mut self, size: usize) -> Option<usize>{
+    pub fn allocate(&mut self, size: usize) -> Option<usize> {
         self.memory.allocate(size)
     }
 
-    pub fn free(&mut self, addr: usize) -> Option<()>{
+    pub fn free(&mut self, addr: usize) -> Result<(), Fault> {
         self.memory.free(addr)
     }
 
     pub fn run_emu(&mut self) {
         'next: loop {
-            let pc = self.get_reg(Pc);
+            let pc = self.get_reg(Register::Pc);
 
             if pc & 3 != 0 {
                 panic!("Code unaligned");
@@ -107,7 +113,7 @@ impl Emulator {
 
             //match instr
 
-            self.set_reg(Pc, pc.wrapping_add(4));
+            self.set_reg(Register::Pc, pc.wrapping_add(4));
         }
     }
 }
