@@ -65,7 +65,7 @@ pub fn load_elf_segments(filename: &str, emu_inst: &mut Emulator) -> Option<()> 
 }
 
 /// Wrapper function for each emulator, takes care of running the emulator, memory resets, etc
-pub fn worker(thr_id: usize, mut emu: Emulator) {
+pub fn worker(_thr_id: usize, mut emu: Emulator) {
     let original = emu.clone();
     loop {
         emu = original.clone();

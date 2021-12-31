@@ -1,5 +1,3 @@
-use std::fmt;
-
 /// Trait that allows bit extractions from usizes by calling num.get_u32()
 pub trait ExtractBits{
     fn get_u32(self, but_offset: u32, length: u32) -> u32;
