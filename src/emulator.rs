@@ -1,6 +1,7 @@
 use crate::{
-    mmu::{Mmu},
+    mmu::{Mmu, Perms},
     elfparser,
+    riscv::{RType, IType, SType, BType, UType, JType},
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -53,6 +54,9 @@ pub enum Fault {
 
     /// Fault occurs when an attempt is made to read from an address without Perms::READ set
     ReadFault(usize),
+
+    /// Fault occurs when an attempt is made to execute an invalid instruction
+    ExecFault(usize),
 
     /// Fault occurs when some operation results in an integer overflow
     IntegerOverflow,
@@ -114,18 +118,29 @@ impl Emulator {
         self.memory.free(addr)
     }
 
-    pub fn run_emu(&mut self) {
-        'next: loop {
+    pub fn run_emu(&mut self) -> Result<(), Fault> {
+        loop {
             let pc = self.get_reg(Register::Pc);
 
-            if pc & 3 != 0 {
-                panic!("Code unaligned");
+            // Error out if code was unaligned.
+            // since Riscv instructions are always 4-byte aligned this is a bug
+            if pc & 3 != 0 { return Err(Fault::ExecFault(pc)); }
+
+            // If an error occurs during this read, it is most likely due to missing read or execute
+            // permissions, so we mark it as an ExecFault
+            let instr: u32 = self.memory.read_at(pc, Perms::READ | Perms::EXECUTE).map_err(|_|
+                Fault::ExecFault(pc))?;
+
+            let opcode = instr & 0b1111111;
+            //let args: u32 = instr >> 7;
+
+            match opcode {
+                0b0110011 => {  /* RV32I R-Type */
+
+                }
+
+                _ => {},
             }
-
-            //let instr = read_pc
-
-            //match instr
-
             self.set_reg(Register::Pc, pc.wrapping_add(4));
         }
     }

@@ -1,15 +1,11 @@
-mod mmu;
 pub mod emulator;
+mod mmu;
+mod riscv;
 
 use elfparser;
-use elfparser::{ELFMAGIC, ARCH64, LITTLEENDIAN, TYPEEXEC};
-use emulator::{
-    Emulator, 
-    Register,
-};
-use std::{
-    process,
-};
+use elfparser::{ARCH64, ELFMAGIC, LITTLEENDIAN, TYPEEXEC, RISCV};
+use emulator::{Emulator, Register};
+use std::process;
 
 /// Small wrapper to easily handle unrecoverable errors without panicking
 pub fn error_exit(msg: &str) -> ! {
@@ -19,11 +15,21 @@ pub fn error_exit(msg: &str) -> ! {
 
 /// Used to verify that the binary is suitable for this fuzzer. (64-bit, ELF, Little Endian...)
 fn verify_format(elf_hdr: elfparser::Header) -> Result<(), String> {
-    if elf_hdr.magic   != ELFMAGIC     { return Err("Magic value does not match ELF".to_string()); }
-    if elf_hdr.bitsize != ARCH64       { return Err("Architecture is not 64-bit".to_string());     }
-    if elf_hdr.endian  != LITTLEENDIAN { return Err("Endian is not Little Endian".to_string());    }
-    if elf_hdr.o_type  != TYPEEXEC     { return Err("Elf is not an executeable".to_string());      }
-    //if elf_hdr.machine != RISCV        { return Err("Elf is not Riscv architecture".to_string());  }
+    if elf_hdr.magic != ELFMAGIC {
+        return Err("Magic value does not match ELF".to_string());
+    }
+    if elf_hdr.bitsize != ARCH64 {
+        return Err("Architecture is not 64-bit".to_string());
+    }
+    if elf_hdr.endian != LITTLEENDIAN {
+        return Err("Endian is not Little Endian".to_string());
+    }
+    if elf_hdr.o_type != TYPEEXEC {
+        return Err("Elf is not an executeable".to_string());
+    }
+    if elf_hdr.machine != RISCV {
+        return Err("Elf is not Riscv architecture".to_string());
+    }
     Ok(())
 }
 
@@ -42,10 +48,14 @@ pub fn load_elf_segments(filename: &str, emu_inst: &mut Emulator) -> Option<()> 
         offset += elf_hdr.phentsize as usize;
         let program_hdr = elfparser::ProgramHeader::new(&target[offset..])?;
 
-        if program_hdr.seg_type != elfparser::LOADSEGMENT { continue; }
+        if program_hdr.seg_type != elfparser::LOADSEGMENT {
+            continue;
+        }
 
-        emu_inst.load_segment(program_hdr, &target[program_hdr.offset..
-                              program_hdr.offset.checked_add(program_hdr.memsz)?])?;
+        emu_inst.load_segment(
+            program_hdr,
+            &target[program_hdr.offset..program_hdr.offset.checked_add(program_hdr.memsz)?],
+        )?;
         //println!("{:#x?}", program_hdr);
     }
 
@@ -59,6 +69,6 @@ pub fn worker(thr_id: usize, mut emu: Emulator) {
     let original = emu.clone();
     loop {
         emu = original.clone();
-        emu.run_emu();
+        emu.run_emu().unwrap();
     }
 }
