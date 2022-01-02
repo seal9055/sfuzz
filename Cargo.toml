@@ -9,5 +9,5 @@ codegen-units = 1
 panic = 'abort'
 
 [dependencies]
-byteorder = "1.4"
 elfparser = { git = "https://github.com/seal9055/local_crates/", branch = "main" }
+rustc-hash = "1.1.0"

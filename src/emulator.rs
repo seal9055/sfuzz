@@ -3,6 +3,7 @@ use crate::{
     elfparser,
     riscv::decode_instr,
 };
+use rustc_hash::FxHashMap;
 
 /// 33 RISCV Registers
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -96,6 +97,8 @@ pub struct Emulator {
     pub memory: Mmu,
 
     pub state: State,
+
+    pub function_map: FxHashMap<usize, usize>,
 }
 
 impl Emulator {
@@ -103,6 +106,7 @@ impl Emulator {
         Emulator {
             memory: Mmu::new(size),
             state: State::default(),
+            function_map: FxHashMap::default(),
         }
     }
 

@@ -11,15 +11,21 @@ checksum = "14c189c53d098945499cdfa7ecc63567cf3886b3332b312a5b4585d8d3a6a610"
 [[package]]
 name = "elfparser"
 version = "0.1.0"
-source = "git+https://github.com/seal9055/local_crates/?branch=main#9a2aea32761d7307ebdbba2d28bb439745b0828f"
+source = "git+https://github.com/seal9055/local_crates/?branch=main#9cdda9dd238aa97a38038575197ce428c37518b7"
 dependencies = [
  "byteorder",
 ]
 
 [[package]]
+name = "rustc-hash"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "08d43f7aa6b08d49f382cde6a7982047c3426db949b1424bc4b7ec9ae12c6ce2"
+
+[[package]]
 name = "sfuzz"
 version = "0.1.0"
 dependencies = [
- "byteorder",
  "elfparser",
+ "rustc-hash",
 ]
