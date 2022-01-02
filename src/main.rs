@@ -1,12 +1,6 @@
-use sfuzz::{load_elf_segments, error_exit};
-use sfuzz::{
-    emulator::{
-        Emulator,
-        Register,
-    }
-};
+use sfuzz::emulator::{Emulator, Register};
+use sfuzz::{error_exit, load_elf_segments, worker};
 use std::thread;
-use sfuzz::worker;
 
 /// Setup the root emulator's segments and stack before cloning the emulator into multiple threads
 /// to run multiple emulators at the same time
@@ -22,12 +16,10 @@ fn main() {
     emu_inst.set_reg(Register::Sp, stack + 1024 * 1024);
     // TODO
 
-
     for thr_id in 0..1 {
         let emu = emu_inst.clone();
         thread::spawn(move || worker(thr_id, emu));
     }
 
-    loop {
-    }
+    loop {}
 }

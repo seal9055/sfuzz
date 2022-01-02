@@ -1,7 +1,7 @@
 use crate::{
     mmu::{Mmu, Perms},
     elfparser,
-    riscv::{RType, IType, SType, BType, UType, JType},
+    riscv::{RType, IType, SType, BType, UType, JType, decode_instr},
 };
 
 /// 33 RISCV Registers
@@ -43,9 +43,18 @@ pub enum Register {
     Pc,
 }
 
+impl From<u32> for Register {
+    fn from(val: u32) -> Self {
+        assert!(val < 33);
+        unsafe {
+            core::ptr::read_unaligned(&(val as usize) as *const usize as *const Register)
+        }
+    }
+}
+
 /// Various faults that can occur during program execution. These can be syscalls, bugs, or other
 /// non-standard behaviors that require kernel involvement
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Fault {
     /// Syscall
     Syscall,
@@ -98,11 +107,13 @@ impl Emulator {
     }
 
     pub fn set_reg(&mut self, reg: Register, val: usize) {
+        assert!((reg as usize) < 33);
         if reg == Register::Zero { panic!("Can't set zero-register"); }
         self.state.regs[reg as usize] = val;
     }
 
     pub fn get_reg(&self, reg: Register) -> usize {
+        assert!((reg as usize) < 33);
         if reg == Register::Zero { return 0; }
         self.state.regs[reg as usize]
     }
@@ -119,329 +130,37 @@ impl Emulator {
         self.memory.free(addr)
     }
 
-    pub fn run_emu(&mut self) -> Result<(), Fault> {
+    pub fn run_jit(&mut self) -> Option<Fault> {
         loop {
             let pc = self.get_reg(Register::Pc);
 
             // Error out if code was unaligned.
             // since Riscv instructions are always 4-byte aligned this is a bug
-            if pc & 3 != 0 { return Err(Fault::ExecFault(pc)); }
+            if pc & 3 != 0 { return Some(Fault::ExecFault(pc)); }
 
+            let func_size = 20;
+            self.compile(pc, func_size);
+
+            // Run the JIT
+        }
+    }
+
+    fn compile(&mut self, mut pc: usize, func_size: usize) -> Option<()> {
+        //let start = pc;
+
+        while pc < pc+func_size {
             // If an error occurs during this read, it is most likely due to missing read or execute
             // permissions, so we mark it as an ExecFault
-            let instr: u32 = self.memory.read_at(pc, Perms::READ | Perms::EXECUTE).map_err(|_|
-                Fault::ExecFault(pc))?;
+            let opcodes: u32 = self.memory.read_at(pc, Perms::READ | Perms::EXECUTE).map_err(|_|
+                Fault::ExecFault(pc)).ok()?;
 
-            let opcode = instr & 0b1111111;
+            let instr = decode_instr(opcodes);
 
-            match opcode {
-                0b0110111 => { /* LUI */
-                    let _instr = UType::new(instr);
+            // Assemble instruction and add it to JitCache
+            println!("0x{:x}: {:x?}", pc, instr);
 
-                },
-                0b0010111 => { /* AUIPC */
-                    let _instr = UType::new(instr);
-
-                },
-                0b1101111 => { /* JAL */
-                    let _instr = JType::new(instr);
-
-                },
-                0b1100111 => { /* JALR */
-
-                },
-                0b1100011 => {
-                    let instr = BType::new(instr);
-                    match instr.funct3 {
-                        0b000 => { /* BEQ */
-
-                        },
-                        0b001 => { /* BNE */
-
-                        },
-                        0b100 => { /* BLT */
-
-                        },
-                        0b101 => { /* BGE */
-
-                        },
-                        0b110 => { /* BLTU */
-
-                        },
-                        0b111 => { /* BGEU */
-
-                        },
-                        _ => { unreachable!(); }
-                    }
-
-                },
-                0b0000011 => {
-                    let instr = IType::new(instr);
-                    match instr.funct3 {
-                        0b000 => { /* LB */
-
-                        },
-                        0b001 => { /* LH */
-
-                        },
-                        0b010 => { /* LW */
-
-                        },
-                        0b100 => { /* LBU */
-
-                        },
-                        0b101 => { /* LHU */
-
-                        },
-                        0b110 => { /* LWU */
-
-                        },
-                        0b011 => { /* LD */
-
-                        },
-                        _ => { unreachable!(); }
-                    }
-                },
-                0b0100011 => {
-                    let instr = SType::new(instr);
-                    match instr.funct3 {
-                        0b000 => { /* SB */
-
-                        },
-                        0b001 => { /* SH */
-
-                        },
-                        0b010 => { /* SW */
-
-                        },
-                        0b011 => { /* SD */
-
-                        },
-                        _ => { unreachable!(); }
-                    }
-                },
-                0b0010011 => {
-                    let instr = IType::new(instr);
-                    match instr.funct3 {
-                        0b000 => { /* ADDI */
-
-                        },
-                        0b010 => { /* SLTI */
-
-                        },
-                        0b011 => { /* SLTIU */
-
-                        },
-                        0b100 => { /* XORI */
-
-                        },
-                        0b110 => { /* ORI */
-
-                        },
-                        0b111 => { /* ANDI */
-
-                        },
-                        0b001 => { /* SLLI */
-
-                        },
-                        0b101 => {
-                            match (instr.imm >> 6) & 0b111111 {
-                                0b000000 => { /* SRLI */
-
-                                },
-                                0b010000 => { /* SRAI */
-
-                                },
-                                _ => { unreachable!(); }
-                            }
-                        },
-                        _ => { unreachable!(); }
-                    }
-                },
-                0b0110011 => {
-                    let instr = RType::new(instr);
-                    match instr.funct3 {
-                        0b000 => {
-                            match instr.funct7 {
-                                0b0000000 => { /* ADD */
-
-                                },
-                                0b0100000 => { /* SUB */
-
-                                },
-                                0b0000001 => { /* MUL */
-
-                                },
-                                _ => { unreachable!(); }
-                            }
-                        },
-                        0b001 => {
-                            match instr.funct7 {
-                                0b0000000 => { /* SLL */
-
-                                },
-                                0b0000001 => { /* MULH */
-
-                                },
-                                _ => { unreachable!(); }
-                            }
-                        },
-                        0b010 => {
-                            match instr.funct7 {
-                                0b0000000 => { /* SLT */
-
-                                },
-                                0b0000001 => { /* MULHSU */
-
-                                },
-                                _ => { unreachable!(); }
-                            }
-                        },
-                        0b011 => {
-                            match instr.funct7 {
-                                0b0000000 => { /* SLTU */
-
-                                },
-                                0b0000001 => { /* MULHU */
-
-                                },
-                                _ => { unreachable!(); }
-                            }
-                        },
-                        0b100 => {
-                            match instr.funct7 {
-                                0b0000000 => { /* XOR */
-
-                                },
-                                0b0000001 => { /* DIV */
-
-                                },
-                                _ => { unreachable!(); }
-                            }
-                        },
-                        0b101 => {
-                            match instr.funct7 {
-                                0b0000000 => { /* SRL */
-
-                                },
-                                0b0100000 => { /* SRA */
-
-                                },
-                                0b0000001 => { /* DIVU */
-
-                                },
-                                _ => { unreachable!(); }
-                            }
-                        },
-                        0b110 => {
-                            match instr.funct7 {
-                                0b0000000 => { /* OR */
-
-                                },
-                                0b0000001 => { /* REM */
-
-                                },
-                                _ => { unreachable!(); }
-                            }
-                        },
-                        0b111 => {
-                            match instr.funct7 {
-                                0b0000000 => { /* AND */
-
-                                },
-                                0b0000001 => { /* REMU */
-
-                                },
-                                _ => { unreachable!(); }
-                            }
-                        },
-                        _ => { unreachable!(); }
-                    }
-
-                },
-                0b0001111 => { /* Fence */
-                    // Nop
-                },
-                0b1110011 => {
-                    if instr == 0b00000000000000000000000001110011 { /* ECALL */
-                        return Err(Fault::Syscall);
-                    } else if instr == 0b00000000000100000000000001110011 { /* EBREAK */
-
-                    } else { unreachable!(); }
-                },
-                0b0011011 => {
-                    let instr = IType::new(instr);
-
-                    match instr.funct3 {
-                        0b000 => { /* ADDIW */
-
-                        },
-                        0b001 => { /* SLLIW */
-
-                        },
-                        0b101 => {
-                            match (instr.imm >> 5) & 0b1111111 {
-                                0b0000000 => { /* SRLIW */
-
-                                },
-                                0b0100000 => { /* SRAIW */
-
-                                },
-                                _ => { unreachable!(); },
-                            }
-                        },
-                        _ => { unreachable!(); },
-                    }
-                }
-                0b0111011 => {
-                    let instr = RType::new(instr);
-                    match instr.funct3 {
-                        0b000 => {
-                            match instr.funct7 {
-                                0b0000000 => { /* ADDW */
-
-                                },
-                                0b0100000 => { /* SUBW */
-
-                                },
-                                0b0000001 => { /* MULW */
-
-                                },
-                                _ => { unreachable!(); }
-                            }
-                        },
-                        0b001 => { /* SLLW */
-
-                        },
-                        0b101 => {
-                            match instr.funct7 {
-                                0b0000000 => { /* SRLW */
-
-                                },
-                                0b0100000 => { /* SRAW */
-
-                                },
-                                0b0000001 => { /* DIVUW */
-
-                                },
-                                _ => { unreachable!(); }
-                            }
-                        },
-                        0b100 => { /* DIVW */
-
-                        },
-                        0b110 => { /* REMW */
-
-                        },
-                        0b111 => { /* REMUW */
-
-                        },
-                        _ => { unreachable!(); }
-                    }
-                },
-                _ => { unreachable!(); }
-            }
-            self.set_reg(Register::Pc, pc.wrapping_add(4));
+            pc += 4;
         }
+        Some(())
     }
 }

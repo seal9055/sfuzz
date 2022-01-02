@@ -3,8 +3,11 @@ name = "sfuzz"
 version = "0.1.0"
 edition = "2021"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[profile.release]
+lto = true
+codegen-units = 1
+panic = 'abort'
 
 [dependencies]
 byteorder = "1.4"
-elfparser = { path = "./libs/elfparser" }
+elfparser = { git = "https://github.com/seal9055/local_crates/", branch = "main" }

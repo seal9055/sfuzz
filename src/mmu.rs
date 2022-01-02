@@ -15,6 +15,7 @@ impl Perms {
     pub const ISALLOC: u8 = 0x8;
 }
 
+/// Trait + Corresponding macro allows reading/writing values from a Vec<u8> using a generic type T
 pub trait ByteConversions {
     fn write_to(self, dst: &mut [u8]);
     fn read_from(src: &[u8]) -> Self;
@@ -559,6 +560,7 @@ mod tests {
         let addr = mem.allocate(0x100).unwrap();
 
         mem.write_mem(addr, &load_data, 0x50).unwrap();
-        let v1: u8  = mem.read_at(addr, Perms::EXECUTE).unwrap();
+        let _: u8  = mem.read_at(addr, Perms::EXECUTE).unwrap();
+        let _: u32 = mem.read_at(addr, Perms::EXECUTE).unwrap();
     }
 }
