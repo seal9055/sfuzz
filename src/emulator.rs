@@ -1,7 +1,7 @@
 use crate::{
     mmu::{Mmu, Perms},
     elfparser,
-    riscv::{RType, IType, SType, BType, UType, JType, decode_instr},
+    riscv::decode_instr,
 };
 
 /// 33 RISCV Registers

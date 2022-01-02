@@ -7,7 +7,7 @@ use std::thread;
 fn main() {
     let mut emu_inst = Emulator::new(32 * 1024 * 1024);
 
-    if load_elf_segments("./test_bin", &mut emu_inst).is_none() {
+    if load_elf_segments("./test2", &mut emu_inst).is_none() {
         error_exit("Unrecoverable error while loading process");
     }
 
