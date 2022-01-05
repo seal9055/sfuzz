@@ -1,8 +1,14 @@
 use crate::{
     mmu::{Mmu, Perms},
     elfparser,
-    riscv::decode_instr,
+    riscv::{decode_instr, Instr},
+    shared::Shared,
 };
+
+use std::sync::Arc;
+use std::collections::VecDeque;
+
+use iced_x86::code_asm::*;
 use rustc_hash::FxHashMap;
 
 /// 33 RISCV Registers
@@ -92,6 +98,7 @@ impl Default for State {
     }
 }
 
+// TODO remove clone, should only be arc cloned
 #[derive(Clone)]
 pub struct Emulator {
     pub memory: Mmu,
@@ -99,14 +106,17 @@ pub struct Emulator {
     pub state: State,
 
     pub function_map: FxHashMap<usize, usize>,
+
+    pub shared: Arc<Shared>,
 }
 
 impl Emulator {
-    pub fn new(size: usize) -> Self {
+    pub fn new(size: usize, shared: Arc<Shared>) -> Self {
         Emulator {
             memory: Mmu::new(size),
             state: State::default(),
             function_map: FxHashMap::default(),
+            shared,
         }
     }
 
@@ -126,8 +136,8 @@ impl Emulator {
         self.memory.load_segment(segment, data)
     }
 
-    pub fn allocate(&mut self, size: usize) -> Option<usize> {
-        self.memory.allocate(size)
+    pub fn allocate(&mut self, size: usize, perms: u8) -> Option<usize> {
+        self.memory.allocate(size, perms)
     }
 
     pub fn free(&mut self, addr: usize) -> Result<(), Fault> {
@@ -135,36 +145,141 @@ impl Emulator {
     }
 
     pub fn run_jit(&mut self) -> Option<Fault> {
-        loop {
+        //loop {
             let pc = self.get_reg(Register::Pc);
 
             // Error out if code was unaligned.
             // since Riscv instructions are always 4-byte aligned this is a bug
             if pc & 3 != 0 { return Some(Fault::ExecFault(pc)); }
 
-            let func_size = 20;
-            self.compile(pc, func_size);
+            //let jit_addr: usize = (*self.shared).lookup(pc);
+            let jit_addr: usize = self.compile(pc).unwrap();
 
-            // Run the JIT
-        }
+            println!("jit function address = {:x}", jit_addr);
+
+            //unsafe {
+            //    let func = *(&jit_addr as *const usize as *const fn());
+            //    func();
+            //}
+
+            None
+        //}
     }
 
-    fn compile(&mut self, mut pc: usize, func_size: usize) -> Option<()> {
-        //let start = pc;
+    fn get_reg_offset(&self, reg: Register) -> usize {
+        reg as usize * 8
+    }
 
-        while pc < pc+func_size {
+    /// JIT compile a function
+    fn compile(&mut self, mut pc: usize) -> Result<usize, IcedError> {
+        //let func_size = self.function_map.get(&pc).unwrap();
+        //let func_end = pc + func_size;
+        let mut asm = CodeAssembler::new(64).unwrap();
+        let mut instr_queue = VecDeque::new();
+
+        instr_queue.push_back(pc);
+
+        while let Some(pc) = instr_queue.pop_front() {
             // If an error occurs during this read, it is most likely due to missing read or execute
             // permissions, so we mark it as an ExecFault
             let opcodes: u32 = self.memory.read_at(pc, Perms::READ | Perms::EXECUTE).map_err(|_|
-                Fault::ExecFault(pc)).ok()?;
+                Fault::ExecFault(pc)).unwrap();
 
             let instr = decode_instr(opcodes);
 
-            // Assemble instruction and add it to JitCache
-            println!("0x{:x}: {:x?}", pc, instr);
+            // Load the base address of register array into rbp
+            asm.mov(rbp, self.state.regs.as_ptr() as u64)?;
 
-            pc += 4;
+            match instr {
+                Instr::Jal {rd, imm} => {
+                    let off1 = self.get_reg_offset(rd);
+                    let off2 = self.get_reg_offset(Register::Pc);
+                    let ret_val = (pc + 4) as u32;
+                    let jmp_target = pc + imm as usize;
+
+                    // Link the return address into rd
+                    asm.mov(ptr(rbp+off1), ret_val)?;
+
+                    if rd == Register::Zero {
+                        instr_queue.push_back(jmp_target);
+                    }
+
+                    // attempt to translate jump target
+                      // if success
+                        // emit jmp instr
+                      // else if failure,
+                        // if diff function
+                          // if size < 200
+                            // compile the function at target and then emit jmp instr
+                          // else if size > 200
+                            // JITEXIT
+                        // else if same function
+                          // IDK (labels?)
+                          // Create label, and set a jump to it. Later when the address is actually
+                          // hit, place the label
+
+                    asm.mov(ptr(rbp+off1), ret_val)?;
+
+                    if rd == Register::Zero {
+                        // Direct Jump
+                        //asm.jmp();
+                        instr_queue.push_back(jmp_target);
+                    } else {
+                        // Function call
+                    }
+
+                    //asm.jmp(jump_target as u64)?;
+
+                    //
+                },
+                Instr::Lui {rd, imm} => {
+                    let off1 = self.get_reg_offset(rd);
+                    asm.mov(ptr(rbp+off1), imm)?;
+                },
+                Instr::Add {rd, rs1, rs2 } => {
+                    let off1 = self.get_reg_offset(rs1);
+                    let off2 = self.get_reg_offset(rs2);
+                    let off3 = self.get_reg_offset(rd);
+                    asm.mov(rax, ptr(rbp+off1))?;
+                    asm.mov(rbx, ptr(rbp+off2))?;
+                    asm.add(rax, rbx)?;
+                    asm.mov(ptr(rbp+off3), rax)?;
+                },
+                Instr::Addi {rd, rs1, imm } => {
+                    let off1 = self.get_reg_offset(rs1);
+                    let off2 = self.get_reg_offset(rd);
+                    asm.mov(rax, ptr(rbp+off1))?;
+                    asm.add(rax, imm)?;
+                    asm.mov(ptr(rbp+off2), rax)?;
+                },
+                _ => {},
+            }
+            instr_queue.push_back(pc + 4);
         }
-        Some(())
+
+        // Add code into JIT and return address of this jit-block
+        Ok((*self.shared).add_jitblock(&asm.assemble(0x0)?))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn temporary() {
+        let shared = Arc::new(Shared::new());
+        let mut emu = Emulator::new(1024 * 1024, shared);
+
+        let addr = emu.allocate(0x40, Perms::READ | Perms::WRITE | Perms::EXECUTE).unwrap();
+        emu.set_reg(Register::Pc, addr);
+
+        let data = std::fs::read("tests/output").unwrap();
+        emu.memory.write_mem(addr, &data, data.len()).unwrap();
+
+        println!("size: {}", data.len());
+        emu.run_jit();
+    }
+}
+
+

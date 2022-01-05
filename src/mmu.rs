@@ -96,7 +96,7 @@ impl Mmu {
     }
 
     /// If perms::WRITE are set, write {size} bytes from {data} into the memory space at {addr}
-    fn write_mem(&mut self, addr: usize, data: &[u8], size: usize) -> Result<(), Fault> {
+    pub fn write_mem(&mut self, addr: usize, data: &[u8], size: usize) -> Result<(), Fault> {
         if size > data.len() {
             return Err(Fault::WriteFault(data.len()));
         }
@@ -152,7 +152,7 @@ impl Mmu {
 
     /// Allocate some new RW memory, memory is never repeated, each allocation returns fresh memory,
     /// even if a prior allocation was free'd
-    pub fn allocate(&mut self, size: usize) -> Option<usize> {
+    pub fn allocate(&mut self, size: usize, perms: u8) -> Option<usize> {
         // 0x10 byte align the allocation size and some additional bytes that can be used for an
         // inlined size field.
         let aligned_size = (size + 0x18) & !0xf;
@@ -170,7 +170,7 @@ impl Mmu {
         };
 
         // Set Write permissions on allocated memory region and increase the next allocation addr
-        self.set_permissions(base, size, Perms::WRITE | Perms::READ);
+        self.set_permissions(base, size, perms);
         self.alloc_addr = self.alloc_addr.checked_add(aligned_size)?;
 
         // Overwrite the size_field meta_data with special permission to indicate that it was
@@ -218,7 +218,7 @@ mod tests {
     fn normal_valid_allocation() {
         let mut mem = Mmu::new(8 * 1024 * 1024);
 
-        if mem.allocate(0x40).is_none() {
+        if mem.allocate(0x40, Perms::READ | Perms::WRITE).is_none() {
             panic!("Something went wrong during allocation");
         }
     }
@@ -227,7 +227,7 @@ mod tests {
     fn very_large_allocation() {
         let mut mem = Mmu::new(8 * 1024 * 1024);
 
-        if mem.allocate(8 * 1024 * 1024).is_some() {
+        if mem.allocate(8 * 1024 * 1024, Perms::READ | Perms::WRITE).is_some() {
             panic!("Should have errored out due to large size");
         }
     }
@@ -238,7 +238,7 @@ mod tests {
         let mut addrs = Vec::new();
         let mut i = 0;
 
-        while let Some(x) = mem.allocate(0x40) {
+        while let Some(x) = mem.allocate(0x40, Perms::READ | Perms::WRITE) {
             if i >= 5 {
                 break;
             }
@@ -254,12 +254,12 @@ mod tests {
         let mut _addr1: usize = 0;
         let mut _addr2: usize = 0;
 
-        if let Some(x) = mem.allocate(0) {
+        if let Some(x) = mem.allocate(0, Perms::READ | Perms::WRITE) {
             _addr1 = x;
         } else {
             panic!("Size of zero should still return minimum allocation");
         }
-        if let Some(x) = mem.allocate(0) {
+        if let Some(x) = mem.allocate(0, Perms::READ | Perms::WRITE) {
             _addr2 = x;
         } else {
             panic!("Size of zero should still return minimum allocation");
@@ -275,7 +275,7 @@ mod tests {
         let mut mem = Mmu::new(8 * 1024 * 1024);
         let mut _addr: usize = 0;
 
-        if let Some(x) = mem.allocate(0x40) {
+        if let Some(x) = mem.allocate(0x40, Perms::READ | Perms::WRITE) {
             _addr = x;
         } else {
             panic!("Something went wrong during allocation");
@@ -288,7 +288,7 @@ mod tests {
         let mut mem = Mmu::new(8 * 1024 * 1024);
         let mut _addr: usize = 0;
 
-        if let Some(x) = mem.allocate(0x40) {
+        if let Some(x) = mem.allocate(0x40, Perms::READ | Perms::WRITE) {
             _addr = x;
         } else {
             panic!("failure during allocation");
@@ -319,7 +319,7 @@ mod tests {
         let mut mem = Mmu::new(8 * 1024 * 1024);
         let mut _addr: usize = 0;
 
-        if let Some(x) = mem.allocate(0x40) {
+        if let Some(x) = mem.allocate(0x40, Perms::READ | Perms::WRITE) {
             _addr = x;
         } else {
             panic!("failure during allocation");
@@ -340,7 +340,7 @@ mod tests {
         let mut addrs = Vec::new();
         let mut i = 0;
 
-        while let Some(x) = mem.allocate(0x40) {
+        while let Some(x) = mem.allocate(0x40, Perms::READ | Perms::WRITE) {
             if i > 5 {
                 break;
             }
@@ -537,7 +537,7 @@ mod tests {
     fn valid_read_at() {
         let mut mem = Mmu::new(8 * 1024 * 1024);
         let load_data = vec![0x1u8; 0x200];
-        let addr = mem.allocate(0x100).unwrap();
+        let addr = mem.allocate(0x100, Perms::READ | Perms::WRITE).unwrap();
 
         mem.write_mem(addr, &load_data, 0x50).unwrap();
 
@@ -557,7 +557,7 @@ mod tests {
     fn invalid_perms_read_at() {
         let mut mem = Mmu::new(8 * 1024 * 1024);
         let load_data = vec![0x1u8; 0x200];
-        let addr = mem.allocate(0x100).unwrap();
+        let addr = mem.allocate(0x100, Perms::READ | Perms::WRITE).unwrap();
 
         mem.write_mem(addr, &load_data, 0x50).unwrap();
         let _: u8  = mem.read_at(addr, Perms::EXECUTE).unwrap();

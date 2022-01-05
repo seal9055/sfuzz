@@ -1,6 +1,9 @@
 pub mod emulator;
-mod mmu;
-mod riscv;
+pub mod mmu;
+pub mod riscv;
+pub mod shared;
+
+extern crate iced_x86;
 
 use elfparser;
 use elfparser::{ARCH64, ELFMAGIC, LITTLEENDIAN, TYPEEXEC, RISCV};
