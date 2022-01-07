@@ -9,12 +9,12 @@ pub enum Instr {
     Auipc  { rd: Register, imm: i32 },
     Jal    { rd: Register, imm: i32 },
     Jalr   { rd: Register, rs1: Register, imm: i32 },
-    Beq    { rs1: Register, rs2: Register, imm: i32 },
-    Bne    { rs1: Register, rs2: Register, imm: i32 },
-    Blt    { rs1: Register, rs2: Register, imm: i32 },
-    Bge    { rs1: Register, rs2: Register, imm: i32 },
-    Bltu   { rs1: Register, rs2: Register, imm: i32 },
-    Bgeu   { rs1: Register, rs2: Register, imm: i32 },
+    Beq    { rs1: Register, rs2: Register, imm: i32, mode: u8},
+    Bne    { rs1: Register, rs2: Register, imm: i32,  mode: u8},
+    Blt    { rs1: Register, rs2: Register, imm: i32,  mode: u8},
+    Bge    { rs1: Register, rs2: Register, imm: i32,  mode: u8},
+    Bltu   { rs1: Register, rs2: Register, imm: i32,  mode: u8},
+    Bgeu   { rs1: Register, rs2: Register, imm: i32,  mode: u8},
     Lb     { rd: Register, rs1: Register, imm: i32 },
     Lh     { rd: Register, rs1: Register, imm: i32 },
     Lw     { rd: Register, rs1: Register, imm: i32 },
@@ -281,22 +281,28 @@ pub fn decode_instr(instr: u32) -> Instr {
             let instr = BType::new(instr);
             match instr.funct3 {
                 0b000 => { /* BEQ */
-                    return Instr::Beq { rs1: instr.rs1, rs2: instr.rs2, imm: instr.imm };
+                    return
+                        Instr::Beq { rs1: instr.rs1, rs2: instr.rs2, imm: instr.imm, mode: 0b000 };
                 },
                 0b001 => { /* BNE */
-                    return Instr::Bne { rs1: instr.rs1, rs2: instr.rs2, imm: instr.imm };
+                    return
+                        Instr::Bne { rs1: instr.rs1, rs2: instr.rs2, imm: instr.imm, mode: 0b001 };
                 },
                 0b100 => { /* BLT */
-                    return Instr::Blt { rs1: instr.rs1, rs2: instr.rs2, imm: instr.imm };
+                    return
+                        Instr::Blt { rs1: instr.rs1, rs2: instr.rs2, imm: instr.imm, mode: 0b100 };
                 },
                 0b101 => { /* BGE */
-                    return Instr::Bge { rs1: instr.rs1, rs2: instr.rs2, imm: instr.imm };
+                    return
+                        Instr::Bge { rs1: instr.rs1, rs2: instr.rs2, imm: instr.imm, mode: 0b101 };
                 },
                 0b110 => { /* BLTU */
-                    return Instr::Bltu { rs1: instr.rs1, rs2: instr.rs2, imm: instr.imm };
+                    return
+                        Instr::Bltu { rs1: instr.rs1, rs2: instr.rs2, imm: instr.imm, mode: 0b110 };
                 },
                 0b111 => { /* BGEU */
-                    return Instr::Bgeu { rs1: instr.rs1, rs2: instr.rs2, imm: instr.imm };
+                    return
+                        Instr::Bgeu { rs1: instr.rs1, rs2: instr.rs2, imm: instr.imm, mode: 0b111 };
                 },
                 _ => { unreachable!(); }
             }

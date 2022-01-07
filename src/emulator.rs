@@ -9,6 +9,7 @@ use std::sync::Arc;
 use std::collections::VecDeque;
 
 use iced_x86::code_asm::*;
+use iced_x86::{Formatter, Instruction, NasmFormatter};
 use rustc_hash::FxHashMap;
 
 /// 33 RISCV Registers
@@ -171,13 +172,22 @@ impl Emulator {
     }
 
     /// JIT compile a function
-    fn compile(&mut self, mut pc: usize) -> Result<usize, IcedError> {
+    /// rbp points to register array in memory
+    /// r15 points to lookup array to check if pc is jitted
+    fn compile(&mut self, pc: usize) -> Result<usize, IcedError> {
         //let func_size = self.function_map.get(&pc).unwrap();
         //let func_end = pc + func_size;
+        let start_pc = pc;
         let mut asm = CodeAssembler::new(64).unwrap();
         let mut instr_queue = VecDeque::new();
 
         instr_queue.push_back(pc);
+
+        // Load the base address of register array into rbp
+        asm.mov(rbp, self.state.regs.as_ptr() as u64).unwrap();
+
+        // Load the base address of jit lookup tableinto r15
+        asm.mov(r15, self.shared.lookup.as_ptr() as u64).unwrap();
 
         while let Some(pc) = instr_queue.pop_front() {
             // If an error occurs during this read, it is most likely due to missing read or execute
@@ -187,80 +197,171 @@ impl Emulator {
 
             let instr = decode_instr(opcodes);
 
-            // Load the base address of register array into rbp
-            asm.mov(rbp, self.state.regs.as_ptr() as u64)?;
-
             match instr {
+                Instr::Lui {rd, imm} => {
+                    let rd_off = self.get_reg_offset(rd);
+                    let sign_extended = imm as i64 as u64;
+                    asm.mov(rax, sign_extended).unwrap();
+                    asm.mov(ptr(rbp+rd_off), rax).unwrap();
+                },
+                Instr::Auipc {rd, imm} => {
+                    let rd_off = self.get_reg_offset(rd);
+                    let sign_extended = (imm + pc as i32) as i64 as u64;
+                    asm.mov(rax, sign_extended).unwrap();
+                    asm.mov(ptr(rbp+rd_off), rax).unwrap();
+                },
                 Instr::Jal {rd, imm} => {
-                    let off1 = self.get_reg_offset(rd);
-                    let off2 = self.get_reg_offset(Register::Pc);
-                    let ret_val = (pc + 4) as u32;
+                    let rd_off = self.get_reg_offset(rd);
+                    let _pc_off = self.get_reg_offset(Register::Pc);
+                    let ret_val = (pc + 4) as u64;
                     let jmp_target = pc + imm as usize;
 
-                    // Link the return address into rd
-                    asm.mov(ptr(rbp+off1), ret_val)?;
+                    let mut jit_exit = asm.create_label();
 
+                    // Jump without return so can just emit code at that location
                     if rd == Register::Zero {
-                        instr_queue.push_back(jmp_target);
+                       instr_queue.push_back(jmp_target);
+                       continue;
                     }
 
-                    // attempt to translate jump target
-                      // if success
-                        // emit jmp instr
-                      // else if failure,
-                        // if diff function
-                          // if size < 200
-                            // compile the function at target and then emit jmp instr
-                          // else if size > 200
-                            // JITEXIT
-                        // else if same function
-                          // IDK (labels?)
-                          // Create label, and set a jump to it. Later when the address is actually
-                          // hit, place the label
+                    // Move pc+4 into rd
+                    asm.mov(rax, ret_val).unwrap();
+                    asm.mov(rbp+rd_off, rax).unwrap();
 
-                    asm.mov(ptr(rbp+off1), ret_val)?;
+                    // Check if addr is in jit
+                    asm.mov(rax, ptr(r15 + jmp_target)).unwrap();
+                    asm.test(rax, rax).unwrap();
+                    asm.jz(jit_exit).unwrap(); //(not in jit).unwrap();
+                    asm.jmp(rax).unwrap();
 
-                    if rd == Register::Zero {
-                        // Direct Jump
-                        //asm.jmp();
-                        instr_queue.push_back(jmp_target);
-                    } else {
-                        // Function call
+                    asm.set_label(&mut jit_exit).unwrap();
+                    asm.mov(rax, 1u64).unwrap();
+                    asm.mov(rbx, jmp_target as u64).unwrap();
+                    asm.ret().unwrap();
+                },
+                Instr::Jalr {rd, imm, rs1} => {
+                    let rd_off = self.get_reg_offset(rd);
+                    let rs1_off = self.get_reg_offset(rs1);
+                    let _pc_off = self.get_reg_offset(Register::Pc);
+                    let ret_val = (pc + 4) as u64;
+
+                    let mut jit_exit = asm.create_label();
+
+                    // Move pc+4 into rd
+                    asm.mov(rax, ret_val).unwrap();
+                    asm.mov(rbp+rd_off, rax).unwrap();
+
+                    // Move jump target into rcx
+                    asm.mov(rcx, ptr(rbp+rs1_off)).unwrap();
+                    asm.add(rcx, imm).unwrap();
+
+                    // Check if addr is in jit
+                    asm.mov(rax, ptr(r15 + rcx)).unwrap();
+                    asm.test(rax, rax).unwrap();
+                    asm.jz(jit_exit).unwrap(); //(not in jit).unwrap();
+                    asm.jmp(rax).unwrap();
+
+                    // exit jit
+                    asm.set_label(&mut jit_exit).unwrap();
+                    asm.mov(rax, 1u64).unwrap();
+                    asm.mov(rbx, rcx).unwrap();
+                    asm.ret().unwrap();
+                },
+                Instr::Beq  { rs1, rs2, imm, mode } |
+                Instr::Bne  { rs1, rs2, imm, mode } |
+                Instr::Blt  { rs1, rs2, imm, mode } |
+                Instr::Bge  { rs1, rs2, imm, mode } |
+                Instr::Bltu { rs1, rs2, imm, mode } |
+                Instr::Bgeu { rs1, rs2, imm, mode } => {
+                    let rs1_off = self.get_reg_offset(rs1);
+                    let rs2_off = self.get_reg_offset(rs2);
+                    let jmp_target = pc + imm as usize;
+                    let mut jit_exit = asm.create_label();
+                    let mut fallthrough = asm.create_label();
+
+                    asm.mov(rax, ptr(rbp+rs1_off)).unwrap();
+                    asm.cmp(rax, ptr(rbp+rs2_off)).unwrap();
+                    match mode {
+                        0b000 => { asm.je(fallthrough).unwrap();  },
+                        0b001 => { asm.jne(fallthrough).unwrap(); },
+                        0b100 => { asm.jmp(fallthrough).unwrap(); },
+                        0b101 => { asm.jge(fallthrough).unwrap(); },
+                        0b110 => { asm.jmp(fallthrough).unwrap(); },
+                        0b111 => { asm.jmp(fallthrough).unwrap(); },
+                        _ => { unreachable!(); },
                     }
 
-                    //asm.jmp(jump_target as u64)?;
+                    // Move jump target into rcx
+                    asm.mov(rcx, jmp_target as u64).unwrap();
 
-                    //
-                },
-                Instr::Lui {rd, imm} => {
-                    let off1 = self.get_reg_offset(rd);
-                    asm.mov(ptr(rbp+off1), imm)?;
-                },
+                    // Check if addr is in jit
+                    asm.mov(rax, ptr(r15 + rcx)).unwrap();
+                    asm.test(rax, rax).unwrap();
+                    asm.jz(jit_exit).unwrap(); //(not in jit).unwrap();
+                    asm.jmp(rax).unwrap();
+
+                    // exit jit
+                    asm.set_label(&mut jit_exit).unwrap();
+                    asm.mov(rax, 1u64).unwrap();
+                    asm.mov(rbx, rcx).unwrap();
+                    asm.ret().unwrap();
+
+                    // Fall through to next instruction
+                    asm.set_label(&mut fallthrough).unwrap();
+                }
                 Instr::Add {rd, rs1, rs2 } => {
-                    let off1 = self.get_reg_offset(rs1);
-                    let off2 = self.get_reg_offset(rs2);
-                    let off3 = self.get_reg_offset(rd);
-                    asm.mov(rax, ptr(rbp+off1))?;
-                    asm.mov(rbx, ptr(rbp+off2))?;
-                    asm.add(rax, rbx)?;
-                    asm.mov(ptr(rbp+off3), rax)?;
+                    let rs1_off = self.get_reg_offset(rs1);
+                    let rs2_off = self.get_reg_offset(rs2);
+                    let rd_off  = self.get_reg_offset(rd);
+                    asm.mov(rax, ptr(rbp+rs1_off)).unwrap();
+                    asm.mov(rbx, ptr(rbp+rs2_off)).unwrap();
+                    asm.add(rax, rbx).unwrap();
+                    asm.mov(ptr(rbp+rd_off), rax).unwrap();
                 },
                 Instr::Addi {rd, rs1, imm } => {
-                    let off1 = self.get_reg_offset(rs1);
-                    let off2 = self.get_reg_offset(rd);
-                    asm.mov(rax, ptr(rbp+off1))?;
-                    asm.add(rax, imm)?;
-                    asm.mov(ptr(rbp+off2), rax)?;
+                    if rd == Register::Zero && rs1 == Register::Zero && imm == 0 {
+                        // Nop
+                    } else {
+                        let rs1_off = self.get_reg_offset(rs1);
+                        let rd_off  = self.get_reg_offset(rd);
+                        asm.mov(rax, ptr(rbp+rs1_off)).unwrap();
+                        if imm != 0 {
+                            asm.add(rax, imm).unwrap();
+                        }
+                        asm.mov(ptr(rbp+rd_off), rax).unwrap();
+                    }
                 },
-                _ => {},
+                _ => { self.dump_instrs(asm.instructions(), start_pc, pc); },
             }
             instr_queue.push_back(pc + 4);
         }
 
         // Add code into JIT and return address of this jit-block
-        Ok((*self.shared).add_jitblock(&asm.assemble(0x0)?))
+        Ok((*self.shared).add_jitblock(&asm.assemble(0x0)?, start_pc))
+    }
+
+    fn dump_instrs(&self, instrs: &[Instruction], mut pc: usize, end_pc: usize) -> ! {
+        while pc < end_pc {
+            let opcodes: u32 = self.memory.read_at(pc, Perms::READ | Perms::EXECUTE).map_err(|_|
+                    Fault::ExecFault(pc)).unwrap();
+            let instr = decode_instr(opcodes);
+            println!("0x{:x}: {:?}", pc, instr);
+            pc+=4;
+        }
+
+        for instr in instrs {
+            let mut formatter = NasmFormatter::new();
+            let mut output = String::new();
+
+            output.clear();
+            formatter.format(&instr, &mut output);
+            println!("{:#?}", output);
+        }
+        panic!("Unimplemented Instruction hit");
     }
 }
+
+
 
 #[cfg(test)]
 mod tests {
@@ -268,7 +369,7 @@ mod tests {
 
     #[test]
     fn temporary() {
-        let shared = Arc::new(Shared::new());
+        let shared = Arc::new(Shared::new(16 * 1024 * 1024));
         let mut emu = Emulator::new(1024 * 1024, shared);
 
         let addr = emu.allocate(0x40, Perms::READ | Perms::WRITE | Perms::EXECUTE).unwrap();

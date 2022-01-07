@@ -1,4 +1,5 @@
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[cfg(target_os="linux")]
 pub fn alloc_rwx(size: usize) -> &'static mut [u8] {
@@ -18,29 +19,37 @@ pub fn alloc_rwx(size: usize) -> &'static mut [u8] {
 
 #[derive(Debug)]
 pub struct Shared {
-    pub jit: Mutex<(&'static mut [u8], usize)>
+    pub jit: Mutex<(&'static mut [u8], usize)>,
+
+    pub lookup: Vec<AtomicUsize>,
 }
 
 impl Shared {
-    pub fn new() -> Self {
+    pub fn new(address_space_size: usize) -> Self {
         Shared {
             jit: Mutex::new((alloc_rwx(16*1024*1024), 0)),
+            lookup: Vec::with_capacity(address_space_size / 4),
         }
     }
 
-    pub fn add_jitblock(&self, code: &[u8]) -> usize {
+    pub fn add_jitblock(&self, code: &[u8], pc: usize) -> usize {
         let mut jit = self.jit.lock().unwrap();
 
         let jit_inuse = jit.1;
         jit.0[jit_inuse..jit_inuse + code.len()].copy_from_slice(code);
 
+        let addr = jit.0.as_ptr() as usize + jit_inuse;
+
+        // add mapping
+        self.lookup[pc].store(addr, Ordering::Relaxed);
+
         jit.1 += code.len();
 
         // Return the JIT address of the code we just compiled
-        jit.0.as_ptr()  as usize + jit_inuse
+        addr
     }
 
     pub fn lookup(&self, pc: usize) -> usize {
-        0
+        self.lookup[pc].load(Ordering::Relaxed)
     }
 }

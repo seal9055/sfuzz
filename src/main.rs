@@ -10,7 +10,7 @@ use std::sync::Arc;
 /// Setup the root emulator's segments and stack before cloning the emulator into multiple threads
 /// to run multiple emulators at the same time
 fn main() {
-    let shared = Arc::new(Shared::new());
+    let shared = Arc::new(Shared::new(16 * 1024 * 1024));
     let mut emu = Emulator::new(32 * 1024 * 1024, shared);
 
     if load_elf_segments("./test_bin", &mut emu).is_none() {
