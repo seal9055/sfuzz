@@ -15,14 +15,14 @@ pub enum Instr {
     Bge    { rs1: Register, rs2: Register, imm: i32,  mode: u8},
     Bltu   { rs1: Register, rs2: Register, imm: i32,  mode: u8},
     Bgeu   { rs1: Register, rs2: Register, imm: i32,  mode: u8},
-    Lb     { rd: Register, rs1: Register, imm: i32 },
-    Lh     { rd: Register, rs1: Register, imm: i32 },
-    Lw     { rd: Register, rs1: Register, imm: i32 },
-    Lbu    { rd: Register, rs1: Register, imm: i32 },
-    Lhu    { rd: Register, rs1: Register, imm: i32 },
-    Sb     { rs1: Register, rs2: Register, imm: i32 },
-    Sh     { rs1: Register, rs2: Register, imm: i32 },
-    Sw     { rs1: Register, rs2: Register, imm: i32 },
+    Lb     { rd: Register, rs1: Register, imm: i32, mode: u8 },
+    Lh     { rd: Register, rs1: Register, imm: i32, mode: u8 },
+    Lw     { rd: Register, rs1: Register, imm: i32, mode: u8 },
+    Lbu    { rd: Register, rs1: Register, imm: i32, mode: u8 },
+    Lhu    { rd: Register, rs1: Register, imm: i32, mode: u8 },
+    Sb     { rs1: Register, rs2: Register, imm: i32, mode: u8 },
+    Sh     { rs1: Register, rs2: Register, imm: i32, mode: u8 },
+    Sw     { rs1: Register, rs2: Register, imm: i32, mode: u8 },
     Addi   { rd: Register, rs1: Register, imm: i32 },
     Slti   { rd: Register, rs1: Register, imm: i32 },
     Sltiu  { rd: Register, rs1: Register, imm: i32 },
@@ -39,9 +39,9 @@ pub enum Instr {
     Sra    { rd: Register, rs1: Register, rs2: Register },
     Or     { rd: Register, rs1: Register, rs2: Register },
     And    { rd: Register, rs1: Register, rs2: Register },
-    Lwu    { rd: Register, rs1: Register, imm: i32 },
-    Ld     { rd: Register, rs1: Register, imm: i32 },
-    Sd     { rs1: Register, rs2: Register, imm: i32 },
+    Lwu    { rd: Register, rs1: Register, imm: i32, mode: u8 },
+    Ld     { rd: Register, rs1: Register, imm: i32, mode: u8 },
+    Sd     { rs1: Register, rs2: Register, imm: i32, mode: u8 },
     Slli   { rd: Register, rs1: Register, shamt: i32 },
     Srli   { rd: Register, rs1: Register, shamt: i32 },
     Srai   { rd: Register, rs1: Register, shamt: i32 },
@@ -219,10 +219,9 @@ pub struct UType {
 
 impl UType {
     pub fn new(instr: u32) -> Self {
-        let val = instr.get_u32(0, 20);
-
         UType {
-            imm: ((val << 12) >> 12) as i32,
+            //imm: ((val << 12) >> 12) as i32,
+            imm: (instr & !0xfff) as i32,
             rd:  Register::from(instr.get_u32(20, 5)),
         }
     }
@@ -248,7 +247,7 @@ impl JType {
         let val = (imm20 << 20) + (imm19 << 12) + (imm11 << 11) + (imm10 << 1);
 
         JType {
-            imm: ((val << 11) >> 11) as i32,
+            imm: ((val as i32)<< 11) >> 11,
             rd:  Register::from(instr.get_u32(20, 5)),
         }
     }
@@ -312,25 +311,25 @@ pub fn decode_instr(instr: u32) -> Instr {
             let instr = IType::new(instr);
             match instr.funct3 {
                 0b000 => { /* LB */
-                    return Instr::Lb { rd: instr.rd, rs1: instr.rs1, imm: instr.imm };
+                    return Instr::Lb { rd: instr.rd, rs1: instr.rs1, imm: instr.imm, mode: 0b000 };
                 },
                 0b001 => { /* LH */
-                    return Instr::Lh { rd: instr.rd, rs1: instr.rs1, imm: instr.imm };
+                    return Instr::Lh { rd: instr.rd, rs1: instr.rs1, imm: instr.imm, mode: 0b001};
                 },
                 0b010 => { /* LW */
-                    return Instr::Lw { rd: instr.rd, rs1: instr.rs1, imm: instr.imm };
+                    return Instr::Lw { rd: instr.rd, rs1: instr.rs1, imm: instr.imm, mode: 0b010};
                 },
                 0b100 => { /* LBU */
-                    return Instr::Lbu { rd: instr.rd, rs1: instr.rs1, imm: instr.imm };
+                    return Instr::Lbu { rd: instr.rd, rs1: instr.rs1, imm: instr.imm, mode: 0b100 };
                 },
                 0b101 => { /* LHU */
-                    return Instr::Lhu { rd: instr.rd, rs1: instr.rs1, imm: instr.imm };
+                    return Instr::Lhu { rd: instr.rd, rs1: instr.rs1, imm: instr.imm, mode: 0b101 };
                 },
                 0b110 => { /* LWU */
-                    return Instr::Lwu { rd: instr.rd, rs1: instr.rs1, imm: instr.imm };
+                    return Instr::Lwu { rd: instr.rd, rs1: instr.rs1, imm: instr.imm, mode: 0b110 };
                 },
                 0b011 => { /* LD */
-                    return Instr::Ld { rd: instr.rd, rs1: instr.rs1, imm: instr.imm };
+                    return Instr::Ld { rd: instr.rd, rs1: instr.rs1, imm: instr.imm, mode: 0b011};
                 },
                 _ => { unreachable!(); }
             }
@@ -339,16 +338,20 @@ pub fn decode_instr(instr: u32) -> Instr {
             let instr = SType::new(instr);
             match instr.funct3 {
                 0b000 => { /* SB */
-                    return Instr::Sb { rs1: instr.rs1, rs2: instr.rs2, imm: instr.imm };
+                    return
+                        Instr::Sb { rs1: instr.rs1, rs2: instr.rs2, imm: instr.imm, mode: 0b000 };
                 },
                 0b001 => { /* SH */
-                    return Instr::Sh { rs1: instr.rs1, rs2: instr.rs2, imm: instr.imm };
+                    return
+                        Instr::Sh { rs1: instr.rs1, rs2: instr.rs2, imm: instr.imm, mode: 0b001 };
                 },
                 0b010 => { /* SW */
-                    return Instr::Sw { rs1: instr.rs1, rs2: instr.rs2, imm: instr.imm };
+                    return
+                        Instr::Sw { rs1: instr.rs1, rs2: instr.rs2, imm: instr.imm, mode: 0b010 };
                 },
                 0b011 => { /* SD */
-                    return Instr::Sd { rs1: instr.rs1, rs2: instr.rs2, imm: instr.imm };
+                    return
+                        Instr::Sd { rs1: instr.rs1, rs2: instr.rs2, imm: instr.imm, mode: 0b011 };
                 },
                 _ => { unreachable!(); }
             }
@@ -579,28 +582,31 @@ mod tests {
 
     #[test]
     fn itype() {
-        match decode_instr(0x1259583) { Instr::Lh{ rd, rs1 , imm} => {
+        match decode_instr(0x1259583) { Instr::Lh{ rd, rs1 , imm, mode: _} => {
             assert_eq!(rd, Register::A1); assert_eq!(imm, 18);
             assert_eq!(rs1, Register::A1); }, _ => { panic!(""); } };
-        match decode_instr(0x1099703) { Instr::Lh{ rd, rs1 , imm} => {
+        match decode_instr(0x1099703) { Instr::Lh{ rd, rs1 , imm, mode: _} => {
             assert_eq!(rd, Register::A4); assert_eq!(imm, 16);
             assert_eq!(rs1, Register::S3); }, _ => { panic!(""); } };
-        match decode_instr(0x0ac42683) { Instr::Lw{ rd, rs1 , imm} => {
+        match decode_instr(0x0ac42683) { Instr::Lw{ rd, rs1 , imm, mode: _} => {
             assert_eq!(rd, Register::A3); assert_eq!(imm, 172);
             assert_eq!(rs1, Register::S0); }, _ => { panic!(""); } };
-        match decode_instr(0x3107a883) { Instr::Lw{ rd, rs1 , imm} => {
+        match decode_instr(0x3107a883) { Instr::Lw{ rd, rs1 , imm, mode: _} => {
             assert_eq!(rd, Register::A7); assert_eq!(imm, 784);
             assert_eq!(rs1, Register::A5); }, _ => { panic!(""); } };
-        match decode_instr(0x6714603) { Instr::Lbu{ rd, rs1 , imm} => {
+        match decode_instr(0x01813083) { Instr::Ld{ rd, rs1 , imm, mode: _} => {
+            assert_eq!(rd, Register::Ra); assert_eq!(imm, 24);
+            assert_eq!(rs1, Register::Sp); }, _ => { panic!(""); } };
+        match decode_instr(0x6714603) { Instr::Lbu{ rd, rs1 , imm, mode: _} => {
             assert_eq!(rd, Register::A2); assert_eq!(imm, 103);
             assert_eq!(rs1, Register::Sp); }, _ => { panic!(""); } };
-        match decode_instr(0xd4583) { Instr::Lbu{ rd, rs1 , imm} => {
+        match decode_instr(0xd4583) { Instr::Lbu{ rd, rs1 , imm, mode: _} => {
             assert_eq!(rd, Register::A1); assert_eq!(imm, 0);
             assert_eq!(rs1, Register::S10); }, _ => { panic!(""); } };
-        match decode_instr(0x1015783) { Instr::Lhu{ rd, rs1 , imm} => {
+        match decode_instr(0x1015783) { Instr::Lhu{ rd, rs1 , imm, mode: _} => {
             assert_eq!(rd, Register::A5); assert_eq!(imm, 16);
             assert_eq!(rs1, Register::Sp); }, _ => { panic!(""); } };
-        match decode_instr(0x15015783) { Instr::Lhu{ rd, rs1 , imm} => {
+        match decode_instr(0x15015783) { Instr::Lhu{ rd, rs1 , imm, mode: _} => {
             assert_eq!(rd, Register::A5); assert_eq!(imm, 336);
             assert_eq!(rs1, Register::Sp); }, _ => { panic!(""); } };
         match decode_instr(0xf98680e7) { Instr::Jalr{ rd, rs1 , imm} => {
@@ -638,62 +644,62 @@ mod tests {
 
     #[test]
     fn stype() {
-        match decode_instr(0xfedd8fa3) { Instr::Sb{ rs1, rs2 , imm} => {
+        match decode_instr(0xfedd8fa3) { Instr::Sb{ rs1, rs2, imm, mode: _} => {
             assert_eq!(rs1, Register::S11); assert_eq!(imm, -1);
             assert_eq!(rs2, Register::A3); }, _ => { panic!(""); } };
-        match decode_instr(0x60103a3) { Instr::Sb{ rs1, rs2 , imm} => {
+        match decode_instr(0x60103a3) { Instr::Sb{ rs1, rs2, imm, mode: _} => {
             assert_eq!(rs1, Register::Sp); assert_eq!(imm, 103);
             assert_eq!(rs2, Register::Zero); }, _ => { panic!(""); } };
-        match decode_instr(0xef11023) { Instr::Sh{ rs1, rs2 , imm} => {
+        match decode_instr(0xef11023) { Instr::Sh{ rs1, rs2, imm, mode: _} => {
             assert_eq!(rs1, Register::Sp); assert_eq!(imm, 224);
             assert_eq!(rs2, Register::A5); }, _ => { panic!(""); } };
-        match decode_instr(0xf69023) { Instr::Sh{ rs1, rs2 , imm} => {
+        match decode_instr(0xf69023) { Instr::Sh{ rs1, rs2, imm, mode: _} => {
             assert_eq!(rs1, Register::A3); assert_eq!(imm, 0);
             assert_eq!(rs2, Register::A5); }, _ => { panic!(""); } };
-        match decode_instr(0x7801a823) { Instr::Sw{ rs1, rs2 , imm} => {
+        match decode_instr(0x7801a823) { Instr::Sw{ rs1, rs2, imm, mode: _} => {
             assert_eq!(rs1, Register::Gp); assert_eq!(imm, 1936);
             assert_eq!(rs2, Register::Zero); }, _ => { panic!(""); } };
-        match decode_instr(0x852023) { Instr::Sw{ rs1, rs2 , imm} => {
+        match decode_instr(0x852023) { Instr::Sw{ rs1, rs2, imm, mode: _} => {
             assert_eq!(rs1, Register::A0); assert_eq!(imm, 0);
             assert_eq!(rs2, Register::S0); }, _ => { panic!(""); } };
     }
 
     #[test]
     fn btype() {
-        match decode_instr(0x78c63) { Instr::Beq{ rs1, rs2 , imm} => {
+        match decode_instr(0x78c63) { Instr::Beq{ rs1, rs2, imm, mode: _} => {
             assert_eq!(rs1, Register::A5); assert_eq!(imm, 0x18);
             assert_eq!(rs2, Register::Zero); }, _ => { panic!(""); } };
-        match decode_instr(0xf70c63) { Instr::Beq{ rs1, rs2 , imm} => {
+        match decode_instr(0xf70c63) { Instr::Beq{ rs1, rs2, imm, mode: _} => {
             assert_eq!(rs1, Register::A4); assert_eq!(imm, 0x18);
             assert_eq!(rs2, Register::A5); }, _ => { panic!(""); } };
-        match decode_instr(0x1d041463) { Instr::Bne{ rs1, rs2 , imm} => {
+        match decode_instr(0x1d041463) { Instr::Bne{ rs1, rs2, imm, mode: _} => {
             assert_eq!(rs1, Register::S0); assert_eq!(imm, 0x1c8);
             assert_eq!(rs2, Register::A6); }, _ => { panic!(""); } };
-        match decode_instr(0x2071463) { Instr::Bne{ rs1, rs2 , imm} => {
+        match decode_instr(0x2071463) { Instr::Bne{ rs1, rs2, imm, mode: _} => {
             assert_eq!(rs1, Register::A4); assert_eq!(imm, 0x28);
             assert_eq!(rs2, Register::Zero); }, _ => { panic!(""); } };
-        match decode_instr(0x12d8ce63) { Instr::Blt{ rs1, rs2 , imm} => {
+        match decode_instr(0x12d8ce63) { Instr::Blt{ rs1, rs2, imm, mode: _} => {
             assert_eq!(rs1, Register::A7); assert_eq!(imm, 0x13c);
             assert_eq!(rs2, Register::A3); }, _ => { panic!(""); } };
-        match decode_instr(0xfe06c2e3) { Instr::Blt{ rs1, rs2 , imm} => {
+        match decode_instr(0xfe06c2e3) { Instr::Blt{ rs1, rs2, imm, mode: _} => {
             assert_eq!(rs1, Register::A3); assert_eq!(imm, -0x1c);
             assert_eq!(rs2, Register::Zero); }, _ => { panic!(""); } };
-        match decode_instr(0x36f6dee3) { Instr::Bge{ rs1, rs2 , imm} => {
+        match decode_instr(0x36f6dee3) { Instr::Bge{ rs1, rs2, imm, mode: _} => {
             assert_eq!(rs1, Register::A3); assert_eq!(imm, 0xb7c);
             assert_eq!(rs2, Register::A5); }, _ => { panic!(""); } };
-        match decode_instr(0x9d463) { Instr::Bge{ rs1, rs2 , imm} => {
+        match decode_instr(0x9d463) { Instr::Bge{ rs1, rs2, imm, mode: _} => {
             assert_eq!(rs1, Register::S3); assert_eq!(imm, 0x8);
             assert_eq!(rs2, Register::Zero); }, _ => { panic!(""); } };
-        match decode_instr(0xa6eb60e3) { Instr::Bltu{ rs1, rs2 , imm} => {
+        match decode_instr(0xa6eb60e3) { Instr::Bltu{ rs1, rs2, imm, mode: _} => {
             assert_eq!(rs1, Register::S6); assert_eq!(imm, -0x5a0);
             assert_eq!(rs2, Register::A4); }, _ => { panic!(""); } };
-        match decode_instr(0x2d76063) { Instr::Bltu{ rs1, rs2 , imm} => {
+        match decode_instr(0x2d76063) { Instr::Bltu{ rs1, rs2, imm, mode: _} => {
             assert_eq!(rs1, Register::A4); assert_eq!(imm, 0x20);
             assert_eq!(rs2, Register::A3); }, _ => { panic!(""); } };
-        match decode_instr(0xf966fae3) { Instr::Bgeu{ rs1, rs2 , imm} => {
+        match decode_instr(0xf966fae3) { Instr::Bgeu{ rs1, rs2, imm, mode: _} => {
             assert_eq!(rs1, Register::A3); assert_eq!(imm, -0x6c);
             assert_eq!(rs2, Register::S6); }, _ => { panic!(""); } };
-        match decode_instr(0x1d7f6e3) { Instr::Bgeu{ rs1, rs2 , imm} => {
+        match decode_instr(0x1d7f6e3) { Instr::Bgeu{ rs1, rs2, imm, mode: _} => {
             assert_eq!(rs1, Register::A5); assert_eq!(imm, 0x80c);
             assert_eq!(rs2, Register::T4); }, _ => { panic!(""); } };
     }
@@ -722,5 +728,7 @@ mod tests {
                 assert_eq!(rd, Register::Ra); assert_eq!(imm, 0x1428); }, _ => { panic!(""); } };
         match decode_instr(0x358010ef) { Instr::Jal{ rd, imm } => {
                 assert_eq!(rd, Register::Ra); assert_eq!(imm, 0x1358); }, _ => { panic!(""); } };
+        match decode_instr(0xf6dff06f) { Instr::Jal{ rd, imm } => {
+                assert_eq!(rd, Register::Zero); assert_eq!(imm, -0x94); }, _ => { panic!(""); } };
     }
 }

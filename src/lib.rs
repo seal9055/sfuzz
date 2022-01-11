@@ -2,12 +2,13 @@ pub mod emulator;
 pub mod mmu;
 pub mod riscv;
 pub mod shared;
+pub mod syscalls;
 
 extern crate iced_x86;
 
 use elfparser;
 use elfparser::{ARCH64, ELFMAGIC, LITTLEENDIAN, TYPEEXEC, RISCV};
-use emulator::{Emulator, Register, Fault};
+use emulator::{Emulator, Register};
 use std::process;
 
 /// Small wrapper to easily handle unrecoverable errors without panicking
@@ -81,22 +82,29 @@ pub fn load_elf_segments(filename: &str, emu_inst: &mut Emulator) -> Option<()> 
     // information to determine where functions start/end
     offset = symtab_hdr.s_offset - symtab_hdr.s_entsize;
     let num_entries = symtab_hdr.s_size / symtab_hdr.s_entsize;
-    for _ in 0..num_entries {
+    for v in 0..num_entries {
         offset += symtab_hdr.s_entsize;
 
         let sym_entry = elfparser::SymbolTable::new(&target[offset..])?;
 
         // If the entry is a function (local or global), add it to function hashmap
-        if sym_entry.sym_info == 0x2 || sym_entry.sym_info == 0x12 {
-            emu_inst.function_map.insert(sym_entry.sym_value, sym_entry.sym_size);
+        //if sym_entry.sym_info == 0x2 || sym_entry.sym_info == 0x12 {
+        //    emu_inst.function_map.insert(sym_entry.sym_value, sym_entry.sym_size);
+        //}
+
+        if v == 270 {
+            println!("hook: {:?}", sym_entry);
+        }
+        // Add hooks for functions we want to hook
+        match sym_entry.sym_name {
+            2511 => { // Hook __malloc_r
+                emu_inst.hooks.push((sym_entry.sym_name, sym_entry.sym_value));
+            },
+            _ => {},
         }
     }
     emu_inst.set_reg(Register::Pc, elf_hdr.entry_addr);
     Some(())
-}
-
-fn syscall_handler() {
-    panic!("Do not yet have the ability to handle syscalls");
 }
 
 /// Wrapper function for each emulator, takes care of running the emulator, memory resets, etc
@@ -105,14 +113,7 @@ pub fn worker(_thr_id: usize, mut emu: Emulator) {
     loop {
         emu = original.clone();
 
-        loop {
-            let exit_reason = emu.run_jit().unwrap();
-
-            if exit_reason == Fault::Syscall {
-                syscall_handler();
-            } else {
-                panic!("Some non-syscall vm escape");
-            }
-        }
+        let exit_reason = emu.run_jit().unwrap();
+        println!("Exit Reason is: {:?}", exit_reason);
     }
 }

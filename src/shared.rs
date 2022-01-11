@@ -1,5 +1,5 @@
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::RwLock;
 
 #[cfg(target_os="linux")]
 pub fn alloc_rwx(size: usize) -> &'static mut [u8] {
@@ -21,14 +21,14 @@ pub fn alloc_rwx(size: usize) -> &'static mut [u8] {
 pub struct Shared {
     pub jit: Mutex<(&'static mut [u8], usize)>,
 
-    pub lookup: Vec<AtomicUsize>,
+    pub lookup_arr: RwLock<Vec<usize>>,
 }
 
 impl Shared {
     pub fn new(address_space_size: usize) -> Self {
         Shared {
             jit: Mutex::new((alloc_rwx(16*1024*1024), 0)),
-            lookup: Vec::with_capacity(address_space_size / 4),
+            lookup_arr: RwLock::new(vec![0; address_space_size / 4]),
         }
     }
 
@@ -41,7 +41,7 @@ impl Shared {
         let addr = jit.0.as_ptr() as usize + jit_inuse;
 
         // add mapping
-        self.lookup[pc].store(addr, Ordering::Relaxed);
+        self.lookup_arr.write().unwrap()[pc] = addr;
 
         jit.1 += code.len();
 
@@ -49,7 +49,12 @@ impl Shared {
         addr
     }
 
-    pub fn lookup(&self, pc: usize) -> usize {
-        self.lookup[pc].load(Ordering::Relaxed)
+    pub fn lookup(&self, pc: usize) -> Option<usize> {
+        let addr = self.lookup_arr.read().unwrap()[pc];
+        if addr == 0 {
+            return None;
+        } else {
+            return Some(addr);
+        }
     }
 }

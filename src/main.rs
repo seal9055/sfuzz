@@ -17,6 +17,10 @@ fn main() {
         error_exit("Unrecoverable error while loading elf segments");
     }
 
+    //for hook in emu.hooks {
+
+    //}
+
     // Setup Stack
     let stack = emu.allocate(1024 * 1024, Perms::READ | Perms::WRITE).expect("Error allocating stack");
     emu.set_reg(Register::Sp, stack + 1024 * 1024);

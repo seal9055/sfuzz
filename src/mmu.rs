@@ -42,7 +42,7 @@ impl_byte_conversions!(u8, u16, u32, u64, u128, i8, i16, i32, i64, i128);
 #[derive(Debug, Clone)]
 pub struct Mmu {
     /// Block of memory used by an emulator instance, contains the actual memory
-    memory: Vec<u8>,
+    pub memory: Vec<u8>,
 
     /// Memory permissions used by an emulator instance. Map 1:1 to memory
     pub permissions: Vec<u8>,
