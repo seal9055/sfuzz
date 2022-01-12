@@ -4,19 +4,21 @@ use crate::{
     riscv::{decode_instr, Instr},
     shared::Shared,
     syscalls,
+    error_exit,
 };
 
 use std::sync::Arc;
 use std::collections::VecDeque;
 use std::arch::asm;
+use rustc_hash::FxHashMap;
 
 use iced_x86::code_asm::*;
 use iced_x86::{Formatter, Instruction, NasmFormatter};
-use rustc_hash::FxHashMap;
+//use rustc_hash::FxHashMap;
 
-const STDIN:  isize = 0;
-const STDOUT: isize = 1;
-const STDERR: isize = 2;
+pub const STDIN:  isize = 0;
+pub const STDOUT: isize = 1;
+pub const STDERR: isize = 2;
 
 /// 33 RISCV Registers
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -90,6 +92,9 @@ pub enum Fault {
     /// permission in its metadata
     InvalidFree(usize),
 
+    /// Fault occurs when there is no more room to service new allocations
+    OOM,
+
     /// Process called exit
     Exit,
 }
@@ -115,7 +120,7 @@ pub struct Emulator {
 
     pub state: State,
 
-    pub hooks: Vec<(u32, usize)>,
+    pub hooks: FxHashMap<usize, fn(&mut Emulator) -> Result<(), Fault>>,
 
     pub shared: Arc<Shared>,
 
@@ -127,7 +132,7 @@ impl Emulator {
         Emulator {
             memory: Mmu::new(size),
             state: State::default(),
-            hooks: Vec::new(),
+            hooks: FxHashMap::default(),
             shared,
             fd_list: vec![STDIN, STDOUT, STDERR],
         }
@@ -226,6 +231,7 @@ impl Emulator {
                 call_dest = in(reg) func,
                 out("rax") exit_code,
                 out("rcx") reentry_pc,
+                out("rdx") _,
                 in("r13") self.state.regs.as_ptr() as u64,
                 in("r14") self.memory.memory.as_ptr() as u64,
                 in("r15") self.shared.lookup_arr.read().unwrap().as_ptr() as u64,
@@ -242,6 +248,9 @@ impl Emulator {
                         57 => {
                             syscalls::close(self);
                         },
+                        64 => {
+                            syscalls::write(self);
+                        },
                         80 => {
                             syscalls::fstat(self);
                         },
@@ -254,6 +263,13 @@ impl Emulator {
                         _ => { panic!("Unimplemented syscall: {}", self.get_reg(Register::A7)); }
                     }
                 },
+                3 => { /* Hooked function */
+                    if let Some(callback) = self.hooks.get(&reentry_pc) {
+                        callback(self).unwrap();
+                    } else {
+                        error_exit("Attempted to hook invalid function");
+                    }
+                },
                 _ => { unreachable!(); }
             }
         }
@@ -263,8 +279,6 @@ impl Emulator {
         reg as usize * 8
     }
 
-    // TODO malloc hook
-
     /// JIT compile a function
     /// IN:
     ///     r13 points to register array in memory
@@ -272,29 +286,42 @@ impl Emulator {
     ///     r15 points to lookup array to check if pc is jitted
     /// OUT:
     ///     rax specifies exit code
+    ///         1. indirect jump, keep executing to determine jump target
+    ///         2. syscall
+    ///         3. hooked function reached
     ///     rcx specifies re-entry address for the jit
     fn compile(&mut self, pc: usize) -> Result<usize, IcedError> {
         let start_pc = pc;
+        // This is used to remember the pc value of the previous instruction. When a hook is called,
+        // this is used to determine the reentry address.
         let mut asm: CodeAssembler;
         let mut instr_queue = VecDeque::new();
 
         instr_queue.push_back(pc);
 
         while let Some(pc) = instr_queue.pop_front() {
+            asm = CodeAssembler::new(64).unwrap();
+
+            // Insert hook for addresses we want to hook with our own function and return
+            if self.hooks.get(&pc).is_some() {
+                asm.mov(rcx, pc as u64).unwrap();
+                asm.mov(rax, 3u64).unwrap();
+                asm.ret().unwrap();
+                (*self.shared).add_jitblock(&asm.assemble(0x0).unwrap(), pc);
+                break;
+            }
+
             // If an error occurs during this read, it is most likely due to missing read or execute
             // permissions, so we mark it as an ExecFault
             let opcodes: u32 = self.memory.read_at(pc, Perms::READ | Perms::EXECUTE).map_err(|_|
                 Fault::ExecFault(pc)).unwrap();
             let instr = decode_instr(opcodes);
 
-            asm = CodeAssembler::new(64).unwrap();
-            println!("0x{:x} {:?}", pc, instr);
+            //println!("0x{:x} {:?}", pc, instr);
 
             match instr {
                 Instr::Lui {rd, imm} => {
-                    let sign_extended = imm as i64;
-                    asm.mov(rax, sign_extended).unwrap();
-
+                    asm.mov(rax, imm as i64).unwrap();
                     self.jit_set_reg(&mut asm, rd, rax);
                 },
                 Instr::Auipc {rd, imm} => {
@@ -462,15 +489,15 @@ impl Emulator {
                     match mode {
                         0b000 => {  /* SB  */
                             asm.mov(rbx, byte_ptr(r13+rs2_off)).unwrap();
-                            asm.mov(byte_ptr(r14+rax), rbx).unwrap();
+                            asm.mov(byte_ptr(r14+rax), bl).unwrap();
                         },
                         0b001 => {  /* SH  */
                             asm.mov(rbx, word_ptr(r13+rs2_off)).unwrap();
-                            asm.mov(word_ptr(r14+rax), rbx).unwrap();
+                            asm.mov(word_ptr(r14+rax), bx).unwrap();
                         },
                         0b010 => {  /* SW  */
                             asm.mov(rbx, dword_ptr(r13+rs2_off)).unwrap();
-                            asm.mov(dword_ptr(r14+rax), rbx).unwrap();
+                            asm.mov(dword_ptr(r14+rax), ebx).unwrap();
                         },
                         0b011 => {  /* SD  */
                             asm.mov(rbx, qword_ptr(r13+rs2_off)).unwrap();

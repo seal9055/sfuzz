@@ -1,5 +1,5 @@
-use crate::emulator::Fault;
-use crate::emulator::{Emulator, Register};
+use crate::mmu::Perms;
+use crate::emulator::{Emulator, Register, STDOUT, STDERR, Fault};
 
 // Helper Structs for syscalls {{{
 
@@ -55,6 +55,34 @@ pub fn fstat(emu: &mut Emulator) -> Option<Fault> {
     None
 }
 
+pub fn write(emu: &mut Emulator) -> Option<Fault> {
+    let fd    = emu.get_reg(Register::A0) as usize;
+    let buf   = emu.get_reg(Register::A1);
+    let count = emu.get_reg(Register::A2);
+
+    let file = emu.fd_list.get_mut(fd);
+
+    if file.is_none() {
+        emu.set_reg(Register::A0, !0);
+        return None;
+    }
+
+    let file = file.unwrap();
+
+    if *file == STDOUT || *file == STDERR {
+        let mut read_data = vec![0u8; count];
+        emu.memory.read_into(buf, &mut read_data, count, Perms::READ).unwrap();
+        let s = std::str::from_utf8(&read_data);
+
+        print!("{}", s.unwrap());
+    } else {
+        panic!("Write to unsupported file occured");
+    }
+
+    emu.set_reg(Register::A0, count);
+    None
+}
+
 pub fn brk(emu: &mut Emulator) -> Option<Fault> {
     let base = emu.get_reg(Register::A0);
     if base != 0 {
@@ -62,7 +90,7 @@ pub fn brk(emu: &mut Emulator) -> Option<Fault> {
     }
 
     emu.set_reg(Register::A0, 0);
-    return None;
+    panic!("brk not yet properly implemented");
 }
 
 pub fn close(emu: &mut Emulator) -> Option<Fault> {

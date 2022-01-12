@@ -10,6 +10,7 @@ use elfparser;
 use elfparser::{ARCH64, ELFMAGIC, LITTLEENDIAN, TYPEEXEC, RISCV};
 use emulator::{Emulator, Register};
 use std::process;
+use rustc_hash::FxHashMap;
 
 /// Small wrapper to easily handle unrecoverable errors without panicking
 pub fn error_exit(msg: &str) -> ! {
@@ -38,10 +39,14 @@ fn verify_elf_hdr(elf_hdr: elfparser::Header) -> Result<(), String> {
 }
 
 /// Parse ELF Headers and Program Headers. If all headers are valid, proceed to load each loadable
-/// segment into the emulators memory space
-pub fn load_elf_segments(filename: &str, emu_inst: &mut Emulator) -> Option<()> {
+/// segment into the emulators memory space and extracts symbol table entries which are then
+/// returned via a hashmap
+pub fn load_elf_segments(filename: &str, emu_inst: &mut Emulator)
+        -> Option<FxHashMap<String, usize>> {
     let target = std::fs::read(filename).ok()?;
     let elf_hdr = elfparser::Header::new(&target)?;
+    let mut symbol_map: FxHashMap<String, usize> = FxHashMap::default();
+
     if let Err(error) = verify_elf_hdr(elf_hdr) {
         error_exit(&format!("Process exited with error: {}", error));
     }
@@ -60,51 +65,47 @@ pub fn load_elf_segments(filename: &str, emu_inst: &mut Emulator) -> Option<()> 
             program_hdr,
             &target[program_hdr.offset..program_hdr.offset.checked_add(program_hdr.memsz)?],
         )?;
-        //println!("{:#x?}", program_hdr);
     }
 
-    // Loop through all section headers to find the symbol tab
+    // Loop through all section headers to extract the symtab and the strtab
     offset = elf_hdr.shoff - elf_hdr.shentsize as usize;
     let mut symtab_hdr: Option<elfparser::SectionHeader> = None;
-    for _ in 0..elf_hdr.shnum {
+    let mut strtab_hdr: Option<elfparser::SectionHeader> = None;
+
+    for i in 0..elf_hdr.shnum {
         offset += elf_hdr.shentsize as usize;
 
         let section_hdr = elfparser::SectionHeader::new(&target[offset..])?;
 
         if section_hdr.s_type == 0x2 {
             symtab_hdr = Some(section_hdr);
+        } else if section_hdr.s_type == 0x3 && i != elf_hdr.shstrndx {
+            strtab_hdr = Some(section_hdr);
         }
     }
 
     let symtab_hdr = symtab_hdr.unwrap();
+    let strtab_off = strtab_hdr.unwrap().s_offset;
 
-    // Use symbol table to extract all function addresses and sizes. Our JIT can use this
-    // information to determine where functions start/end
+    // Use symbol table to extract all symbol names and addresses. Our JIT can use this
+    // information to place hooks at specific function entries
     offset = symtab_hdr.s_offset - symtab_hdr.s_entsize;
     let num_entries = symtab_hdr.s_size / symtab_hdr.s_entsize;
-    for v in 0..num_entries {
-        offset += symtab_hdr.s_entsize;
 
+    for _ in 0..num_entries {
+        offset += symtab_hdr.s_entsize;
         let sym_entry = elfparser::SymbolTable::new(&target[offset..])?;
 
-        // If the entry is a function (local or global), add it to function hashmap
-        //if sym_entry.sym_info == 0x2 || sym_entry.sym_info == 0x12 {
-        //    emu_inst.function_map.insert(sym_entry.sym_value, sym_entry.sym_size);
-        //}
+        // Extract names for symbol table entry from the strtab
+        let str_start = strtab_off+sym_entry.sym_name as usize;
+        let str_size  = (&target[str_start..]).iter().position(|&b| b == 0).unwrap_or(target.len());
+        let sym_name = std::str::from_utf8(&target[str_start..str_start + str_size]).unwrap_or("");
 
-        if v == 270 {
-            println!("hook: {:?}", sym_entry);
-        }
-        // Add hooks for functions we want to hook
-        match sym_entry.sym_name {
-            2511 => { // Hook __malloc_r
-                emu_inst.hooks.push((sym_entry.sym_name, sym_entry.sym_value));
-            },
-            _ => {},
-        }
+        // Insert a mapping from the symbol name to its address into a hashmap we are returning
+        symbol_map.insert(sym_name.to_string(), sym_entry.sym_value);
     }
     emu_inst.set_reg(Register::Pc, elf_hdr.entry_addr);
-    Some(())
+    Some(symbol_map)
 }
 
 /// Wrapper function for each emulator, takes care of running the emulator, memory resets, etc
@@ -113,7 +114,7 @@ pub fn worker(_thr_id: usize, mut emu: Emulator) {
     loop {
         emu = original.clone();
 
-        let exit_reason = emu.run_jit().unwrap();
-        println!("Exit Reason is: {:?}", exit_reason);
+        let _exit_reason = emu.run_jit().unwrap();
+        //panic!("Exit Reason is: {:?}", exit_reason);
     }
 }
