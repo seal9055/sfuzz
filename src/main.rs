@@ -31,7 +31,7 @@ fn free_hook(emu: &mut Emulator) -> Result<(), Fault> {
 /// to run multiple emulators at the same time
 fn main() {
     let shared = Arc::new(Shared::new(16 * 1024 * 1024));
-    let mut emu = Emulator::new(32 * 1024 * 1024, shared);
+    let mut emu = Emulator::new(64 * 1024 * 1024, shared);
 
     let sym_map = load_elf_segments("./test_bin_i", &mut emu).unwrap_or_else(||{
         error_exit("Unrecoverable error while loading elf segments");
@@ -47,7 +47,7 @@ fn main() {
     emu.hooks.insert(*sym_map.get("_free_r")
                      .expect("Inserting Free hook failed"), free_hook);
 
-    for thr_id in 0..1 {
+    for thr_id in 0..16 {
         let emu = emu.clone();
         thread::spawn(move || worker(thr_id, emu));
     }
