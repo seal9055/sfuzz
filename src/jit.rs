@@ -1,5 +1,6 @@
 use std::sync::Mutex;
 use std::sync::RwLock;
+use crate::irgraph::IRGraph;
 
 #[cfg(target_os="linux")]
 pub fn alloc_rwx(size: usize) -> &'static mut [u8] {
@@ -10,30 +11,39 @@ pub fn alloc_rwx(size: usize) -> &'static mut [u8] {
 
     unsafe {
         // Alloc RWX and MAP_PRIVATE | MAP_ANON
-        let ret = mmap(0 as *mut u8, size, 7, 34, -1, 0);
+        let ret = mmap(std::ptr::null_mut::<u8>(), size, 7, 34, -1, 0);
         assert!(!ret.is_null());
 
         std::slice::from_raw_parts_mut(ret, size)
     }
 }
 
-#[derive(Debug)]
-pub struct Shared {
-    pub jit: Mutex<(&'static mut [u8], usize)>,
-
-    pub lookup_arr: RwLock<Vec<usize>>,
+#[derive(Default, Debug)]
+pub struct Statistics {
+    pub total_cases: usize,
 }
 
-impl Shared {
+#[derive(Debug)]
+pub struct Jit {
+    pub jit_backing: Mutex<(&'static mut [u8], usize)>,
+
+    pub lookup_arr: RwLock<Vec<usize>>,
+
+    // TODO move stats out of here and into messages
+    pub stats: Mutex<Statistics>,
+}
+
+impl Jit {
     pub fn new(address_space_size: usize) -> Self {
-        Shared {
-            jit: Mutex::new((alloc_rwx(16*1024*1024), 0)),
+        Jit {
+            jit_backing: Mutex::new((alloc_rwx(16*1024*1024), 0)),
             lookup_arr: RwLock::new(vec![0; address_space_size / 4]),
+            stats: Mutex::new(Statistics::default()),
         }
     }
 
     pub fn add_jitblock(&self, code: &[u8], pc: usize) -> usize {
-        let mut jit = self.jit.lock().unwrap();
+        let mut jit = self.jit_backing.lock().unwrap();
 
         let jit_inuse = jit.1;
         jit.0[jit_inuse..jit_inuse + code.len()].copy_from_slice(code);
@@ -52,9 +62,15 @@ impl Shared {
     pub fn lookup(&self, pc: usize) -> Option<usize> {
         let addr = self.lookup_arr.read().unwrap()[pc];
         if addr == 0 {
-            return None;
+            None
         } else {
-            return Some(addr);
+            Some(addr)
         }
+    }
+
+    /// Compile an IRGraph into x86 machine code
+    pub fn compile(&self, irgraph: IRGraph) -> Option<usize> {
+        panic!("Compilation not yet implemented");
+        Some(10)
     }
 }

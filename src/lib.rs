@@ -1,8 +1,9 @@
 pub mod emulator;
 pub mod mmu;
 pub mod riscv;
-pub mod shared;
+pub mod jit;
 pub mod syscalls;
+pub mod irgraph;
 
 extern crate iced_x86;
 
@@ -101,8 +102,12 @@ pub fn load_elf_segments(filename: &str, emu_inst: &mut Emulator)
         let str_size  = (&target[str_start..]).iter().position(|&b| b == 0).unwrap_or(target.len());
         let sym_name = std::str::from_utf8(&target[str_start..str_start + str_size]).unwrap_or("");
 
-        // Insert a mapping from the symbol name to its address into a hashmap we are returning
-        symbol_map.insert(sym_name.to_string(), sym_entry.sym_value);
+        // If the entry is a function, insert a mapping from the symbol name to its address into a
+        // hashmap we are returning
+        if sym_entry.sym_info == 0x2 || sym_entry.sym_info == 0x12 {
+            emu_inst.functions.insert(sym_entry.sym_value, sym_entry.sym_size);
+            symbol_map.insert(sym_name.to_string(), sym_entry.sym_value);
+        }
     }
     emu_inst.set_reg(Register::Pc, elf_hdr.entry_addr);
     Some(symbol_map)
@@ -111,10 +116,14 @@ pub fn load_elf_segments(filename: &str, emu_inst: &mut Emulator)
 /// Wrapper function for each emulator, takes care of running the emulator, memory resets, etc
 pub fn worker(_thr_id: usize, mut emu: Emulator) {
     let original = emu.clone();
+    const BATCH_SIZE: usize = 10;
+    let mut count = 0;
     loop {
-        emu = original.clone();
-
-        let _exit_reason = emu.run_jit().unwrap();
-        //panic!("Exit Reason is: {:?}", exit_reason);
+        emu.reset(&original); //= original.fork();
+        emu.run_jit().unwrap();
+        count +=1;
+        if count == BATCH_SIZE {
+            count = 0;
+            emu.jit.stats.lock().unwrap().total_cases += BATCH_SIZE; }
     }
 }

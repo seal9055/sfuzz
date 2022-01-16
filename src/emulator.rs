@@ -2,19 +2,16 @@ use crate::{
     mmu::{Mmu, Perms},
     elfparser,
     riscv::{decode_instr, Instr},
-    shared::Shared,
+    jit::Jit,
     syscalls,
     error_exit,
+    irgraph::{IRGraph, Flag, Reg as IRReg},
 };
 
 use std::sync::Arc;
-use std::collections::VecDeque;
+use std::collections::BTreeMap;
 use std::arch::asm;
 use rustc_hash::FxHashMap;
-
-use iced_x86::code_asm::*;
-use iced_x86::{Formatter, Instruction, NasmFormatter};
-//use rustc_hash::FxHashMap;
 
 pub const STDIN:  isize = 0;
 pub const STDOUT: isize = 1;
@@ -113,7 +110,6 @@ impl Default for State {
     }
 }
 
-// TODO remove clone, should only be arc cloned
 #[derive(Clone)]
 pub struct Emulator {
     pub memory: Mmu,
@@ -122,33 +118,50 @@ pub struct Emulator {
 
     pub hooks: FxHashMap<usize, fn(&mut Emulator) -> Result<(), Fault>>,
 
-    pub shared: Arc<Shared>,
+    pub jit: Arc<Jit>,
 
     pub fd_list: Vec<isize>,
+
+    /// Mapping between function address and function size
+    pub functions: FxHashMap<usize, usize>,
 }
 
 impl Emulator {
-    pub fn new(size: usize, shared: Arc<Shared>) -> Self {
+    pub fn new(size: usize, jit: Arc<Jit>) -> Self {
         Emulator {
             memory: Mmu::new(size),
             state: State::default(),
             hooks: FxHashMap::default(),
-            shared,
+            jit,
             fd_list: vec![STDIN, STDOUT, STDERR],
+            functions: FxHashMap::default(),
         }
+    }
+
+    #[must_use]
+    pub fn fork(&self) -> Self {
+        Emulator {
+            memory:     self.memory.fork(),
+            state:      State::default(),
+            hooks:      self.hooks.clone(),
+            jit:        self.jit.clone(),
+            fd_list:    self.fd_list.clone(),
+            functions:  self.functions.clone(),
+        }
+    }
+
+    pub fn reset(&mut self, original: &Self) {
+        self.memory.reset(&original.memory);
+        self.state.regs = original.state.regs;
+
+        self.fd_list.clear();
+        self.fd_list.extend_from_slice(&original.fd_list);
     }
 
     pub fn set_reg(&mut self, reg: Register, val: usize) {
         assert!((reg as usize) < 33);
         if reg == Register::Zero { panic!("Can't set zero-register"); }
         self.state.regs[reg as usize] = val;
-    }
-
-    pub fn jit_set_reg(&mut self, asm: &mut CodeAssembler, dst: Register, src: AsmRegister64) {
-        let dst_off = self.get_reg_offset(dst);
-        if dst_off != 0 { // Don't do the write if destination is zero-register
-            asm.mov(ptr(r13+dst_off), src).unwrap();
-        }
     }
 
     pub fn get_reg(&self, reg: Register) -> usize {
@@ -213,12 +226,14 @@ impl Emulator {
             // since Riscv instructions are always 4-byte aligned this is a bug
             if pc & 3 != 0 { return Some(Fault::ExecFault(pc)); }
 
-            let jit_addr = match (*self.shared).lookup(pc) {
-                None => { self.compile(pc).unwrap() }
+            let jit_addr = match (*self.jit).lookup(pc) {
+                None => {
+                    let mut instrs = self.lift(pc).unwrap();
+                    instrs.optimize();
+                    (*self.jit).compile(instrs).unwrap()
+                }
                 Some(addr) => { addr }
             };
-
-            //println!("jit_start: {:x}", jit_addr);
 
             let exit_code:  usize;
             let reentry_pc: usize;
@@ -234,7 +249,7 @@ impl Emulator {
                 out("rdx") _,
                 in("r13") self.state.regs.as_ptr() as u64,
                 in("r14") self.memory.memory.as_ptr() as u64,
-                in("r15") self.shared.lookup_arr.read().unwrap().as_ptr() as u64,
+                in("r15") self.jit.lookup_arr.read().unwrap().as_ptr() as u64,
                 );
             }
 
@@ -275,40 +290,71 @@ impl Emulator {
         }
     }
 
-    fn get_reg_offset(&self, reg: Register) -> usize {
-        reg as usize * 8
+    fn extract_labels(&self, mut pc: usize, end_pc: usize) -> BTreeMap<usize, u8> {
+        let mut ret = BTreeMap::new();
+
+        while pc < end_pc {
+            let opcodes: u32 = self.memory.read_at(pc, Perms::READ | Perms::EXECUTE).map_err(|_|
+                Fault::ExecFault(pc)).unwrap();
+            let instr = decode_instr(opcodes);
+
+            match instr {
+                Instr::Jal {rd: _, imm} => {
+                    ret.insert((pc as i32 + imm) as usize, 0);
+                },
+                Instr::Beq  { rs1: _, rs2: _, imm, mode: _ } |
+                Instr::Bne  { rs1: _, rs2: _, imm, mode: _ } |
+                Instr::Blt  { rs1: _, rs2: _, imm, mode: _ } |
+                Instr::Bge  { rs1: _, rs2: _, imm, mode: _ } |
+                Instr::Bltu { rs1: _, rs2: _, imm, mode: _ } |
+                Instr::Bgeu { rs1: _, rs2: _, imm, mode: _ } => {
+                    ret.insert((pc as i32 + imm) as usize, 0);
+                },
+                _ => {},
+            }
+            pc += 4;
+        }
+        ret
     }
 
-    /// JIT compile a function
-    /// IN:
-    ///     r13 points to register array in memory
-    ///     r14 points to memory array
-    ///     r15 points to lookup array to check if pc is jitted
-    /// OUT:
-    ///     rax specifies exit code
-    ///         1. indirect jump, keep executing to determine jump target
-    ///         2. syscall
-    ///         3. hooked function reached
-    ///     rcx specifies re-entry address for the jit
-    fn compile(&mut self, pc: usize) -> Result<usize, IcedError> {
+    /// Lift a function into an immediate representation that can be used to apply optimizations and
+    /// compile into the final jit-code
+    fn lift(&mut self, mut pc: usize) -> Result<IRGraph, ()> {
+        let mut irgraph = IRGraph::default();
+
+        // Each entry in this register maps to a register in the IR. It is used to determine which
+        // IR-registers should be used for operations that take previously set registers as operands
+        // `addi Ra, A0, 5` -> `IRReg(reg_arr[RA]) = IRReg(reg_arr[A0]) + 5;`
+        let mut reg_arr = vec![0u16; 32];
+
+        /// Macro to retrieve the IRReg for a corresponding riscv register from the reg_arr
+        macro_rules! get_reg {
+            ($m: expr) => {
+                reg_arr[$m as usize]
+            }
+        }
+
+        /// Macro to set the reg_arr entry for a corresponding riscv register with a new IRReg
+        macro_rules! set_reg {
+            ($m: expr, $v: expr) => {
+                reg_arr[$m as usize] = $v.0;
+            }
+        }
+
         let start_pc = pc;
-        // This is used to remember the pc value of the previous instruction. When a hook is called,
-        // this is used to determine the reentry address.
-        let mut asm: CodeAssembler;
-        let mut instr_queue = VecDeque::new();
+        let end_pc   = start_pc + self.functions.get(&pc).unwrap();
 
-        instr_queue.push_back(pc);
+        // These are used to determine jump locations ahead of time
+        let mut keys: Vec<_> = self.extract_labels(start_pc, end_pc).keys().cloned().collect();
 
-        while let Some(pc) = instr_queue.pop_front() {
-            asm = CodeAssembler::new(64).unwrap();
+        // Lift instructions until we reach the end of the function
+        while pc < end_pc {
 
-            // Insert hook for addresses we want to hook with our own function and return
-            if self.hooks.get(&pc).is_some() {
-                asm.mov(rcx, pc as u64).unwrap();
-                asm.mov(rax, 3u64).unwrap();
-                asm.ret().unwrap();
-                (*self.shared).add_jitblock(&asm.assemble(0x0).unwrap(), pc);
-                break;
+            irgraph.init_instr(pc);
+
+            if pc == keys[0] {
+                keys.remove(0);
+                irgraph.set_label();
             }
 
             // If an error occurs during this read, it is most likely due to missing read or execute
@@ -317,88 +363,40 @@ impl Emulator {
                 Fault::ExecFault(pc)).unwrap();
             let instr = decode_instr(opcodes);
 
-            //println!("0x{:x} {:?}", pc, instr);
-
             match instr {
                 Instr::Lui {rd, imm} => {
-                    asm.mov(rax, imm as i64).unwrap();
-                    self.jit_set_reg(&mut asm, rd, rax);
+                    let res = irgraph.loadi(imm as u32, Flag::Signed);
+                    set_reg!(rd, res);
                 },
                 Instr::Auipc {rd, imm} => {
-                    //let sign_extended = (imm + pc as i32) as i64;
-                    let sign_extended = (imm as i64 as u64).wrapping_add(pc as u64);
-                    asm.mov(rax, sign_extended).unwrap();
-                    self.jit_set_reg(&mut asm, rd, rax);
+                    let val = (imm as u32).wrapping_add(pc as u32);
+                    let res = irgraph.loadi(val, Flag::Signed);
+                    set_reg!(rd, res);
                 },
                 Instr::Jal {rd, imm} => {
-                    let _pc_off = self.get_reg_offset(Register::Pc);
-                    let ret_val = (pc + 4) as u64;
-                    let jmp_target = (pc as i32 + imm) as usize;
+                    let ret_val = pc.wrapping_add(4);
+                    let jmp_target = ((pc as i32).wrapping_add(imm)) as usize;
 
-                    // Jump without return so can just emit code at that location
-                    if rd == Register::Zero {
-                        // If the jump target has already been compiled, jump there and stop compiling
-                        if let Some(addr) = self.shared.lookup(jmp_target) {
-                            asm.jmp(addr as u64).unwrap();
-                            (*self.shared).add_jitblock(&asm.assemble(0x0).unwrap(), pc);
-                            break;
-                        }
-                        // Otherwise since its an unconditional jump, just keep compiling
-                        // The nop instruction is added to create an instruction that the Jal instr
-                        // can map to upon lookup.
-                        asm.nop().unwrap();
-                        instr_queue.push_back(jmp_target);
-                        (*self.shared).add_jitblock(&asm.assemble(0x0).unwrap(), pc);
-                        continue;
+                    // Load return value into newly allocated register
+                    if rd != Register::Zero {
+                        let res = irgraph.loadi(ret_val as u32, Flag::Unsigned);
+                        set_reg!(rd, res);
                     }
-
-                    let mut jit_exit = asm.create_label();
-
-                    // Move pc+4 into rd
-                    asm.mov(rax, ret_val).unwrap();
-                    self.jit_set_reg(&mut asm, rd, rax);
-
-                    // Check if addr is in jit
-                    asm.mov(rax, ptr(r15 + (jmp_target * 8))).unwrap();
-                    asm.test(rax, rax).unwrap();
-                    asm.jz(jit_exit).unwrap(); //(not in jit).unwrap();
-                    asm.jmp(rax).unwrap();
-
-                    asm.set_label(&mut jit_exit).unwrap();
-                    asm.mov(rax, 1u64).unwrap();
-                    asm.mov(rcx, jmp_target as u64).unwrap();
-                    asm.ret().unwrap();
-
-                    (*self.shared).add_jitblock(&asm.assemble(0x0).unwrap(), pc);
-                    break;
+                    irgraph.jmp(jmp_target);
                 },
                 Instr::Jalr {rd, imm, rs1} => {
-                    let rs1_off = self.get_reg_offset(rs1);
-                    let _pc_off = self.get_reg_offset(Register::Pc);
-                    let ret_val = (pc + 4) as u64;
-                    let mut jit_exit = asm.create_label();
+                    let ret_val = pc.wrapping_add(4);
+                    let rs1_reg = IRReg(get_reg!(rs1));
 
-                    // Move pc+4 into rd
-                    asm.mov(rax, ret_val).unwrap();
-                    self.jit_set_reg(&mut asm, rd, rax);
+                    // Load return value into newly allocated register
+                    if rd != Register::Zero {
+                        let res = irgraph.loadi(ret_val as u32, Flag::Unsigned);
+                        set_reg!(rd, res);
+                    }
 
-                    // Move jump target into rcx
-                    asm.mov(rcx, ptr(r13+rs1_off)).unwrap();
-                    asm.add(rcx, imm).unwrap();
-
-                    // Check if addr is in jit
-                    asm.mov(rax, ptr(r15 + rcx*8)).unwrap();
-                    asm.test(rax, rax).unwrap();
-                    asm.jz(jit_exit).unwrap();
-                    asm.jmp(rax).unwrap();
-
-                    // exit jit
-                    asm.set_label(&mut jit_exit).unwrap();
-                    asm.mov(rax, 1u64).unwrap();
-                    asm.ret().unwrap();
-
-                    (*self.shared).add_jitblock(&asm.assemble(0x0).unwrap(), pc);
-                    break;
+                    let imm_reg = irgraph.loadi(imm as u32, Flag::Signed);
+                    let jmp_target = irgraph.add(rs1_reg, imm_reg, Flag::DWord);
+                    irgraph.jmp_reg(jmp_target);
                 },
                 Instr::Beq  { rs1, rs2, imm, mode } |
                 Instr::Bne  { rs1, rs2, imm, mode } |
@@ -406,43 +404,25 @@ impl Emulator {
                 Instr::Bge  { rs1, rs2, imm, mode } |
                 Instr::Bltu { rs1, rs2, imm, mode } |
                 Instr::Bgeu { rs1, rs2, imm, mode } => {
-                    let rs1_off = self.get_reg_offset(rs1);
-                    let rs2_off = self.get_reg_offset(rs2);
-                    let jmp_target = pc as i32 + imm;
-                    let mut jit_exit = asm.create_label();
-                    let mut fallthrough = asm.create_label();
+                    let rs1_reg = IRReg(get_reg!(rs1));
+                    let rs2_reg = IRReg(get_reg!(rs2));
+                    let target = ((pc as i32).wrapping_add(imm)) as usize;
 
-                    asm.mov(rax, ptr(r13+rs1_off)).unwrap();
-                    asm.cmp(rax, ptr(r13+rs2_off)).unwrap();
                     match mode {
-                        0b000 => { asm.jne(fallthrough).unwrap();  }, /* BEQ  */
-                        0b001 => { asm.je(fallthrough).unwrap();   }, /* BNE  */
-                        0b100 => { asm.jnl(fallthrough).unwrap();  }, /* BLT  */
-                        0b101 => { asm.jnge(fallthrough).unwrap(); }, /* BGE  */
-                        0b110 => { asm.jnb(fallthrough).unwrap();  }, /* BLTU */
-                        0b111 => { asm.jnae(fallthrough).unwrap(); }, /* BGEU */
+                        0b000 => { irgraph.branch(
+                                rs1_reg, rs2_reg, target, Flag::Equal | Flag::Signed) },     // BEQ
+                        0b001 => { irgraph.branch(
+                                rs1_reg, rs2_reg, target, Flag::NEqual | Flag::Signed) },    // BNE
+                        0b100 => { irgraph.branch(
+                                rs1_reg, rs2_reg, target, Flag::Less | Flag::Signed) },      // BLT
+                        0b101 => { irgraph.branch(
+                                rs1_reg, rs2_reg, target, Flag::Greater | Flag::Signed) },   // BGE
+                        0b110 => { irgraph.branch(
+                                rs1_reg, rs2_reg, target, Flag::Less | Flag::Unsigned) },    // BLTU
+                        0b111 => { irgraph.branch(
+                                rs1_reg, rs2_reg, target, Flag::Greater | Flag::Unsigned) }, // BGEU
                         _ => { unreachable!(); },
                     }
-
-                    // Move jump target into rcx
-                    asm.mov(rcx, jmp_target as u64).unwrap();
-
-                    // Check if addr is in jit
-                    asm.mov(rax, ptr(r15 + rcx*8)).unwrap();
-                    asm.test(rax, rax).unwrap();
-                    asm.jz(jit_exit).unwrap();
-                    asm.jmp(rax).unwrap();
-
-                    // exit jit
-                    asm.set_label(&mut jit_exit).unwrap();
-                    asm.mov(rax, 1u64).unwrap();
-                    asm.ret().unwrap();
-
-                    // Fall through to next instruction
-                    asm.set_label(&mut fallthrough).unwrap();
-
-                    // Necessary because assembler otherwise struggles with labels
-                    asm.nop().unwrap();
                 }
                 Instr::Lb  {rd, rs1, imm, mode} |
                 Instr::Lh  {rd, rs1, imm, mode} |
@@ -451,348 +431,184 @@ impl Emulator {
                 Instr::Lhu {rd, rs1, imm, mode} |
                 Instr::Lwu {rd, rs1, imm, mode} |
                 Instr::Ld  {rd, rs1, imm, mode} => {
-                    let rs1_off = self.get_reg_offset(rs1);
+                    let rs1_reg = IRReg(get_reg!(rs1));
 
-                    // Load address to retrieve memory from into rax
-                    asm.mov(rax, ptr(r13+rs1_off)).unwrap();
-                    asm.add(rax, imm).unwrap();
+                    let imm_reg = irgraph.loadi(imm as u32, Flag::Signed);
+                    let tmp_reg = irgraph.add(rs1_reg, imm_reg, Flag::DWord);
 
-                    // Load bytes from memory depending on given size
-                    match mode {
-                        0b000 => { asm.movsx(rbx, byte_ptr(r14+rax)).unwrap(); }, /* LB  */
-                        0b001 => { asm.movsx(rbx, word_ptr(r14+rax)).unwrap(); }, /* LH  */
-                        0b010 => { asm.movsxd(rbx, dword_ptr(r14+rax)).unwrap();}, /* LW  */
-                        0b100 => { asm.movzx(rbx, byte_ptr(r14+rax)).unwrap(); }, /* LBU */
-                        0b101 => { asm.movzx(rbx, word_ptr(r14+rax)).unwrap(); }, /* LHU */
-                        0b110 => { asm.movzx(ebx, dword_ptr(r14+rax)).unwrap();}, /* LWU */
-                        0b011 => { asm.mov(rbx, qword_ptr(r14+rax)).unwrap();  }, /* LD  */
+                    let res = match mode {
+                        0b000 => { irgraph.load(tmp_reg, Flag::Byte | Flag::Signed) },    // LB
+                        0b001 => { irgraph.load(tmp_reg, Flag::Word | Flag::Signed) },    // LH
+                        0b010 => { irgraph.load(tmp_reg, Flag::DWord | Flag::Signed) },   // LW
+                        0b100 => { irgraph.load(tmp_reg, Flag::Byte | Flag::Unsigned) },  // LBU
+                        0b101 => { irgraph.load(tmp_reg, Flag::Word | Flag::Unsigned) },  // LHU
+                        0b110 => { irgraph.load(tmp_reg, Flag::DWord | Flag::Unsigned) }, // LWU
+                        0b011 => { irgraph.load(tmp_reg, Flag::QWord) },                  // LD
                         _ => { unreachable!(); },
-                    }
-
-                    // Store the result in rd
-                    self.jit_set_reg(&mut asm, rd, rbx);
+                    };
+                    set_reg!(rd, res);
                 },
                 Instr::Sb  {rs1, rs2, imm, mode} |
                 Instr::Sh  {rs1, rs2, imm, mode} |
                 Instr::Sw  {rs1, rs2, imm, mode} |
                 Instr::Sd  {rs1, rs2, imm, mode} => {
-                    let rs1_off = self.get_reg_offset(rs1);
-                    let rs2_off = self.get_reg_offset(rs2);
+                    let rs1_reg  = IRReg(get_reg!(rs1));
+                    let rs2_reg  = IRReg(get_reg!(rs2));
 
-                    // Get address in which memory should be stored
-                    asm.mov(rax, ptr(r13+rs1_off)).unwrap();
+                    let imm_reg  = irgraph.loadi(imm as u32, Flag::Signed);
+                    let mem_addr = irgraph.add(rs1_reg, imm_reg, Flag::DWord);
 
-                    // TODO remove this cause imm is a constant
-                    asm.add(rax, imm).unwrap();
-
-                    // Load bytes from memory depending on given size
                     match mode {
-                        0b000 => {  /* SB  */
-                            asm.mov(rbx, byte_ptr(r13+rs2_off)).unwrap();
-                            asm.mov(byte_ptr(r14+rax), bl).unwrap();
-                        },
-                        0b001 => {  /* SH  */
-                            asm.mov(rbx, word_ptr(r13+rs2_off)).unwrap();
-                            asm.mov(word_ptr(r14+rax), bx).unwrap();
-                        },
-                        0b010 => {  /* SW  */
-                            asm.mov(rbx, dword_ptr(r13+rs2_off)).unwrap();
-                            asm.mov(dword_ptr(r14+rax), ebx).unwrap();
-                        },
-                        0b011 => {  /* SD  */
-                            asm.mov(rbx, qword_ptr(r13+rs2_off)).unwrap();
-                            asm.mov(qword_ptr(r14+rax), rbx).unwrap();
-                        },
+                        0b000 => { irgraph.store(rs2_reg, mem_addr, Flag::Byte) },  // SB
+                        0b001 => { irgraph.store(rs2_reg, mem_addr, Flag::Word) },  // SH
+                        0b010 => { irgraph.store(rs2_reg, mem_addr, Flag::DWord) }, // SW
+                        0b011 => { irgraph.store(rs2_reg, mem_addr, Flag::QWord) }, // SD
                         _ => { unreachable!(); },
                     }
                 },
-                Instr::Addi {rd, rs1, imm } => {
-                    if rd == Register::Zero && rs1 == Register::Zero && imm == 0 {
-                        // Nop
-                    } else {
-                        let rs1_off = self.get_reg_offset(rs1);
-                        asm.mov(rax, ptr(r13+rs1_off)).unwrap();
-                        if imm != 0 {
-                            asm.add(rax, imm).unwrap();
-                        }
-                        self.jit_set_reg(&mut asm, rd, rax);
-                    }
+                Instr::Addi  {rd, rs1, imm } |
+                Instr::Slti  {rd, rs1, imm } |
+                Instr::Sltiu {rd, rs1, imm } |
+                Instr::Xori  {rd, rs1, imm } |
+                Instr::Ori   {rd, rs1, imm } |
+                Instr::Andi  {rd, rs1, imm } |
+                Instr::Slli  {rd, rs1, imm } |
+                Instr::Srli  {rd, rs1, imm } |
+                Instr::Srai  {rd, rs1, imm } |
+                Instr::Addiw {rd, rs1, imm } |
+                Instr::Slliw {rd, rs1, imm } |
+                Instr::Srliw {rd, rs1, imm } |
+                Instr::Sraiw {rd, rs1, imm } => {
+                    let rs1_reg = IRReg(get_reg!(rs1));
+                    let imm_reg = irgraph.loadi(imm as u32, Flag::Signed);
+                    let res = match instr {
+                        Instr::Addi {rd: _, rs1: _, imm: _ } => {
+                            irgraph.add(rs1_reg, imm_reg, Flag::QWord)
+                        },
+                        Instr::Slti {rd: _, rs1: _, imm: _ } => {
+                            irgraph.slt(rs1_reg, imm_reg, Flag::Signed)
+                        },
+                        Instr::Sltiu {rd: _, rs1: _, imm: _ } => {
+                            irgraph.slt(rs1_reg, imm_reg, Flag::Unsigned)
+                        },
+                        Instr::Xori {rd: _, rs1: _, imm: _ } => {
+                            irgraph.xor(rs1_reg, imm_reg)
+                        },
+                        Instr::Ori {rd: _, rs1: _, imm: _ } => {
+                            irgraph.or(rs1_reg, imm_reg)
+                        },
+                        Instr::Andi {rd: _, rs1: _, imm: _ } => {
+                            irgraph.and(rs1_reg, imm_reg)
+                        },
+                        Instr::Slli {rd: _, rs1: _, imm: _ } => {
+                            irgraph.shl(rs1_reg, imm_reg, Flag::QWord)
+                        },
+                        Instr::Srli {rd: _, rs1: _, imm:  _ } => {
+                            irgraph.shr(rs1_reg, imm_reg, Flag::QWord)
+                        },
+                        Instr::Srai {rd: _, rs1: _, imm: _ } => {
+                            irgraph.sar(rs1_reg, imm_reg, Flag::QWord)
+                        },
+                        Instr::Addiw {rd: _, rs1: _, imm: _ } => {
+                            irgraph.add(rs1_reg, imm_reg, Flag::DWord)
+                        },
+                        Instr::Slliw {rd: _, rs1: _, imm: _ } => {
+                            irgraph.shl(rs1_reg, imm_reg, Flag::DWord)
+                        },
+                        Instr::Srliw {rd: _, rs1: _, imm: _ } => {
+                            irgraph.shr(rs1_reg, imm_reg, Flag::DWord)
+                        },
+                        Instr::Sraiw {rd: _, rs1: _, imm: _ } => {
+                            irgraph.sar(rs1_reg, imm_reg, Flag::DWord)
+                        },
+                        _ => { unreachable!(); },
+                    };
+                    set_reg!(rd, res);
                 },
-                Instr::Slti {rd, rs1, imm } => {
-                    let rs1_off = self.get_reg_offset(rs1);
-
-                    // rax = rs1
-                    asm.mov(rax, ptr(r13+rs1_off)).unwrap();
-
-                    // rd = 1 if rs1 < imm
-                    asm.xor(ecx, ecx).unwrap();
-                    asm.cmp(rax, imm).unwrap();
-                    asm.setl(cl).unwrap();
-                    self.jit_set_reg(&mut asm, rd, rcx);
-                },
-                Instr::Sltiu {rd, rs1, imm } => {
-                    let rs1_off = self.get_reg_offset(rs1);
-
-                    // rax = rs1
-                    asm.mov(rax, ptr(r13+rs1_off)).unwrap();
-
-                    // rd = 1 if rs1 < imm (unsigned)
-                    asm.xor(ecx, ecx).unwrap();
-                    asm.cmp(rax, imm).unwrap();
-                    asm.setb(cl).unwrap();
-                    self.jit_set_reg(&mut asm, rd, rcx);
-                },
-                Instr::Xori {rd, rs1, imm } => {
-                    let rs1_off = self.get_reg_offset(rs1);
-
-                    // rax = rs1
-                    asm.mov(rax, ptr(r13+rs1_off)).unwrap();
-
-                    // rd = rs1 ^ imm
-                    asm.xor(rax, imm).unwrap();
-                    self.jit_set_reg(&mut asm, rd, rax);
-                },
-                Instr::Ori {rd, rs1, imm } => {
-                    let rs1_off = self.get_reg_offset(rs1);
-
-                    // rax = rs1
-                    asm.mov(rax, ptr(r13+rs1_off)).unwrap();
-
-                    // rd = rs1 | imm
-                    asm.or(rax, imm).unwrap();
-                    self.jit_set_reg(&mut asm, rd, rax);
-                },
-                Instr::Andi {rd, rs1, imm } => {
-                    let rs1_off = self.get_reg_offset(rs1);
-
-                    // rax = rs1
-                    asm.mov(rax, ptr(r13+rs1_off)).unwrap();
-
-                    // rd = rs1 & imm
-                    asm.and(rax, imm).unwrap();
-                    self.jit_set_reg(&mut asm, rd, rax);
-                },
-                Instr::Slli {rd, rs1, shamt } => {
-                    let rs1_off = self.get_reg_offset(rs1);
-
-                    // rax = rs1
-                    asm.mov(rax, ptr(r13+rs1_off)).unwrap();
-
-                    // rd = rs1 << shamt
-                    asm.shl(rax, shamt).unwrap();
-                    self.jit_set_reg(&mut asm, rd, rax);
-                },
-                Instr::Srli {rd, rs1, shamt } => {
-                    let rs1_off = self.get_reg_offset(rs1);
-
-                    // rax = rs1
-                    asm.mov(rax, ptr(r13+rs1_off)).unwrap();
-
-                    // rd = rs1 >> shamt (logical)
-                    asm.shr(rax, shamt).unwrap();
-                    self.jit_set_reg(&mut asm, rd, rax);
-                },
-                Instr::Srai {rd, rs1, shamt } => {
-                    let rs1_off = self.get_reg_offset(rs1);
-
-                    // rax = rs1
-                    asm.mov(rax, ptr(r13+rs1_off)).unwrap();
-
-                    // rd = rs1 >> shamt (arithmetic)
-                    asm.sar(rax, shamt).unwrap();
-                    self.jit_set_reg(&mut asm, rd, rax);
-                },
-                Instr::Add {rd, rs1, rs2 } => {
-                    let rs1_off = self.get_reg_offset(rs1);
-                    let rs2_off = self.get_reg_offset(rs2);
-                    asm.mov(rax, ptr(r13+rs1_off)).unwrap();
-                    asm.mov(rbx, ptr(r13+rs2_off)).unwrap();
-                    asm.add(rax, rbx).unwrap();
-                    self.jit_set_reg(&mut asm, rd, rax);
-                },
-                Instr::Sub {rd, rs1, rs2 } => {
-                    let rs1_off = self.get_reg_offset(rs1);
-                    let rs2_off = self.get_reg_offset(rs2);
-                    asm.mov(rax, ptr(r13+rs1_off)).unwrap();
-                    asm.mov(rbx, ptr(r13+rs2_off)).unwrap();
-                    asm.sub(rax, rbx).unwrap();
-                    self.jit_set_reg(&mut asm, rd, rax);
-                },
-                Instr::Sll {rd, rs1, rs2 } => {
-                    let rs1_off = self.get_reg_offset(rs1);
-                    let rs2_off = self.get_reg_offset(rs2);
-                    asm.mov(rax, ptr(r13+rs1_off)).unwrap();
-                    asm.mov(rcx, ptr(r13+rs2_off)).unwrap();
-                    asm.shl(rax, cl).unwrap();
-                    self.jit_set_reg(&mut asm, rd, rax);
-                },
-                Instr::Slt {rd, rs1, rs2 } => {
-                    let rs1_off = self.get_reg_offset(rs1);
-                    let rs2_off = self.get_reg_offset(rs2);
-                    asm.mov(rax, ptr(r13+rs1_off)).unwrap();
-                    asm.mov(rbx, ptr(r13+rs2_off)).unwrap();
-                    asm.xor(ecx, ecx).unwrap();
-                    asm.cmp(rax, rbx).unwrap();
-                    asm.setl(cl).unwrap();
-                    self.jit_set_reg(&mut asm, rd, rcx);
-                },
-                Instr::Sltu {rd, rs1, rs2 } => {
-                    let rs1_off = self.get_reg_offset(rs1);
-                    let rs2_off = self.get_reg_offset(rs2);
-                    asm.mov(rax, ptr(r13+rs1_off)).unwrap();
-                    asm.mov(rbx, ptr(r13+rs2_off)).unwrap();
-                    asm.xor(ecx, ecx).unwrap();
-                    asm.cmp(rax, rbx).unwrap();
-                    asm.setb(cl).unwrap();
-                    self.jit_set_reg(&mut asm, rd, rcx);
-                },
-                Instr::Xor {rd, rs1, rs2 } => {
-                    let rs1_off = self.get_reg_offset(rs1);
-                    let rs2_off = self.get_reg_offset(rs2);
-                    asm.mov(rax, ptr(r13+rs1_off)).unwrap();
-                    asm.mov(rbx, ptr(r13+rs2_off)).unwrap();
-                    asm.xor(rax, rbx).unwrap();
-                    self.jit_set_reg(&mut asm, rd, rax);
-                },
-                Instr::Srl {rd, rs1, rs2 } => {
-                    let rs1_off = self.get_reg_offset(rs1);
-                    let rs2_off = self.get_reg_offset(rs2);
-                    asm.mov(rax, ptr(r13+rs1_off)).unwrap();
-                    asm.mov(rcx, ptr(r13+rs2_off)).unwrap();
-                    asm.shr(rax, cl).unwrap();
-                    self.jit_set_reg(&mut asm, rd, rax);
-                },
-                Instr::Sra {rd, rs1, rs2 } => {
-                    let rs1_off = self.get_reg_offset(rs1);
-                    let rs2_off = self.get_reg_offset(rs2);
-                    asm.mov(rax, ptr(r13+rs1_off)).unwrap();
-                    asm.mov(rcx, ptr(r13+rs2_off)).unwrap();
-                    asm.sar(rax, cl).unwrap();
-                    self.jit_set_reg(&mut asm, rd, rax);
-                },
-                Instr::Or {rd, rs1, rs2 } => {
-                    let rs1_off = self.get_reg_offset(rs1);
-                    let rs2_off = self.get_reg_offset(rs2);
-                    asm.mov(rax, ptr(r13+rs1_off)).unwrap();
-                    asm.mov(rbx, ptr(r13+rs2_off)).unwrap();
-                    asm.or(rax, rbx).unwrap();
-                    self.jit_set_reg(&mut asm, rd, rax);
-                },
-                Instr::And {rd, rs1, rs2 } => {
-                    let rs1_off = self.get_reg_offset(rs1);
-                    let rs2_off = self.get_reg_offset(rs2);
-                    asm.mov(rax, ptr(r13+rs1_off)).unwrap();
-                    asm.mov(rbx, ptr(r13+rs2_off)).unwrap();
-                    asm.and(rax, rbx).unwrap();
-                    self.jit_set_reg(&mut asm, rd, rax);
+                Instr::Add  {rd, rs1, rs2 } |
+                Instr::Sub  {rd, rs1, rs2 } |
+                Instr::Sll  {rd, rs1, rs2 } |
+                Instr::Slt  {rd, rs1, rs2 } |
+                Instr::Sltu {rd, rs1, rs2 } |
+                Instr::Xor  {rd, rs1, rs2 } |
+                Instr::Srl  {rd, rs1, rs2 } |
+                Instr::Sra  {rd, rs1, rs2 } |
+                Instr::Or   {rd, rs1, rs2 } |
+                Instr::And  {rd, rs1, rs2 } |
+                Instr::Addw {rd, rs1, rs2 } |
+                Instr::Subw {rd, rs1, rs2 } |
+                Instr::Sllw {rd, rs1, rs2 } |
+                Instr::Srlw {rd, rs1, rs2 } |
+                Instr::Sraw {rd, rs1, rs2 } => {
+                    let rs1_reg = IRReg(get_reg!(rs1));
+                    let rs2_reg = IRReg(get_reg!(rs2));
+                    let res =  match instr   {
+                        Instr::Add {rd: _, rs1: _, rs2: _ } => {
+                            irgraph.add(rs1_reg, rs2_reg, Flag::QWord)
+                        },
+                        Instr::Sub {rd: _, rs1: _, rs2: _ } => {
+                            irgraph.sub(rs1_reg, rs2_reg, Flag::QWord)
+                        },
+                        Instr::Sll {rd: _, rs1: _, rs2: _ } => {
+                            irgraph.shl(rs1_reg, rs2_reg, Flag::QWord)
+                        },
+                        Instr::Slt {rd: _, rs1: _, rs2: _ } => {
+                            irgraph.slt(rs1_reg, rs2_reg, Flag::Signed)
+                        },
+                        Instr::Sltu {rd: _, rs1: _, rs2: _ } => {
+                            irgraph.slt(rs1_reg, rs2_reg, Flag::Unsigned)
+                        },
+                        Instr::Xor {rd: _, rs1: _, rs2: _ } => {
+                            irgraph.xor(rs1_reg, rs2_reg)
+                        },
+                        Instr::Srl {rd: _, rs1: _, rs2: _ } => {
+                            irgraph.shr(rs1_reg, rs2_reg, Flag::QWord)
+                        },
+                        Instr::Sra {rd: _, rs1: _, rs2: _ } => {
+                            irgraph.sar(rs1_reg, rs2_reg, Flag::QWord)
+                        },
+                        Instr::Or {rd: _, rs1: _, rs2: _ } => {
+                            irgraph.or(rs1_reg, rs2_reg)
+                        },
+                        Instr::And {rd: _, rs1: _, rs2: _ } => {
+                            irgraph.and(rs1_reg, rs2_reg)
+                        },
+                        Instr::Addw {rd: _, rs1: _, rs2: _ } => {
+                            irgraph.add(rs1_reg, rs2_reg, Flag::DWord)
+                        },
+                        Instr::Subw {rd: _, rs1: _, rs2: _ } => {
+                            irgraph.sub(rs1_reg, rs2_reg, Flag::DWord)
+                        },
+                        Instr::Sllw {rd: _, rs1: _, rs2: _ } => {
+                            irgraph.shl(rs1_reg, rs2_reg, Flag::DWord)
+                        },
+                        Instr::Srlw {rd: _, rs1: _, rs2: _ } => {
+                            irgraph.shr(rs1_reg, rs2_reg, Flag::DWord)
+                        },
+                        Instr::Sraw {rd: _, rs1: _, rs2: _ } => {
+                            irgraph.sar(rs1_reg, rs2_reg, Flag::DWord)
+                        },
+                        _ => { unreachable!(); },
+                    };
+                    set_reg!(rd, res);
                 },
                 Instr::Ecall {} => {
-                    asm.mov(rax, 2u64).unwrap();
-                    asm.mov(rcx, (pc+4) as u64).unwrap();
-                    asm.ret().unwrap();
-                },
-                Instr::Addiw {rd, rs1, imm } => {
-                    let rs1_off = self.get_reg_offset(rs1);
-                    asm.mov(rax, ptr(r13+rs1_off)).unwrap();
-                    asm.add(eax, imm).unwrap();
-                    asm.movsxd(rax, eax).unwrap();
-                    self.jit_set_reg(&mut asm, rd, rax);
-                },
-                Instr::Slliw {rd, rs1, shamt } => {
-                    let rs1_off = self.get_reg_offset(rs1);
-                    asm.mov(rax, ptr(r13+rs1_off)).unwrap();
-                    asm.shl(eax, shamt).unwrap();
-                    asm.movsxd(rax, eax).unwrap();
-                    self.jit_set_reg(&mut asm, rd, rax);
-                },
-                Instr::Srliw {rd, rs1, shamt } => {
-                    let rs1_off = self.get_reg_offset(rs1);
-                    asm.mov(rax, ptr(r13+rs1_off)).unwrap();
-                    asm.shr(eax, shamt).unwrap();
-                    asm.movsxd(rax, eax).unwrap();
-                    self.jit_set_reg(&mut asm, rd, rax);
-                },
-                Instr::Sraiw {rd, rs1, shamt } => {
-                    let rs1_off = self.get_reg_offset(rs1);
-                    asm.mov(rax, ptr(r13+rs1_off)).unwrap();
-                    asm.sar(eax, shamt).unwrap();
-                    asm.movsxd(rax, eax).unwrap();
-                    self.jit_set_reg(&mut asm, rd, rax);
-                },
-                Instr::Addw {rd, rs1, rs2 } => {
-                    let rs1_off = self.get_reg_offset(rs1);
-                    let rs2_off = self.get_reg_offset(rs2);
-                    asm.mov(rax, ptr(r13+rs1_off)).unwrap();
-                    asm.mov(rbx, ptr(r13+rs2_off)).unwrap();
-                    asm.add(eax, ebx).unwrap();
-                    self.jit_set_reg(&mut asm, rd, rax);
-                },
-                Instr::Subw {rd, rs1, rs2 } => {
-                    let rs1_off = self.get_reg_offset(rs1);
-                    let rs2_off = self.get_reg_offset(rs2);
-                    asm.mov(rax, ptr(r13+rs1_off)).unwrap();
-                    asm.mov(rbx, ptr(r13+rs2_off)).unwrap();
-                    asm.sub(eax, ebx).unwrap();
-                    self.jit_set_reg(&mut asm, rd, rax);
-                },
-                Instr::Sllw {rd, rs1, rs2 } => {
-                    let rs1_off = self.get_reg_offset(rs1);
-                    let rs2_off = self.get_reg_offset(rs2);
-                    asm.mov(rax, ptr(r13+rs1_off)).unwrap();
-                    asm.mov(rcx, ptr(r13+rs2_off)).unwrap();
-                    asm.shl(eax, cl).unwrap();
-                    self.jit_set_reg(&mut asm, rd, rax);
-                },
-                Instr::Srlw {rd, rs1, rs2 } => {
-                    let rs1_off = self.get_reg_offset(rs1);
-                    let rs2_off = self.get_reg_offset(rs2);
-                    asm.mov(rax, ptr(r13+rs1_off)).unwrap();
-                    asm.mov(rcx, ptr(r13+rs2_off)).unwrap();
-                    asm.shr(eax, cl).unwrap();
-                    self.jit_set_reg(&mut asm, rd, rax);
-                },
-                Instr::Sraw {rd, rs1, rs2 } => {
-                    let rs1_off = self.get_reg_offset(rs1);
-                    let rs2_off = self.get_reg_offset(rs2);
-                    asm.mov(rax, ptr(r13+rs1_off)).unwrap();
-                    asm.mov(rcx, ptr(r13+rs2_off)).unwrap();
-                    asm.sar(eax, cl).unwrap();
-                    self.jit_set_reg(&mut asm, rd, rax);
+                    irgraph.syscall();
                 },
                 _ => {
-                    self.dump_instrs(asm.instructions(), start_pc, pc);
-                    panic!("unimplemented instruction \
-                           hit\npc: 0x{:x} \nopcodes: {:x} \ninstr: {:?}", pc, opcodes, instr);
+                    panic!("unimplemented instruction hit\npc: 0x{:x} \nopcodes: {:x} \ninstr: \
+                           {:?}\n {:#?}", pc, opcodes, instr, irgraph);
                 },
             }
-            (*self.shared).add_jitblock(&asm.assemble(0x0).unwrap(), pc);
-            instr_queue.push_back(pc + 4);
-        }
-        //println!("Start pc is: 0x{:x}", start_pc);
-
-        Ok(self.shared.lookup(start_pc).unwrap())
-    }
-
-    fn dump_instrs(&self, instrs: &[Instruction], mut pc: usize, end_pc: usize) {
-        while pc < end_pc {
-            let opcodes: u32 = self.memory.read_at(pc, Perms::READ | Perms::EXECUTE).map_err(|_|
-                    Fault::ExecFault(pc)).unwrap();
-            let instr = decode_instr(opcodes);
-            println!("0x{:x}: {:?}", pc, instr);
-            pc+=4;
+            pc += 4;
         }
 
-        for instr in instrs {
-            let mut formatter = NasmFormatter::new();
-            let mut output = String::new();
-
-            output.clear();
-            formatter.format(&instr, &mut output);
-            println!("{:#?}", output);
+        for instr in &irgraph.instrs {
+            println!("{:x?}", instr);
         }
+        Ok(irgraph)
     }
 }
-
 
 /*
 #[cfg(test)]
@@ -801,8 +617,8 @@ mod tests {
 
     #[test]
     fn temporary() {
-        let shared = Arc::new(Shared::new(16 * 1024 * 1024));
-        let mut emu = Emulator::new(1024 * 1024, shared);
+        let jit = Arc::new(Jit::new(16 * 1024 * 1024));
+        let mut emu = Emulator::new(1024 * 1024, jit);
 
         let addr = emu.allocate(0x40, Perms::READ | Perms::WRITE | Perms::EXECUTE).unwrap();
         emu.set_reg(Register::Pc, addr);

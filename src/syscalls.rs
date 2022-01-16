@@ -67,16 +67,17 @@ pub fn write(emu: &mut Emulator) -> Option<Fault> {
         return None;
     }
 
-    let file = file.unwrap();
+    if false {
+        let file = file.unwrap();
+        if *file == STDOUT || *file == STDERR {
+            let mut read_data = vec![0u8; count];
+            emu.memory.read_into(buf, &mut read_data, count, Perms::READ).unwrap();
+            let s = std::str::from_utf8(&read_data);
 
-    if *file == STDOUT || *file == STDERR {
-        let mut read_data = vec![0u8; count];
-        emu.memory.read_into(buf, &mut read_data, count, Perms::READ).unwrap();
-        let s = std::str::from_utf8(&read_data);
-
-        print!("{}", s.unwrap());
-    } else {
-        panic!("Write to unsupported file occured");
+            print!("{}", s.unwrap());
+        } else {
+            panic!("Write to unsupported file occured");
+        }
     }
 
     emu.set_reg(Register::A0, count);

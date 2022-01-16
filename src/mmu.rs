@@ -49,30 +49,53 @@ pub struct Mmu {
 
     /// Holds the current program break at which new memory is allocated whenever needed
     alloc_addr: usize,
+
+    dirty: Vec<usize>,
+
+    dirty_bitmap: Vec<u64>,
 }
 
 impl Mmu {
     /// Allocate initial memory space
     pub fn new(size: usize) -> Self {
         Mmu {
-            memory: vec![0u8; size],
-            permissions: vec![0u8; size],
-            alloc_addr: FIRSTALLOCATION,
+            memory:       vec![0u8; size],
+            permissions:  vec![0u8; size],
+            alloc_addr:   FIRSTALLOCATION,
+            dirty:        Vec::with_capacity(size / 4096 + 1),
+            dirty_bitmap: vec![0u64; size / 4096 / 64 + 1],
         }
     }
 
-    /// Fork the mmu's memory
+    /// Fork the mmu's memory so another emulator can be started with it
+    #[must_use]
     pub fn fork(&self) -> Self {
+        let size = self.memory.len();
         Mmu {
-            memory: self.memory.clone(),
-            permissions: self.permissions.clone(),
-            alloc_addr: self.alloc_addr,
+            memory:       self.memory.clone(),
+            permissions:  self.permissions.clone(),
+            alloc_addr:   self.alloc_addr,
+            dirty:        Vec::with_capacity(size / 4096 + 1),
+            dirty_bitmap: vec![0u64; size / 4096 / 64 + 1],
         }
     }
 
-    /// Reset the mmu's memory
+    /// Restores memory back to original state
     pub fn reset(&mut self, other: &Mmu) {
-        self.memory = other.memory.clone();
+        for &block in &self.dirty {
+            let start = block * 4096;
+            let end   = (block + 1) * 4096;
+
+            // Zero the bitmap
+            self.dirty_bitmap[block / 64] = 0;
+
+            // Reset memory state
+            self.memory[start..end].copy_from_slice(&other.memory[start..end]);
+
+            // Restory permissions
+            self.permissions[start..end].copy_from_slice(&other.permissions[start..end]);
+        }
+        self.dirty.clear();
     }
 
     /// Set permissions at {addr} to {p} for {size} bytes

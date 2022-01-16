@@ -42,13 +42,13 @@ pub enum Instr {
     Lwu    { rd: Register, rs1: Register, imm: i32, mode: u8 },
     Ld     { rd: Register, rs1: Register, imm: i32, mode: u8 },
     Sd     { rs1: Register, rs2: Register, imm: i32, mode: u8 },
-    Slli   { rd: Register, rs1: Register, shamt: i32 },
-    Srli   { rd: Register, rs1: Register, shamt: i32 },
-    Srai   { rd: Register, rs1: Register, shamt: i32 },
+    Slli   { rd: Register, rs1: Register, imm: i32 },
+    Srli   { rd: Register, rs1: Register, imm: i32 },
+    Srai   { rd: Register, rs1: Register, imm: i32 },
     Addiw  { rd: Register, rs1: Register, imm: i32 },
-    Slliw  { rd: Register, rs1: Register, shamt: i32 },
-    Srliw  { rd: Register, rs1: Register, shamt: i32 },
-    Sraiw  { rd: Register, rs1: Register, shamt: i32 },
+    Slliw  { rd: Register, rs1: Register, imm: i32 },
+    Srliw  { rd: Register, rs1: Register, imm: i32 },
+    Sraiw  { rd: Register, rs1: Register, imm: i32 },
     Addw   { rd: Register, rs1: Register, rs2: Register },
     Subw   { rd: Register, rs1: Register, rs2: Register },
     Sllw   { rd: Register, rs1: Register, rs2: Register },
@@ -379,17 +379,17 @@ pub fn decode_instr(instr: u32) -> Instr {
                 },
                 0b001 => { /* SLLI */
                     let shamt = instr.imm & 0b111111;
-                    return Instr::Slli { rd: instr.rd, rs1: instr.rs1, shamt};
+                    return Instr::Slli { rd: instr.rd, rs1: instr.rs1, imm: shamt};
                 },
                 0b101 => {
                     match (instr.imm >> 6) & 0b111111 {
                         0b000000 => { /* SRLI */
                             let shamt = instr.imm & 0b111111;
-                            return Instr::Srli { rd: instr.rd, rs1: instr.rs1, shamt };
+                            return Instr::Srli { rd: instr.rd, rs1: instr.rs1, imm: shamt };
                         },
                         0b010000 => { /* SRAI */
                             let shamt = instr.imm & 0b111111;
-                            return Instr::Srai { rd: instr.rd, rs1: instr.rs1, shamt };
+                            return Instr::Srai { rd: instr.rd, rs1: instr.rs1, imm: shamt };
                         },
                         _ => { unreachable!(); }
                     }
@@ -478,15 +478,15 @@ pub fn decode_instr(instr: u32) -> Instr {
                 },
                 (0b001, _) => { /* SLLIW */
                     let shamt = instr.imm & 0b11111;
-                    return Instr::Slliw { rd: instr.rd, rs1: instr.rs1, shamt};
+                    return Instr::Slliw { rd: instr.rd, rs1: instr.rs1, imm: shamt};
                 },
                 (0b101, 0b0000000 ) => { /* SRLIW */
                     let shamt = instr.imm & 0b11111;
-                    return Instr::Srliw { rd: instr.rd, rs1: instr.rs1, shamt};
+                    return Instr::Srliw { rd: instr.rd, rs1: instr.rs1, imm: shamt};
                 },
                 (0b101, 0b0100000 ) => { /* SRAIW */
                     let shamt = instr.imm & 0b11111;
-                    return Instr::Sraiw { rd: instr.rd, rs1: instr.rs1, shamt};
+                    return Instr::Sraiw { rd: instr.rd, rs1: instr.rs1, imm: shamt};
                 },
                 _ => { unreachable!(); },
             }
@@ -529,7 +529,7 @@ pub fn decode_instr(instr: u32) -> Instr {
         },
         _ => { return Instr::Undefined; }
     }
-    return Instr::Undefined;
+    Instr::Undefined
 }
 
 /// Unit tests for each Instruction encoding Riscv uses
