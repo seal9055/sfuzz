@@ -437,14 +437,14 @@ impl Emulator {
                     let tmp_reg = irgraph.add(rs1_reg, imm_reg, Flag::DWord);
 
                     let res = match mode {
-                        0b000 => { irgraph.load(tmp_reg, Flag::Byte | Flag::Signed) },    // LB
-                        0b001 => { irgraph.load(tmp_reg, Flag::Word | Flag::Signed) },    // LH
-                        0b010 => { irgraph.load(tmp_reg, Flag::DWord | Flag::Signed) },   // LW
-                        0b100 => { irgraph.load(tmp_reg, Flag::Byte | Flag::Unsigned) },  // LBU
-                        0b101 => { irgraph.load(tmp_reg, Flag::Word | Flag::Unsigned) },  // LHU
-                        0b110 => { irgraph.load(tmp_reg, Flag::DWord | Flag::Unsigned) }, // LWU
-                        0b011 => { irgraph.load(tmp_reg, Flag::QWord) },                  // LD
-                        _ => { unreachable!(); },
+                        0b000 => irgraph.load(tmp_reg, Flag::Byte | Flag::Signed),     // LB
+                        0b001 => irgraph.load(tmp_reg, Flag::Word | Flag::Signed),     // LH
+                        0b010 => irgraph.load(tmp_reg, Flag::DWord | Flag::Signed),    // LW
+                        0b100 => irgraph.load(tmp_reg, Flag::Byte | Flag::Unsigned),   // LBU
+                        0b101 => irgraph.load(tmp_reg, Flag::Word | Flag::Unsigned),   // LHU
+                        0b110 => irgraph.load(tmp_reg, Flag::DWord | Flag::Unsigned),  // LWU
+                        0b011 => irgraph.load(tmp_reg, Flag::QWord),                   // LD
+                        _ => unreachable!();
                     };
                     set_reg!(rd, res);
                 },
@@ -459,10 +459,10 @@ impl Emulator {
                     let mem_addr = irgraph.add(rs1_reg, imm_reg, Flag::DWord);
 
                     match mode {
-                        0b000 => { irgraph.store(rs2_reg, mem_addr, Flag::Byte) },  // SB
-                        0b001 => { irgraph.store(rs2_reg, mem_addr, Flag::Word) },  // SH
-                        0b010 => { irgraph.store(rs2_reg, mem_addr, Flag::DWord) }, // SW
-                        0b011 => { irgraph.store(rs2_reg, mem_addr, Flag::QWord) }, // SD
+                        0b000 => { irgraph.store(rs2_reg, mem_addr, Flag::Byte) },   // SB
+                        0b001 => { irgraph.store(rs2_reg, mem_addr, Flag::Word) },   // SH
+                        0b010 => { irgraph.store(rs2_reg, mem_addr, Flag::DWord) },  // SW
+                        0b011 => { irgraph.store(rs2_reg, mem_addr, Flag::QWord) },  // SD
                         _ => { unreachable!(); },
                     }
                 },
@@ -482,46 +482,20 @@ impl Emulator {
                     let rs1_reg = IRReg(get_reg!(rs1));
                     let imm_reg = irgraph.loadi(imm as u32, Flag::Signed);
                     let res = match instr {
-                        Instr::Addi {rd: _, rs1: _, imm: _ } => {
-                            irgraph.add(rs1_reg, imm_reg, Flag::QWord)
-                        },
-                        Instr::Slti {rd: _, rs1: _, imm: _ } => {
-                            irgraph.slt(rs1_reg, imm_reg, Flag::Signed)
-                        },
-                        Instr::Sltiu {rd: _, rs1: _, imm: _ } => {
-                            irgraph.slt(rs1_reg, imm_reg, Flag::Unsigned)
-                        },
-                        Instr::Xori {rd: _, rs1: _, imm: _ } => {
-                            irgraph.xor(rs1_reg, imm_reg)
-                        },
-                        Instr::Ori {rd: _, rs1: _, imm: _ } => {
-                            irgraph.or(rs1_reg, imm_reg)
-                        },
-                        Instr::Andi {rd: _, rs1: _, imm: _ } => {
-                            irgraph.and(rs1_reg, imm_reg)
-                        },
-                        Instr::Slli {rd: _, rs1: _, imm: _ } => {
-                            irgraph.shl(rs1_reg, imm_reg, Flag::QWord)
-                        },
-                        Instr::Srli {rd: _, rs1: _, imm:  _ } => {
-                            irgraph.shr(rs1_reg, imm_reg, Flag::QWord)
-                        },
-                        Instr::Srai {rd: _, rs1: _, imm: _ } => {
-                            irgraph.sar(rs1_reg, imm_reg, Flag::QWord)
-                        },
-                        Instr::Addiw {rd: _, rs1: _, imm: _ } => {
-                            irgraph.add(rs1_reg, imm_reg, Flag::DWord)
-                        },
-                        Instr::Slliw {rd: _, rs1: _, imm: _ } => {
-                            irgraph.shl(rs1_reg, imm_reg, Flag::DWord)
-                        },
-                        Instr::Srliw {rd: _, rs1: _, imm: _ } => {
-                            irgraph.shr(rs1_reg, imm_reg, Flag::DWord)
-                        },
-                        Instr::Sraiw {rd: _, rs1: _, imm: _ } => {
-                            irgraph.sar(rs1_reg, imm_reg, Flag::DWord)
-                        },
-                        _ => { unreachable!(); },
+                        Instr::Addi  { .. } => irgraph.add(rs1_reg, imm_reg, Flag::QWord),
+                        Instr::Slti  { .. } => irgraph.slt(rs1_reg, imm_reg, Flag::Signed),
+                        Instr::Sltiu { .. } => irgraph.slt(rs1_reg, imm_reg, Flag::Unsigned),
+                        Instr::Xori  { .. } => irgraph.xor(rs1_reg, imm_reg),
+                        Instr::Ori   { .. } => irgraph.or(rs1_reg, imm_reg),
+                        Instr::Andi  { .. } => irgraph.and(rs1_reg, imm_reg),
+                        Instr::Slli  { .. } => irgraph.shl(rs1_reg, imm_reg, Flag::QWord),
+                        Instr::Srli  { .. } => irgraph.shr(rs1_reg, imm_reg, Flag::QWord),
+                        Instr::Srai  { .. } => irgraph.sar(rs1_reg, imm_reg, Flag::QWord),
+                        Instr::Addiw { .. } => irgraph.add(rs1_reg, imm_reg, Flag::DWord),
+                        Instr::Slliw { .. } => irgraph.shl(rs1_reg, imm_reg, Flag::DWord),
+                        Instr::Srliw { .. } => irgraph.shr(rs1_reg, imm_reg, Flag::DWord),
+                        Instr::Sraiw { .. } => irgraph.sar(rs1_reg, imm_reg, Flag::DWord),
+                        _ => unreachable!(),
                     };
                     set_reg!(rd, res);
                 },
@@ -543,52 +517,22 @@ impl Emulator {
                     let rs1_reg = IRReg(get_reg!(rs1));
                     let rs2_reg = IRReg(get_reg!(rs2));
                     let res =  match instr   {
-                        Instr::Add {rd: _, rs1: _, rs2: _ } => {
-                            irgraph.add(rs1_reg, rs2_reg, Flag::QWord)
-                        },
-                        Instr::Sub {rd: _, rs1: _, rs2: _ } => {
-                            irgraph.sub(rs1_reg, rs2_reg, Flag::QWord)
-                        },
-                        Instr::Sll {rd: _, rs1: _, rs2: _ } => {
-                            irgraph.shl(rs1_reg, rs2_reg, Flag::QWord)
-                        },
-                        Instr::Slt {rd: _, rs1: _, rs2: _ } => {
-                            irgraph.slt(rs1_reg, rs2_reg, Flag::Signed)
-                        },
-                        Instr::Sltu {rd: _, rs1: _, rs2: _ } => {
-                            irgraph.slt(rs1_reg, rs2_reg, Flag::Unsigned)
-                        },
-                        Instr::Xor {rd: _, rs1: _, rs2: _ } => {
-                            irgraph.xor(rs1_reg, rs2_reg)
-                        },
-                        Instr::Srl {rd: _, rs1: _, rs2: _ } => {
-                            irgraph.shr(rs1_reg, rs2_reg, Flag::QWord)
-                        },
-                        Instr::Sra {rd: _, rs1: _, rs2: _ } => {
-                            irgraph.sar(rs1_reg, rs2_reg, Flag::QWord)
-                        },
-                        Instr::Or {rd: _, rs1: _, rs2: _ } => {
-                            irgraph.or(rs1_reg, rs2_reg)
-                        },
-                        Instr::And {rd: _, rs1: _, rs2: _ } => {
-                            irgraph.and(rs1_reg, rs2_reg)
-                        },
-                        Instr::Addw {rd: _, rs1: _, rs2: _ } => {
-                            irgraph.add(rs1_reg, rs2_reg, Flag::DWord)
-                        },
-                        Instr::Subw {rd: _, rs1: _, rs2: _ } => {
-                            irgraph.sub(rs1_reg, rs2_reg, Flag::DWord)
-                        },
-                        Instr::Sllw {rd: _, rs1: _, rs2: _ } => {
-                            irgraph.shl(rs1_reg, rs2_reg, Flag::DWord)
-                        },
-                        Instr::Srlw {rd: _, rs1: _, rs2: _ } => {
-                            irgraph.shr(rs1_reg, rs2_reg, Flag::DWord)
-                        },
-                        Instr::Sraw {rd: _, rs1: _, rs2: _ } => {
-                            irgraph.sar(rs1_reg, rs2_reg, Flag::DWord)
-                        },
-                        _ => { unreachable!(); },
+                        Instr::Add  { .. } => irgraph.add(rs1_reg, rs2_reg, Flag::QWord),
+                        Instr::Sub  { .. } => irgraph.sub(rs1_reg, rs2_reg, Flag::QWord),
+                        Instr::Sll  { .. } => irgraph.shl(rs1_reg, rs2_reg, Flag::QWord),
+                        Instr::Slt  { .. } => irgraph.slt(rs1_reg, rs2_reg, Flag::Signed),
+                        Instr::Sltu { .. } => irgraph.slt(rs1_reg, rs2_reg, Flag::Unsigned),
+                        Instr::Xor  { .. } => irgraph.xor(rs1_reg, rs2_reg),
+                        Instr::Srl  { .. } => irgraph.shr(rs1_reg, rs2_reg, Flag::QWord),
+                        Instr::Sra  { .. } => irgraph.sar(rs1_reg, rs2_reg, Flag::QWord),
+                        Instr::Or   { .. } => irgraph.or(rs1_reg, rs2_reg),
+                        Instr::And  { .. } => irgraph.and(rs1_reg, rs2_reg),
+                        Instr::Addw { .. } => irgraph.add(rs1_reg, rs2_reg, Flag::DWord),
+                        Instr::Subw { .. } => irgraph.sub(rs1_reg, rs2_reg, Flag::DWord),
+                        Instr::Sllw { .. } => irgraph.shl(rs1_reg, rs2_reg, Flag::DWord),
+                        Instr::Srlw { .. } => irgraph.shr(rs1_reg, rs2_reg, Flag::DWord),
+                        Instr::Sraw { .. } => irgraph.sar(rs1_reg, rs2_reg, Flag::DWord),
+                        _ => unreachable!(),
                     };
                     set_reg!(rd, res);
                 },

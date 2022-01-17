@@ -636,8 +636,8 @@ mod tests {
         match decode_instr(0xfc37071b) { Instr::Addiw{ rd, rs1 , imm} => {
             assert_eq!(rd, Register::A4); assert_eq!(imm, -61);
             assert_eq!(rs1, Register::A4); }, _ => { panic!(""); } };
-        match decode_instr(0x4147d69b) { Instr::Sraiw{ rd, rs1 , shamt} => {
-            assert_eq!(rd, Register::A3); assert_eq!(shamt, 0x14);
+        match decode_instr(0x4147d69b) { Instr::Sraiw{ rd, rs1 , imm} => {
+            assert_eq!(rd, Register::A3); assert_eq!(imm, 0x14);
             assert_eq!(rs1, Register::A5); }, _ => { panic!(""); } };
     }
 
