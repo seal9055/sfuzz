@@ -1,6 +1,10 @@
 use std::sync::Mutex;
 use std::sync::RwLock;
-use crate::irgraph::IRGraph;
+use std::collections::BTreeMap;
+
+use crate::irgraph::{IRGraph, Operation, Label};
+
+use iced_x86::code_asm::*;
 
 #[cfg(target_os="linux")]
 pub fn alloc_rwx(size: usize) -> &'static mut [u8] {
@@ -70,7 +74,29 @@ impl Jit {
 
     /// Compile an IRGraph into x86 machine code
     pub fn compile(&self, irgraph: IRGraph) -> Option<usize> {
-        panic!("Compilation not yet implemented");
+        let mut asm: CodeAssembler;
+        let label_map: BTreeMap<usize, Label> = BTreeMap::new();
+
+
+        // TODO save state for vmexit macro
+
+        for instr in irgraph.instrs {
+            asm = CodeAssembler::new(64).unwrap();
+
+            //println!("{:x?}", instr);
+
+            match instr.op {
+                Operation::Loadi(v) => {
+                    // let reg = get_reg();
+                    // sign extend stuff
+                    //asm.mov(reg, val).unwrap();
+                    panic!("loadi hit");
+                }
+
+                _ => { panic!("unimplemented instr"); }
+            }
+
+        }
         Some(10)
     }
 }

@@ -707,17 +707,17 @@ mod tests {
     #[test]
     fn utype() {
         match decode_instr(0x22637) { Instr::Lui{ rd, imm } => {
-                assert_eq!(rd, Register::A2); assert_eq!(imm, 0x22); }, _ => { panic!(""); } };
+                assert_eq!(rd, Register::A2); assert_eq!(imm, 0x22000); }, _ => { panic!(""); } };
         match decode_instr(0x8837) { Instr::Lui{ rd, imm } => {
-                assert_eq!(rd, Register::A6); assert_eq!(imm, 0x8); }, _ => { panic!(""); } };
+                assert_eq!(rd, Register::A6); assert_eq!(imm, 0x8000); }, _ => { panic!(""); } };
         match decode_instr(0xffffc9b7) { Instr::Lui{ rd, imm } => {
-                assert_eq!(rd, Register::S3); assert_eq!(imm, 0xffffc); }, _ => { panic!(""); } };
+                assert_eq!(rd, Register::S3); assert_eq!(imm, -0x4000); }, _ => { panic!(""); } };
         match decode_instr(0x14197) { Instr::Auipc{ rd, imm } => {
-                assert_eq!(rd, Register::Gp); assert_eq!(imm, 0x14); }, _ => { panic!(""); } };
+                assert_eq!(rd, Register::Gp); assert_eq!(imm, 0x14000); }, _ => { panic!(""); } };
         match decode_instr(0x97) { Instr::Auipc{ rd, imm } => {
                 assert_eq!(rd, Register::Ra); assert_eq!(imm, 0x0); }, _ => { panic!(""); } };
         match decode_instr(0xe517) { Instr::Auipc{ rd, imm } => {
-                assert_eq!(rd, Register::A0); assert_eq!(imm, 0xe); }, _ => { panic!(""); } };
+                assert_eq!(rd, Register::A0); assert_eq!(imm, 0xe000); }, _ => { panic!(""); } };
     }
 
     #[test]

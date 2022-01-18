@@ -34,7 +34,7 @@ fn main() {
     let jit = Arc::new(Jit::new(16 * 1024 * 1024));
     let mut emu = Emulator::new(64 * 1024 * 1024, jit);
 
-    let sym_map = load_elf_segments("./test_bin_i", &mut emu).unwrap_or_else(||{
+    let sym_map = load_elf_segments("./test_bin", &mut emu).unwrap_or_else(||{
         error_exit("Unrecoverable error while loading elf segments");
     });
 

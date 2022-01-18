@@ -6,6 +6,7 @@ use crate::{
     syscalls,
     error_exit,
     irgraph::{IRGraph, Flag, Reg as IRReg},
+    cfg::{CFG},
 };
 
 use std::sync::Arc;
@@ -228,9 +229,14 @@ impl Emulator {
 
             let jit_addr = match (*self.jit).lookup(pc) {
                 None => {
-                    let mut instrs = self.lift(pc).unwrap();
-                    instrs.optimize();
-                    (*self.jit).compile(instrs).unwrap()
+                    let mut irgraph = self.lift(pc).unwrap();
+
+                    let cfg = CFG::new(&irgraph);
+
+                    cfg.dump_dot();
+
+                    irgraph.optimize();
+                    (*self.jit).compile(irgraph).unwrap()
                 }
                 Some(addr) => { addr }
             };
@@ -309,6 +315,7 @@ impl Emulator {
                 Instr::Bltu { rs1: _, rs2: _, imm, mode: _ } |
                 Instr::Bgeu { rs1: _, rs2: _, imm, mode: _ } => {
                     ret.insert((pc as i32 + imm) as usize, 0);
+                    ret.insert((pc as i32 + 4) as usize, 0);
                 },
                 _ => {},
             }
@@ -341,20 +348,25 @@ impl Emulator {
             }
         }
 
+        pc = 0x1017c;
+
         let start_pc = pc;
         let end_pc   = start_pc + self.functions.get(&pc).unwrap();
 
         // These are used to determine jump locations ahead of time
         let mut keys: Vec<_> = self.extract_labels(start_pc, end_pc).keys().cloned().collect();
 
+        // Insert lable at start of function
+        irgraph.set_label(pc);
+
         // Lift instructions until we reach the end of the function
         while pc < end_pc {
 
             irgraph.init_instr(pc);
 
-            if pc == keys[0] {
+            if !keys.is_empty() && pc == keys[0] {
                 keys.remove(0);
-                irgraph.set_label();
+                irgraph.set_label(pc);
             }
 
             // If an error occurs during this read, it is most likely due to missing read or execute
@@ -365,11 +377,11 @@ impl Emulator {
 
             match instr {
                 Instr::Lui {rd, imm} => {
-                    let res = irgraph.loadi(imm as u32, Flag::Signed);
+                    let res = irgraph.loadi(imm, Flag::Signed);
                     set_reg!(rd, res);
                 },
                 Instr::Auipc {rd, imm} => {
-                    let val = (imm as u32).wrapping_add(pc as u32);
+                    let val = (imm).wrapping_add(pc as i32);
                     let res = irgraph.loadi(val, Flag::Signed);
                     set_reg!(rd, res);
                 },
@@ -379,10 +391,12 @@ impl Emulator {
 
                     // Load return value into newly allocated register
                     if rd != Register::Zero {
-                        let res = irgraph.loadi(ret_val as u32, Flag::Unsigned);
+                        let res = irgraph.loadi(ret_val as i32, Flag::Unsigned);
                         set_reg!(rd, res);
+                        irgraph.call(jmp_target);
+                    } else {
+                        irgraph.jmp(jmp_target);
                     }
-                    irgraph.jmp(jmp_target);
                 },
                 Instr::Jalr {rd, imm, rs1} => {
                     let ret_val = pc.wrapping_add(4);
@@ -390,11 +404,11 @@ impl Emulator {
 
                     // Load return value into newly allocated register
                     if rd != Register::Zero {
-                        let res = irgraph.loadi(ret_val as u32, Flag::Unsigned);
+                        let res = irgraph.loadi(ret_val as i32, Flag::Unsigned);
                         set_reg!(rd, res);
                     }
 
-                    let imm_reg = irgraph.loadi(imm as u32, Flag::Signed);
+                    let imm_reg = irgraph.loadi(imm, Flag::Signed);
                     let jmp_target = irgraph.add(rs1_reg, imm_reg, Flag::DWord);
                     irgraph.jmp_reg(jmp_target);
                 },
@@ -404,23 +418,36 @@ impl Emulator {
                 Instr::Bge  { rs1, rs2, imm, mode } |
                 Instr::Bltu { rs1, rs2, imm, mode } |
                 Instr::Bgeu { rs1, rs2, imm, mode } => {
-                    let rs1_reg = IRReg(get_reg!(rs1));
-                    let rs2_reg = IRReg(get_reg!(rs2));
-                    let target = ((pc as i32).wrapping_add(imm)) as usize;
+                    let rs1_reg    = IRReg(get_reg!(rs1));
+                    let rs2_reg    = IRReg(get_reg!(rs2));
+                    let true_part  = ((pc as i32).wrapping_add(imm)) as usize;
+                    let false_part = ((pc as i32).wrapping_add(4)) as usize;
 
                     match mode {
-                        0b000 => { irgraph.branch(
-                                rs1_reg, rs2_reg, target, Flag::Equal | Flag::Signed) },     // BEQ
-                        0b001 => { irgraph.branch(
-                                rs1_reg, rs2_reg, target, Flag::NEqual | Flag::Signed) },    // BNE
-                        0b100 => { irgraph.branch(
-                                rs1_reg, rs2_reg, target, Flag::Less | Flag::Signed) },      // BLT
-                        0b101 => { irgraph.branch(
-                                rs1_reg, rs2_reg, target, Flag::Greater | Flag::Signed) },   // BGE
-                        0b110 => { irgraph.branch(
-                                rs1_reg, rs2_reg, target, Flag::Less | Flag::Unsigned) },    // BLTU
-                        0b111 => { irgraph.branch(
-                                rs1_reg, rs2_reg, target, Flag::Greater | Flag::Unsigned) }, // BGEU
+                        0b000 => { /* BEQ */
+                            irgraph.branch(rs1_reg, rs2_reg, true_part, false_part,
+                                Flag::Equal | Flag::Signed)
+                        },
+                        0b001 => { /* BNE */
+                            irgraph.branch(rs1_reg, rs2_reg, true_part, false_part,
+                                           Flag::NEqual | Flag::Signed)
+                        },
+                        0b100 => { /* BLT */
+                            irgraph.branch(rs1_reg, rs2_reg, true_part, false_part,
+                                           Flag::Less | Flag::Signed)
+                        },
+                        0b101 => { /* BGE */
+                            irgraph.branch(rs1_reg, rs2_reg, true_part, false_part,
+                                           Flag::Greater | Flag::Signed)
+                        },
+                        0b110 => { /* BLTU */
+                            irgraph.branch(rs1_reg, rs2_reg, true_part, false_part,
+                                           Flag::Less | Flag::Signed)
+                        },
+                        0b111 => { /* BGEU */
+                            irgraph.branch(rs1_reg, rs2_reg, true_part, false_part,
+                                           Flag::Greater | Flag::Signed)
+                        },
                         _ => { unreachable!(); },
                     }
                 }
@@ -433,18 +460,18 @@ impl Emulator {
                 Instr::Ld  {rd, rs1, imm, mode} => {
                     let rs1_reg = IRReg(get_reg!(rs1));
 
-                    let imm_reg = irgraph.loadi(imm as u32, Flag::Signed);
+                    let imm_reg = irgraph.loadi(imm, Flag::Signed);
                     let tmp_reg = irgraph.add(rs1_reg, imm_reg, Flag::DWord);
 
                     let res = match mode {
-                        0b000 => irgraph.load(tmp_reg, Flag::Byte | Flag::Signed),     // LB
-                        0b001 => irgraph.load(tmp_reg, Flag::Word | Flag::Signed),     // LH
-                        0b010 => irgraph.load(tmp_reg, Flag::DWord | Flag::Signed),    // LW
-                        0b100 => irgraph.load(tmp_reg, Flag::Byte | Flag::Unsigned),   // LBU
-                        0b101 => irgraph.load(tmp_reg, Flag::Word | Flag::Unsigned),   // LHU
-                        0b110 => irgraph.load(tmp_reg, Flag::DWord | Flag::Unsigned),  // LWU
-                        0b011 => irgraph.load(tmp_reg, Flag::QWord),                   // LD
-                        _ => unreachable!();
+                        0b000 => irgraph.load(tmp_reg, Flag::Byte | Flag::Signed),    // LB
+                        0b001 => irgraph.load(tmp_reg, Flag::Word | Flag::Signed),    // LH
+                        0b010 => irgraph.load(tmp_reg, Flag::DWord | Flag::Signed),   // LW
+                        0b100 => irgraph.load(tmp_reg, Flag::Byte | Flag::Unsigned),  // LBU
+                        0b101 => irgraph.load(tmp_reg, Flag::Word | Flag::Unsigned),  // LHU
+                        0b110 => irgraph.load(tmp_reg, Flag::DWord | Flag::Unsigned), // LWU
+                        0b011 => irgraph.load(tmp_reg, Flag::QWord),                  // LD
+                        _ => unreachable!(),
                     };
                     set_reg!(rd, res);
                 },
@@ -455,14 +482,14 @@ impl Emulator {
                     let rs1_reg  = IRReg(get_reg!(rs1));
                     let rs2_reg  = IRReg(get_reg!(rs2));
 
-                    let imm_reg  = irgraph.loadi(imm as u32, Flag::Signed);
+                    let imm_reg  = irgraph.loadi(imm, Flag::Signed);
                     let mem_addr = irgraph.add(rs1_reg, imm_reg, Flag::DWord);
 
                     match mode {
-                        0b000 => { irgraph.store(rs2_reg, mem_addr, Flag::Byte) },   // SB
-                        0b001 => { irgraph.store(rs2_reg, mem_addr, Flag::Word) },   // SH
-                        0b010 => { irgraph.store(rs2_reg, mem_addr, Flag::DWord) },  // SW
-                        0b011 => { irgraph.store(rs2_reg, mem_addr, Flag::QWord) },  // SD
+                        0b000 => { irgraph.store(rs2_reg, mem_addr, Flag::Byte) },  // SB
+                        0b001 => { irgraph.store(rs2_reg, mem_addr, Flag::Word) },  // SH
+                        0b010 => { irgraph.store(rs2_reg, mem_addr, Flag::DWord) }, // SW
+                        0b011 => { irgraph.store(rs2_reg, mem_addr, Flag::QWord) }, // SD
                         _ => { unreachable!(); },
                     }
                 },
@@ -480,7 +507,7 @@ impl Emulator {
                 Instr::Srliw {rd, rs1, imm } |
                 Instr::Sraiw {rd, rs1, imm } => {
                     let rs1_reg = IRReg(get_reg!(rs1));
-                    let imm_reg = irgraph.loadi(imm as u32, Flag::Signed);
+                    let imm_reg = irgraph.loadi(imm, Flag::Signed);
                     let res = match instr {
                         Instr::Addi  { .. } => irgraph.add(rs1_reg, imm_reg, Flag::QWord),
                         Instr::Slti  { .. } => irgraph.slt(rs1_reg, imm_reg, Flag::Signed),
@@ -547,14 +574,13 @@ impl Emulator {
             pc += 4;
         }
 
-        for instr in &irgraph.instrs {
-            println!("{:x?}", instr);
-        }
+        //for instr in &irgraph.instrs {
+        //    println!("{:x?}", instr);
+        //}
         Ok(irgraph)
     }
 }
 
-/*
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -574,4 +600,3 @@ mod tests {
         emu.run_jit();
     }
 }
-*/

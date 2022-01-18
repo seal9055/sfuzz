@@ -4,11 +4,11 @@ pub mod riscv;
 pub mod jit;
 pub mod syscalls;
 pub mod irgraph;
+pub mod cfg;
 
 extern crate iced_x86;
 
-use elfparser;
-use elfparser::{ARCH64, ELFMAGIC, LITTLEENDIAN, TYPEEXEC, RISCV};
+use elfparser::{self, ARCH64, ELFMAGIC, LITTLEENDIAN, TYPEEXEC, RISCV};
 use emulator::{Emulator, Register};
 use std::process;
 use rustc_hash::FxHashMap;
