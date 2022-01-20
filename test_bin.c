@@ -1,12 +1,17 @@
 #include <stdio.h>
+#include <stdlib.h>
+#include <time.h>
 
 int main() {
-    int a = 5 + 3;
-    int b = 0;
-    if (a == 8) {
-        b = b+1;
+    srand(time(NULL));
+    int a = rand() % 10;
+    int b = 1;
+
+    if (a <= 5) {
+        b = b + 20 - a;
     } else {
-        b = b+2;
+        b = b + 10 - a;
     }
     printf("%d", b);
+    return b;
 }

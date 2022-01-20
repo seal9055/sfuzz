@@ -50,6 +50,11 @@ impl CFG {
                     block.clear();
                     edges.push((index as u32, x as u32));
                 },
+                Operation::Ret => { /* End basic block with a non-returning jmp */
+                    block.push(instr);
+                    cfg.blocks.push(block.clone());
+                    block.clear();
+                },
                 _ => { /* Matches all other instruction */
                     block.push(instr);
 
@@ -68,12 +73,13 @@ impl CFG {
             }
         }
 
+        if !block.is_empty() { cfg.blocks.push(block.clone()); }
+
         for edge in edges {
             let v = *(map.get(&(edge.1 as usize)).unwrap()) as u32;
             cfg.edges.push((edge.0, v));
         }
 
-        cfg.blocks.push(block.clone());
         cfg
     }
 

@@ -45,6 +45,9 @@ pub enum Operation {
     Label(usize),
     Syscall,
     JmpReg,
+    Ret,
+    Phi,
+    CallReg,
     Store,
     Load,
     Add,
@@ -102,23 +105,30 @@ impl fmt::Display for Instruction {
             Operation::Call(x) => {
                 write!(f, "{:#08X}  Call {:#0x?}", self.pc.unwrap_or(0), x)
             },
+            Operation::CallReg => {
+                write!(f, "{:#08X}  Call {:#0x?}", self.pc.unwrap_or(0), self.i_reg.0.unwrap())
+            },
             Operation::Branch(x, y) => {
                 match self.flags & 0b111100 {
                     0b000100 => {
-                        write!(f, "{:#08X}  BE ({:#0X?},{:#0X?})", self.pc.unwrap_or(0), y, x)
+                        write!(f, "{:#08X}  BE ({:#0X?}, {:#0X?})", self.pc.unwrap_or(0), y, x)
                     },
                     0b001000 => {
-                        write!(f, "{:#08X}  BNE ({:#0X?},{:#0X?})", self.pc.unwrap_or(0), y, x)
+                        write!(f, "{:#08X}  BNE ({:#0X?}, {:#0X?})", self.pc.unwrap_or(0), y, x)
                     },
                     0b010000 => {
-                        write!(f, "{:#08X}  BLT ({:#0X?},{:#0X?})", self.pc.unwrap_or(0), y, x)
+                        write!(f, "{:#08X}  BLT ({:#0X?}, {:#0X?})", self.pc.unwrap_or(0), y, x)
                     },
                     0b100000 => {
-                        write!(f, "{:#08X}  BGT ({:#0X?},{:#0X?})", self.pc.unwrap_or(0), y, x)
+                        write!(f, "{:#08X}  BGT ({:#0X?}, {:#0X?})", self.pc.unwrap_or(0), y, x)
                     },
                     _ => { unreachable!() },
                 }
             },
+            Operation::Phi => {
+                write!(f, "{:#08X}  φ ({:#0X?}, {:#0X?})", self.pc.unwrap_or(0),
+                       self.i_reg.0.unwrap(), self.i_reg.1.unwrap())
+            }
             Operation::Label(x) => {
                 write!(f, "\t\tLabel @ {:#0X?}\n", x)
             },
@@ -127,6 +137,9 @@ impl fmt::Display for Instruction {
             },
             Operation::JmpReg => {
                 write!(f, "{:#08X}  Jmp {:?}", self.pc.unwrap_or(0), self.i_reg.0.unwrap())
+            },
+            Operation::Ret => {
+                write!(f, "{:#08X}  Ret", self.pc.unwrap_or(0))
             },
             Operation::Store => {
                 write!(f, "{:#08X}  [{:?}] = {:?}", self.pc.unwrap_or(0), self.i_reg.1.unwrap(),
@@ -333,9 +346,31 @@ impl IRGraph {
         self.cur_pc = None;
     }
 
+    pub fn ret(&mut self, target: Reg) {
+        self.instrs.push( Instruction {
+            op: Operation::Ret,
+            i_reg: (None, None),
+            o_reg: None,
+            flags: Flag::NoFlag,
+            pc: self.cur_pc,
+        });
+        self.cur_pc = None;
+    }
+
     pub fn jmp_reg(&mut self, target: Reg) {
         self.instrs.push( Instruction {
             op: Operation::JmpReg,
+            i_reg: (Some(target), None),
+            o_reg: None,
+            flags: Flag::NoFlag,
+            pc: self.cur_pc,
+        });
+        self.cur_pc = None;
+    }
+
+    pub fn call_reg(&mut self, target: Reg) {
+        self.instrs.push( Instruction {
+            op: Operation::CallReg,
             i_reg: (Some(target), None),
             o_reg: None,
             flags: Flag::NoFlag,

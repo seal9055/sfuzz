@@ -1,0 +1,10 @@
+digraph {
+    0 [ label = "		Label @ 0x100B0\l\l0x0100B0  Reg(0) = -0x10\l0x000000  Reg(1) = Reg(0) + Reg(0)\l0x0100B4  Reg(2) = 0x0\l0x000000  Reg(3) = Reg(0) + Reg(2)\l0x0100B8  Reg(4) = 0x8\l0x000000  Reg(5) = Reg(1) + Reg(4)\l0x000000  [Reg(5)] = Reg(0)\l0x0100BC  Reg(6) = 0x0\l0x000000  Reg(7) = Reg(1) + Reg(6)\l0x000000  [Reg(7)] = Reg(0)\l0x0100C0  Reg(8) = 0x100C4\l0x000000  Call 0x105cc\l0x0100C4  Reg(9) = 0x0\l0x000000  Reg(10) = Reg(3) + Reg(9)\l0x0100C8  Reg(11) = 0x100CC\l0x000000  Call 0x1051c\l0x0100CC  Reg(12) = 0x100D0\l0x000000  Call 0x10530\l0x0100D0  Reg(13) = 0xA\l0x000000  Reg(14) = Reg(0) + Reg(13)\l0x0100D4  Reg(15) = 0x100D8\l0x000000  Call 0x102ac\l0x0100D8  Reg(16) = 0x0\l0x000000  Reg(17) = Reg(10) + Reg(16)\l0x0100DC  Reg(18) = 0x5\l0x000000  Reg(19) = Reg(0) + Reg(18)\l0x0100E0  BLT (0x100E4,0x10110)\l " ]
+    1 [ label = "		Label @ 0x100E4\l\l0x0100E4  Reg(20) = 0x15\l0x000000  Reg(21) = Reg(0) + Reg(20)\l0x0100E8  Reg(22) = Reg(21) - Reg(17)\l " ]
+    2 [ label = "		Label @ 0x100EC\l\l0x0100EC  Reg(23) = 0x22000\l0x0100F0  Reg(24) = 0x0\l0x000000  Reg(25) = Reg(22) + Reg(24)\l0x0100F4  Reg(26) = -0x700\l0x000000  Reg(27) = Reg(23) + Reg(26)\l0x0100F8  Reg(28) = 0x100FC\l0x000000  Call 0x104d0\l0x0100FC  Reg(29) = 0x8\l0x000000  Reg(30) = Reg(1) + Reg(29)\l0x000000  Reg(31) = [Reg(30)]\l0x010100  Reg(32) = 0x0\l0x000000  Reg(33) = Reg(22) + Reg(32)\l0x010104  Reg(34) = 0x0\l0x000000  Reg(35) = Reg(1) + Reg(34)\l0x000000  Reg(36) = [Reg(35)]\l0x010108  Reg(37) = 0x10\l0x000000  Reg(38) = Reg(1) + Reg(37)\l0x01010C  Reg(39) = 0x0\l0x000000  Reg(40) = Reg(31) + Reg(39)\l0x000000  Ret\l " ]
+    3 [ label = "		Label @ 0x10110\l\l0x010110  Reg(41) = 0xB\l0x000000  Reg(42) = Reg(0) + Reg(41)\l0x010114  Reg(43) = Reg(42) - Reg(36)\l0x010118  Jmp 0x100ec\l " ]
+    0 -> 1 [ ]
+    0 -> 3 [ ]
+    1 -> 2 [ ]
+    3 -> 2 [ ]
+}

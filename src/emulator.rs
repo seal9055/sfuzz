@@ -232,8 +232,16 @@ impl Emulator {
                     let mut irgraph = self.lift(pc).unwrap();
 
                     let cfg = CFG::new(&irgraph);
-
                     cfg.dump_dot();
+
+                    //for b in &cfg.blocks {
+                    //    println!("[");
+                    //    for instr in b {
+                    //        println!("{}", instr);
+                    //    }
+                    //    println!("]\n");
+                    //}
+                    //println!("edges: {:?}", cfg.edges);
 
                     irgraph.optimize();
                     (*self.jit).compile(irgraph).unwrap()
@@ -348,7 +356,7 @@ impl Emulator {
             }
         }
 
-        pc = 0x1017c;
+        pc = 0x100b0;
 
         let start_pc = pc;
         let end_pc   = start_pc + self.functions.get(&pc).unwrap();
@@ -368,7 +376,6 @@ impl Emulator {
                 keys.remove(0);
                 irgraph.set_label(pc);
             }
-
             // If an error occurs during this read, it is most likely due to missing read or execute
             // permissions, so we mark it as an ExecFault
             let opcodes: u32 = self.memory.read_at(pc, Perms::READ | Perms::EXECUTE).map_err(|_|
@@ -402,15 +409,16 @@ impl Emulator {
                     let ret_val = pc.wrapping_add(4);
                     let rs1_reg = IRReg(get_reg!(rs1));
 
-                    // Load return value into newly allocated register
+                    let imm_reg = irgraph.loadi(imm, Flag::Signed);
+                    let jmp_target = irgraph.add(rs1_reg, imm_reg, Flag::DWord);
+
                     if rd != Register::Zero {
                         let res = irgraph.loadi(ret_val as i32, Flag::Unsigned);
                         set_reg!(rd, res);
+                        irgraph.call_reg(jmp_target)
+                    } else {
+                        irgraph.ret(jmp_target);
                     }
-
-                    let imm_reg = irgraph.loadi(imm, Flag::Signed);
-                    let jmp_target = irgraph.add(rs1_reg, imm_reg, Flag::DWord);
-                    irgraph.jmp_reg(jmp_target);
                 },
                 Instr::Beq  { rs1, rs2, imm, mode } |
                 Instr::Bne  { rs1, rs2, imm, mode } |
@@ -450,7 +458,7 @@ impl Emulator {
                         },
                         _ => { unreachable!(); },
                     }
-                }
+                },
                 Instr::Lb  {rd, rs1, imm, mode} |
                 Instr::Lh  {rd, rs1, imm, mode} |
                 Instr::Lw  {rd, rs1, imm, mode} |
