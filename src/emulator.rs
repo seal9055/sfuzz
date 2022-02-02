@@ -20,7 +20,7 @@ pub const STDOUT: isize = 1;
 pub const STDERR: isize = 2;
 
 /// 33 RISCV Registers
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Ord, PartialOrd)]
 #[repr(usize)]
 pub enum Register {
     Zero = 0,
@@ -69,8 +69,7 @@ impl From<u32> for Register {
 
 /// Various faults that can occur during program execution. These can be syscalls, bugs, or other
 /// non-standard behaviors that require kernel involvement
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum Fault {
+#[derive(Clone, Copy, Debug, PartialEq)] pub enum Fault {
     /// Syscall
     Syscall,
 
@@ -335,7 +334,7 @@ impl Emulator {
     }
 
     /// Generate a control flow graph for the riscv instructions
-    fn create_cfg(&self, mut pc: usize, end_pc: usize, keys: &mut Vec<usize>)
+    fn create_cfg(&self, instrs: &Vec<Instr>, mut pc: usize, end_pc: usize, keys: &mut Vec<usize>)
             -> (Vec<(u32, u32)>, Vec<(Instr, usize)>) {
         let mut graph = Vec::new();
         let mut map: FxHashMap<usize, isize> = FxHashMap::default();
@@ -344,16 +343,12 @@ impl Emulator {
         let mut index: isize = -1;
         let mut leader_set: Vec<(Instr, usize)> = Vec::new();
 
-        while pc < end_pc {
-            let opcodes: u32 = self.memory.read_at(pc, Perms::READ | Perms::EXECUTE).map_err(|_|
-                Fault::ExecFault(pc)).unwrap();
-            let instr = decode_instr(opcodes);
-
+        for instr in instrs {
             if !keys.is_empty() && pc == keys[0] {
                 keys.remove(0);
                 index += 1;
                 map.insert(pc, index);
-                leader_set.push((instr, i));
+                leader_set.push((*instr, i));
             } else {
                 match instr {
                     Instr::Beq  { rs1: _, rs2: _, imm, mode: _ } |
@@ -366,7 +361,7 @@ impl Emulator {
                         edges.push((index as u32, (pc+4) as u32));
                     },
                     Instr::Jal { rd, imm} => {
-                        if rd == Register::Zero {
+                        if *rd == Register::Zero {
                             edges.push((index as u32, (pc as i32 + imm) as u32));
                         }
                     },
@@ -464,7 +459,7 @@ impl Emulator {
     }
 
     fn find_var_origin(&self, instrs: &Vec<Instr>, leader_set: &mut Vec<(Instr, usize)>)
-            -> (usize, usize) {
+            -> (Vec<Register>, Vec<(Register, usize)>, Vec<Vec<Register>>, Vec<(Register, usize)>) {
 
         let mut var_origin = Vec::new();
 
@@ -499,7 +494,7 @@ impl Emulator {
                 Instr::Divuw  { rd, rs1: _, rs2: _ } |
                 Instr::Remw   { rd, rs1: _, rs2: _ } |
                 Instr::Remuw  { rd, rs1: _, rs2: _ } => {
-                    var_origin.push((rd, i));
+                    if *rd != Register::Zero { var_origin.push((*rd, i)); }
                 },
                 Instr::Addi   { rd, rs1: _, imm: _ } |
                 Instr::Slti   { rd, rs1: _, imm: _ } |
@@ -514,7 +509,7 @@ impl Emulator {
                 Instr::Slliw  { rd, rs1: _, imm: _ } |
                 Instr::Srliw  { rd, rs1: _, imm: _ } |
                 Instr::Sraiw  { rd, rs1: _, imm: _ } => {
-                    var_origin.push((rd, i));
+                    if *rd != Register::Zero { var_origin.push((*rd, i)); }
                 },
                 Instr::Lb     { rd, rs1: _, imm: _, mode: _ } |
                 Instr::Lh     { rd, rs1: _, imm: _, mode: _ } |
@@ -523,41 +518,177 @@ impl Emulator {
                 Instr::Lhu    { rd, rs1: _, imm: _, mode: _ } |
                 Instr::Lwu    { rd, rs1: _, imm: _, mode: _ } |
                 Instr::Ld     { rd, rs1: _, imm: _, mode: _ } => {
-                    var_origin.push((rd, i));
+                    if *rd != Register::Zero { var_origin.push((*rd, i)); }
                 },
                 Instr::Jal { rd, imm: _,} => {
-                    var_origin.push((rd, i));
+                    if *rd != Register::Zero { var_origin.push((*rd, i)); }
                 },
                 Instr::Jalr { rd, rs1, imm: _,} => {
-                    var_origin.push((rd, i));
+                    if *rd != Register::Zero { var_origin.push((*rd, i)); }
                 },
                 Instr::Lui   { rd, imm: _,} |
                 Instr::Auipc { rd, imm: _,} => {
-                    var_origin.push((rd, i));
+                    if *rd != Register::Zero { var_origin.push((*rd, i)); }
                 },
-                _ => { println!("instr: {:?}", instr); },
+                _ => { },
             }
         }
         let mut leader_set_index: Vec<usize> = leader_set.iter().map(|e| e.1).collect();
         leader_set_index.push(instrs.len());
 
-        println!("var_origin: {:?}\n", var_origin);
-        println!("leader_set: {:?}\n", leader_set);
-        println!("leader_set_index: {:?}\n", leader_set_index);
-
         let mut varnode_origin: Vec<usize> = Vec::new();
         let mut i = 0;
 
-        for x in var_origin {
+        for x in &var_origin {
             let instr_index = x.1;
-            if instr_index > leader_set_index[i+1] { i += 1; }
+            if instr_index >= leader_set_index[i+1] { i += 1; }
             varnode_origin.push(i);
         }
 
-        println!("varnode_origin: {:?}", varnode_origin);
+        let mut varlist_temp: Vec<(Register, usize)> = Vec::new();
+        for i in 0..var_origin.len() {
+            varlist_temp.push((var_origin[i].0, varnode_origin[i]));
+        }
 
-        (5, 5)
+        let mut varlist_origin: Vec<Vec<Register>> = Vec::new();
+        for v in &varlist_temp {
+            if varlist_origin.len() <= v.1 {
+                let tmp: Vec<Register> = Vec::new();
+                varlist_origin.push(tmp);
+            }
+            varlist_origin[v.1].push(v.0);
+        }
+
+        let var_list = var_origin.iter().map(|v| v.0).collect();
+
+        (var_list, var_origin, varlist_origin, varlist_temp)
     }
+
+    fn insert_phi_func(&self, graph: &Vec<(u32, u32)>, instrs: &Vec<Instr>,
+                       df_list: &Vec<BTreeSet<isize>>, varlist_origin: &Vec<Vec<Register>>,
+                       var_tuple: &Vec<(Register, usize)>)
+        -> (Vec<Vec<usize>>, Vec<BTreeSet<usize>>, Vec<BTreeSet<(Register, isize)>>) {
+
+        let mut def_sites: Vec<Vec<usize>>      = vec![Vec::new(); 32];
+        let mut var_phi:   Vec<BTreeSet<usize>> = Vec::new();
+        let mut phi_func:  Vec<BTreeSet<(Register, isize)>> = Vec::new();
+
+        for v in var_tuple {
+            def_sites[v.0 as usize].push(v.1);
+            var_phi.push(BTreeSet::new());
+        }
+
+        for _ in 0..df_list.len() {
+            phi_func.push(BTreeSet::new());
+        }
+
+        let mut count = 0;
+        for (i, var) in def_sites.iter().enumerate() {
+            if var.len() == 0 { continue; }
+            count += 1;
+            let mut temp_list = def_sites[i].clone();
+
+            while let Some(n) = temp_list.pop() {
+                for y in &df_list[n] {
+                    if !var_phi[count].contains(&(*y as usize)) {
+                        let len = graph.iter().filter(|x| x.1 as isize == *y).count() as isize;
+                        phi_func[*y as usize].insert((Register::from(i as u32), len));
+                        var_phi[count].insert(*y as usize);
+                        if varlist_origin[n].iter().find(|&&x| x == Register::from(*y as u32))
+                            .is_none() {
+                            temp_list.push(*y as usize);
+                        }
+                    }
+                }
+            }
+        }
+        (def_sites, var_phi, phi_func)
+    }
+
+    fn rename_regs(&self, graph: &Vec<(u32, u32)>, instrs: &mut Vec<Instr>,
+                   leader_set: &mut Vec<(Instr, usize)>, dom_tree: &Vec<(isize, isize)>,
+                   var_list: &Vec<Register>, var_origin: &Vec<(Register, usize)>,
+                   phi_func: &Vec<BTreeSet<(Register, isize)>>) {
+
+        let mut var_dict: Vec<(usize, Vec<usize>)> = vec![(0, Vec::new()); 32];
+
+        for var in var_list {
+            var_dict[*var as usize] = (0, vec![0; 1]);
+        }
+
+        let mut phi_func_mod: Vec<Vec<Vec<(Register, isize)>>>  = Vec::new();
+        let mut phi_func_temp: Vec<Vec<Vec<Register>>> = Vec::new();
+        let mut blocks: Vec<((usize, usize), usize)> = Vec::new();
+
+        for (i, var) in phi_func.iter().enumerate() {
+            if phi_func_temp.len() <= i {
+                phi_func_temp.push(Vec::new());
+                phi_func_mod.push(Vec::new());
+            }
+            for t in &phi_func[i] {
+                phi_func_temp[i].push(vec![t.0; t.1 as usize]);
+            }
+        }
+        //println!("phi_func_temp: {:?}", phi_func_temp);
+        //println!("phi_func_mod: {:?}", phi_func_mod);
+        leader_set.push((Instr::Undefined, instrs.len()));
+        //println!("leader_set: {:?}", leader_set);
+
+        for (i, v) in leader_set.iter().enumerate() {
+            blocks.push(((v.1, leader_set[i+1].1), i));
+            if i == leader_set.len()-2 { break; }
+        }
+
+        let mut rename_block = |block: ((usize, usize), usize)| {
+            let block_line_nums = block.0;
+            //let block_num       = block.1;
+            let block_num       = 2; // TODO Revert
+            let mut block_lines = Vec::new();
+
+            for i in block_line_nums.0..block_line_nums.1 {
+                block_lines.push((i, instrs[i]));
+            }
+
+            for each in &phi_func[block_num] {
+                //println!("each: {:?}", each);
+                var_dict[each.0 as usize].0 += 1;
+                let x = var_dict[each.0 as usize].0;
+                var_dict[each.0 as usize].1.push(x);
+                let add = (each.0, each.1);
+                //println!("add: {:?}", add);
+                let mut n_each = vec![(each.0, 1); 1];
+                n_each.push(add);
+                //println!("n_each: {:?}", n_each);
+
+                phi_func_mod[block_num].push(n_each);
+                //println!("phi_func_mod: {:?}", phi_func_mod);
+            }
+
+            for (i, each_line) in block_lines.iter().enumerate() {
+                let mut def_var: Register = Register::Zero;
+                for var in var_origin {
+                    if var.1 == each_line.0 {
+                        def_var = var.0;
+                    }
+                }
+                //println!("def_var: {:?}", def_var);
+
+                var_dict[def_var as usize].0 += 1;
+                let x = var_dict[def_var as usize].0;
+                var_dict[def_var as usize].1.push(x);
+
+                let mut new_instr = each_line.1;
+                //new_instr.rd
+
+                println!("new_instr: {:?}", new_instr);
+            }
+
+        };
+
+        println!("blocks: {:?}", blocks);
+        rename_block(blocks[0]);
+    }
+
 
     /// Lift a function into an immediate representation that can be used to apply optimizations and
     /// compile into the final jit-code
@@ -582,24 +713,21 @@ impl Emulator {
         let mut keys: Vec<usize> = self.extract_labels(start_pc, end_pc).keys().cloned().collect();
         keys.insert(0, start_pc);
 
-        let (cfg, mut leader_set) = self.create_cfg(start_pc, end_pc, &mut keys);
-
-        println!("CFG:      {:x?}", cfg);
-        //println!("LEADER SET: {:x?}", leader_set);
+        let (cfg, mut leader_set) = self.create_cfg(&instrs, start_pc, end_pc, &mut keys);
 
         let (mut dom_tree, mut dom_set) = self.generate_domtree(&cfg, leader_set.len());
 
-        //println!("dom_tree: {:?}", dom_tree);
-        //println!("dom_set:  {:?}", dom_set);
-
         let df_list = self.find_domfrontier(&mut dom_tree, &cfg, &mut dom_set);
 
-        println!("DFLIST: {:?}", df_list);
+        let (var_list, var_origin, varlist_origin, var_tuple) =
+            self.find_var_origin(&instrs, &mut leader_set);
 
-        let (var_list_origin, var_tuple) = self.find_var_origin(&instrs, &mut leader_set);
+        let (def_sites, var_phi, phi_func) = self.insert_phi_func(&cfg, &instrs, &df_list,
+                                                                    &varlist_origin, &var_tuple);
 
-        //println!("var_list_origin: {:?}", var_list_origin);
-        //println!("var_tuple: {:?}", var_tuple);
+        //println!("def_sites: {:?}\n", def_sites);
+        //println!("var_phi: {:?}\n", var_phi);
+        //println!("phi_func: {:?}\n", phi_func);
 
         // Insert lable at start of function
         //irgraph.set_label(pc);
@@ -832,16 +960,66 @@ mod tests {
 
     #[test]
     fn temporary() {
+        let mut instrs: Vec<Instr> = Vec::new();
         let jit = Arc::new(Jit::new(16 * 1024 * 1024));
-        let mut emu = Emulator::new(1024 * 1024, jit);
+        let mut emu = Emulator::new(64 * 1024 * 1024, jit);
 
-        let addr = emu.allocate(0x40, Perms::READ | Perms::WRITE | Perms::EXECUTE).unwrap();
-        emu.set_reg(Register::Pc, addr);
+        /*
+           A0 = x
+           A1 = y
+           A2 = z
+           A3 = f
+           A4 = a
+           A5 = b
+           A6 = c
+        */
 
-        let data = std::fs::read("tests/output").unwrap();
-        emu.memory.write_mem(addr, &data, data.len()).unwrap();
+        /*0x1000*/ instrs.push(Instr::Lui { rd: Register::A0, imm: 20 });
+        /*0x1004*/ instrs.push(Instr::Lui { rd: Register::A1, imm: 10 });
+        /*0x1008*/ instrs.push(Instr::Blt { rs1: Register::A0, rs2: Register::A1, imm: 0x20, mode: 1});
 
-        println!("size: {}", data.len());
-        emu.run_jit();
+        //b1
+        /*0x100c*/ instrs.push(Instr::Add { rd: Register::A2, rs1: Register::A0, rs2: Register::A1 });
+        /*0x1010*/ instrs.push(Instr::Lui { rd: Register::A3, imm: 1 });
+        /*0x1014*/ instrs.push(Instr::Jal { rd: Register::Zero, imm: 0x4 }); //goto b2
+
+        //b2
+        /*0x1018*/ instrs.push(Instr::Addi { rd: Register::A4, rs1: Register::A2, imm: 5});
+        /*0x101c*/ instrs.push(Instr::Addi { rd: Register::A5, rs1: Register::A4, imm: 1});
+        /*0x1020*/ instrs.push(Instr::Addi { rd: Register::A6, rs1: Register::A3, imm: 0 });
+        /*0x1024*/ instrs.push(Instr::Jal { rd: Register::Zero, imm: 0x10 }); //goto end
+
+        //b3
+        /*0x1028*/ instrs.push(Instr::Sub { rd: Register::A2, rs1: Register::A0, rs2: Register::A1 });
+        /*0x102c*/ instrs.push(Instr::Lui { rd: Register::A3, imm: 2 });
+        /*0x1030*/ instrs.push(Instr::Jal { rd: Register::Zero, imm: -0x18 }); //goto b2
+
+        /*0x1034*/ instrs.push(Instr::Lui { rd: Register::Zero, imm: 0 });
+
+        // end
+
+        let mut keys = vec![0x1000, 0x100c, 0x1018, 0x1028, 0x1034];
+        let (cfg, mut leader_set) = emu.create_cfg(&instrs, 0x1000, 0x1034, &mut keys);
+        let (mut dom_tree, mut dom_set) = emu.generate_domtree(&cfg, leader_set.len());
+        let df_list = emu.find_domfrontier(&mut dom_tree, &cfg, &mut dom_set);
+        let (var_list, var_origin, varlist_origin, var_tuple) =
+            emu.find_var_origin(&instrs, &mut leader_set);
+        let (def_sites, var_phi, phi_func) = emu.insert_phi_func(&cfg, &instrs, &df_list,
+                                                                    &varlist_origin, &var_tuple);
+
+        emu.rename_regs(&cfg, &mut instrs, &mut leader_set, &dom_tree,
+                        &var_list, &var_origin, &phi_func);
+
+        println!("cfg: {:?}", cfg);
+        println!("leader_set: {:?}", leader_set);
+        println!("dom_tree: {:?}", dom_tree);
+        println!("dom_set: {:?}", dom_set);
+        println!("df_list: {:?}", df_list);
+        println!("var_list: {:?}", var_list);
+        println!("var_list_origin: {:?}", varlist_origin);
+        println!("var_tuple: {:?}", var_tuple);
+        println!("def_sites: {:?}\n", def_sites);
+        println!("var_phi: {:?}\n", var_phi);
+        println!("phi_func: {:?}\n", phi_func);
     }
 }
