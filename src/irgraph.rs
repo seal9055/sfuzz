@@ -1,3 +1,7 @@
+use crate::{
+    emulator::{Register as PReg},
+};
+
 use std::fs::File;
 use std::io::Write;
 use std::fmt::{self, Formatter, UpperHex};
@@ -28,8 +32,14 @@ impl<T: PartialOrd + Signed + UpperHex> UpperHex for ReallySigned<T> {
 }
 
 /// Register-type used internally by the IR
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Reg(pub u16);
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Reg(pub PReg, pub u16);
+
+impl fmt::Display for Reg {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{:?}({})", self.0, self.1)
+    }
+}
 
 /// A label used for control flow in the graph
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -37,7 +47,7 @@ pub struct Label(pub u16);
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum Operation {
-    IDK,
+    Undefined,
     Loadi(i32),
     Jmp(usize),
     Call(usize),
@@ -62,7 +72,7 @@ pub enum Operation {
 }
 
 impl Default for Operation {
-    fn default() -> Self { Operation::IDK }
+    fn default() -> Self { Operation::Undefined }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -96,7 +106,7 @@ impl fmt::Display for Instruction {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self.op {
             Operation::Loadi(x) => {
-                write!(f, "{:#08X}  {:?} = {:#0X}",
+                write!(f, "{:#08X}  {} = {:#0X}",
                        self.pc.unwrap_or(0), self.o_reg.unwrap(), ReallySigned(x as i32))
             },
             Operation::Jmp(x) => {
@@ -106,28 +116,32 @@ impl fmt::Display for Instruction {
                 write!(f, "{:#08X}  Call {:#0x?}", self.pc.unwrap_or(0), x)
             },
             Operation::CallReg => {
-                write!(f, "{:#08X}  Call {:#0x?}", self.pc.unwrap_or(0), self.i_reg.0.unwrap())
+                write!(f, "{:#08X}  Call {}", self.pc.unwrap_or(0), self.i_reg.0.unwrap())
             },
             Operation::Branch(x, y) => {
                 match self.flags & 0b111100 {
                     0b000100 => {
-                        write!(f, "{:#08X}  BE ({:#0X?}, {:#0X?})", self.pc.unwrap_or(0), y, x)
+                        write!(f, "{:#08X}  if {} == {} ({:#0X?}, {:#0X?})", self.pc.unwrap_or(0),
+                               self.i_reg.0.unwrap(), self.i_reg.1.unwrap(), y, x)
                     },
                     0b001000 => {
-                        write!(f, "{:#08X}  BNE ({:#0X?}, {:#0X?})", self.pc.unwrap_or(0), y, x)
+                        write!(f, "{:#08X}  if {} != {} ({:#0X?}, {:#0X?})", self.pc.unwrap_or(0),
+                               self.i_reg.0.unwrap(), self.i_reg.1.unwrap(), y, x)
                     },
                     0b010000 => {
-                        write!(f, "{:#08X}  BLT ({:#0X?}, {:#0X?})", self.pc.unwrap_or(0), y, x)
+                        write!(f, "{:#08X}  if {} < {} ({:#0X?}, {:#0X?})", self.pc.unwrap_or(0),
+                               self.i_reg.0.unwrap(), self.i_reg.1.unwrap(), y, x)
                     },
                     0b100000 => {
-                        write!(f, "{:#08X}  BGT ({:#0X?}, {:#0X?})", self.pc.unwrap_or(0), y, x)
+                        write!(f, "{:#08X}  if {} > {} ({:#0X?}, {:#0X?})", self.pc.unwrap_or(0),
+                               self.i_reg.0.unwrap(), self.i_reg.1.unwrap(), y, x)
                     },
                     _ => { unreachable!() },
                 }
             },
             Operation::Phi => {
-                write!(f, "{:#08X}  φ ({:#0X?}, {:#0X?})", self.pc.unwrap_or(0),
-                       self.i_reg.0.unwrap(), self.i_reg.1.unwrap())
+                write!(f, "{:#08X}  φ ({}, {})", self.pc.unwrap_or(0), self.i_reg.0.unwrap(),
+                       self.i_reg.1.unwrap())
             }
             Operation::Label(x) => {
                 write!(f, "\t\tLabel @ {:#0X?}\n", x)
@@ -136,53 +150,53 @@ impl fmt::Display for Instruction {
                 write!(f, "{:#08X}  Syscall", self.pc.unwrap_or(0))
             },
             Operation::JmpReg => {
-                write!(f, "{:#08X}  Jmp {:?}", self.pc.unwrap_or(0), self.i_reg.0.unwrap())
+                write!(f, "{:#08X}  Jmp {}", self.pc.unwrap_or(0), self.i_reg.0.unwrap())
             },
             Operation::Ret => {
                 write!(f, "{:#08X}  Ret", self.pc.unwrap_or(0))
             },
             Operation::Store => {
-                write!(f, "{:#08X}  [{:?}] = {:?}", self.pc.unwrap_or(0), self.i_reg.1.unwrap(),
+                write!(f, "{:#08X}  [{}] = {}", self.pc.unwrap_or(0), self.i_reg.1.unwrap(),
                     self.i_reg.0.unwrap())
             },
             Operation::Load => {
-                write!(f, "{:#08X}  {:?} = [{:?}]", self.pc.unwrap_or(0), self.o_reg.unwrap(),
+                write!(f, "{:#08X}  {} = [{}]", self.pc.unwrap_or(0), self.o_reg.unwrap(),
                     self.i_reg.0.unwrap())
             },
             Operation::Add => {
-                write!(f, "{:#08X}  {:?} = {:?} + {:?}", self.pc.unwrap_or(0),
+                write!(f, "{:#08X}  {} = {} + {}", self.pc.unwrap_or(0),
                        self.o_reg.unwrap(), self.i_reg.0.unwrap(), self.i_reg.1.unwrap())
             },
             Operation::Sub => {
-                write!(f, "{:#08X}  {:?} = {:?} - {:?}", self.pc.unwrap_or(0),
+                write!(f, "{:#08X}  {} = {} - {}", self.pc.unwrap_or(0),
                        self.o_reg.unwrap(), self.i_reg.0.unwrap(), self.i_reg.1.unwrap())
             },
             Operation::And => {
-                write!(f, "{:#08X}  {:?} = {:?} & {:?}", self.pc.unwrap_or(0),
+                write!(f, "{:#08X}  {} = {} & {}", self.pc.unwrap_or(0),
                        self.o_reg.unwrap(), self.i_reg.0.unwrap(), self.i_reg.1.unwrap())
             },
             Operation::Or => {
-                write!(f, "{:#08X}  {:?} = {:?} | {:?}", self.pc.unwrap_or(0),
+                write!(f, "{:#08X}  {} = {} | {}", self.pc.unwrap_or(0),
                        self.o_reg.unwrap(), self.i_reg.0.unwrap(), self.i_reg.1.unwrap())
             },
             Operation::Xor => {
-                write!(f, "{:#08X}  {:?} = {:?} ^ {:?}", self.pc.unwrap_or(0),
+                write!(f, "{:#08X}  {} = {} ^ {}", self.pc.unwrap_or(0),
                        self.o_reg.unwrap(), self.i_reg.0.unwrap(), self.i_reg.1.unwrap())
             },
             Operation::Shl => {
-                write!(f, "{:#08X}  {:?} = {:?} << {:?}", self.pc.unwrap_or(0),
+                write!(f, "{:#08X}  {} = {} << {}", self.pc.unwrap_or(0),
                        self.o_reg.unwrap(), self.i_reg.0.unwrap(), self.i_reg.1.unwrap())
             },
             Operation::Shr => {
-                write!(f, "{:#08X}  {:?} = {:?} >> {:?}", self.pc.unwrap_or(0),
+                write!(f, "{:#08X}  {} = {} >> {}", self.pc.unwrap_or(0),
                        self.o_reg.unwrap(), self.i_reg.0.unwrap(), self.i_reg.1.unwrap())
             },
             Operation::Sar => {
-                write!(f, "{:#08X}  {:?} = {:?} >> {:?} [A]", self.pc.unwrap_or(0),
+                write!(f, "{:#08X}  {} = {} >> {} [A]", self.pc.unwrap_or(0),
                        self.o_reg.unwrap(), self.i_reg.0.unwrap(), self.i_reg.1.unwrap())
             },
             Operation::Slt => {
-                write!(f, "{:#08X}  {:?} = {:?} < {:?} ? 1 : 0", self.pc.unwrap_or(0),
+                write!(f, "{:#08X}  {} = {} < {} ? 1 : 0", self.pc.unwrap_or(0),
                        self.o_reg.unwrap(), self.i_reg.0.unwrap(), self.i_reg.1.unwrap())
             },
             _ => { unreachable!() },
@@ -194,9 +208,6 @@ impl fmt::Display for Instruction {
 pub struct IRGraph {
     /// List of all instructions
     pub instrs: Vec<Instruction>,
-
-    /// Currently available register index
-    next_reg: Reg,
 
     /// This is used to map track the pc of the currently executing instruction
     cur_pc: Option<usize>,
@@ -214,7 +225,6 @@ impl IRGraph {
     pub fn new() -> Self {
         IRGraph {
             instrs:     Vec::new(),
-            next_reg:   Reg(0),
             cur_pc:     None,
         }
     }
@@ -291,16 +301,13 @@ impl IRGraph {
         self.cur_pc = Some(pc);
     }
 
-    /// Allocate new Register for IRGraph
-    fn alloc_reg(&mut self) -> Result<Reg, Error> {
-        let ret = self.next_reg;
-        self.next_reg = Reg(self.next_reg.0.checked_add(1).ok_or(Error::OutOfRegs)?);
-        Ok(ret)
+    /// Get an IRReg for a physical register
+    pub fn get_reg(&self, phys_reg: PReg) -> Reg {
+        Reg(phys_reg, 0)
     }
 
     /// Allocate new Label for IRGraph
     pub fn set_label(&mut self, pc: usize) {
-        //self.labels.insert(self.cur_pc.unwrap(), self.instrs.len() as u16);
         self.instrs.push( Instruction {
             op: Operation::Label(pc),
             i_reg: (None, None),
@@ -311,17 +318,17 @@ impl IRGraph {
     }
 
     /// Load an immediate value into a register
-    pub fn loadi(&mut self, imm: i32, flag: u16) -> Reg {
-        let reg = self.alloc_reg().unwrap();
+    pub fn loadi(&mut self, r1: PReg, imm: i32, flag: u16) -> PReg {
+        let v1 = self.get_reg(r1);
         self.instrs.push( Instruction {
             op: Operation::Loadi(imm),
             i_reg: (None, None),
-            o_reg: Some(reg),
+            o_reg: Some(v1),
             flags: flag,
             pc: self.cur_pc,
         });
         self.cur_pc = None;
-        reg
+        r1
     }
 
     pub fn jmp(&mut self, target: usize) {
@@ -346,7 +353,7 @@ impl IRGraph {
         self.cur_pc = None;
     }
 
-    pub fn ret(&mut self, target: Reg) {
+    pub fn ret(&mut self) {
         self.instrs.push( Instruction {
             op: Operation::Ret,
             i_reg: (None, None),
@@ -357,10 +364,11 @@ impl IRGraph {
         self.cur_pc = None;
     }
 
-    pub fn jmp_reg(&mut self, target: Reg) {
+    pub fn jmp_reg(&mut self, target: PReg) {
+        let vtarget = self.get_reg(target);
         self.instrs.push( Instruction {
             op: Operation::JmpReg,
-            i_reg: (Some(target), None),
+            i_reg: (Some(vtarget), None),
             o_reg: None,
             flags: Flag::NoFlag,
             pc: self.cur_pc,
@@ -368,10 +376,11 @@ impl IRGraph {
         self.cur_pc = None;
     }
 
-    pub fn call_reg(&mut self, target: Reg) {
+    pub fn call_reg(&mut self, target: PReg) {
+        let vtarget = self.get_reg(target);
         self.instrs.push( Instruction {
             op: Operation::CallReg,
-            i_reg: (Some(target), None),
+            i_reg: (Some(vtarget), None),
             o_reg: None,
             flags: Flag::NoFlag,
             pc: self.cur_pc,
@@ -379,10 +388,12 @@ impl IRGraph {
         self.cur_pc = None;
     }
 
-    pub fn branch(&mut self, reg1: Reg, reg2: Reg, true_part: usize, false_part: usize, flags: u16) {
+    pub fn branch(&mut self, r2: PReg, r3: PReg, true_part: usize, false_part: usize, flags: u16) {
+        let v2 = self.get_reg(r2);
+        let v3 = self.get_reg(r3);
         self.instrs.push( Instruction {
             op: Operation::Branch(true_part, false_part),
-            i_reg: (Some(reg1), Some(reg2)),
+            i_reg: (Some(v2), Some(v3)),
             o_reg: None,
             flags,
             pc: self.cur_pc,
@@ -390,23 +401,26 @@ impl IRGraph {
         self.cur_pc = None;
     }
 
-    pub fn load(&mut self, reg1: Reg, flags: u16) -> Reg {
-        let reg = self.alloc_reg().unwrap();
+    pub fn load(&mut self, r1: PReg, r2: PReg, flags: u16) -> PReg {
+        let v1 = self.get_reg(r1);
+        let v2 = self.get_reg(r2);
         self.instrs.push( Instruction {
             op: Operation::Load,
-            i_reg: (Some(reg1), None),
-            o_reg: Some(reg),
+            i_reg: (Some(v2), None),
+            o_reg: Some(v1),
             flags,
             pc: self.cur_pc,
         });
         self.cur_pc = None;
-        reg
+        r1
     }
 
-    pub fn store(&mut self, rs2_reg: Reg, mem_addr: Reg, flags: u16) {
+    pub fn store(&mut self, r2: PReg, r3: PReg, flags: u16) {
+        let v2 = self.get_reg(r2);
+        let v3 = self.get_reg(r3);
         self.instrs.push( Instruction {
             op: Operation::Store,
-            i_reg: (Some(rs2_reg), Some(mem_addr)),
+            i_reg: (Some(v2), Some(v3)),
             o_reg: None,
             flags,
             pc: self.cur_pc,
@@ -415,123 +429,141 @@ impl IRGraph {
     }
 
     /// Set res_reg if rs1_reg is less than imm_reg
-    pub fn slt(&mut self, rs1_reg: Reg, imm_reg: Reg, flags: u16) -> Reg {
-        let reg = self.alloc_reg().unwrap();
+    pub fn slt(&mut self, r1: PReg, r2: PReg, r3: PReg, flags: u16) -> PReg {
+        let v1 = self.get_reg(r1);
+        let v2 = self.get_reg(r2);
+        let v3 = self.get_reg(r3);
         self.instrs.push( Instruction {
             op: Operation::Slt,
-            i_reg: (Some(rs1_reg), Some(imm_reg)),
-            o_reg: Some(reg),
+            i_reg: (Some(v2), Some(v3)),
+            o_reg: Some(v1),
             flags,
             pc: self.cur_pc,
         });
         self.cur_pc = None;
-        reg
+        r1
     }
 
     /// Add 2 registers and store the result in a new register
-    pub fn add(&mut self, reg1: Reg, reg2: Reg, flags: u16) -> Reg {
-        let reg = self.alloc_reg().unwrap();
+    pub fn add(&mut self, r1: PReg, r2: PReg, r3: PReg, flags: u16) -> PReg {
+        let v1 = self.get_reg(r1);
+        let v2 = self.get_reg(r2);
+        let v3 = self.get_reg(r3);
         self.instrs.push( Instruction {
             op: Operation::Add,
-            i_reg: (Some(reg1), Some(reg2)),
-            o_reg: Some(reg),
+            i_reg: (Some(v2), Some(v3)),
+            o_reg: Some(v1),
             flags,
             pc: self.cur_pc,
         });
         self.cur_pc = None;
-        reg
+        r1
     }
 
     /// Subtract ret2 from reg1 and store the result in a new register
-    pub fn sub(&mut self, reg1: Reg, reg2: Reg, flags: u16) -> Reg {
-        let reg = self.alloc_reg().unwrap();
+    pub fn sub(&mut self, r1: PReg, r2: PReg, r3: PReg, flags: u16) -> PReg {
+        let v1 = self.get_reg(r1);
+        let v2 = self.get_reg(r2);
+        let v3 = self.get_reg(r3);
         self.instrs.push( Instruction {
             op: Operation::Sub,
-            i_reg: (Some(reg1), Some(reg2)),
-            o_reg: Some(reg),
+            i_reg: (Some(v2), Some(v3)),
+            o_reg: Some(v1),
             flags,
             pc: self.cur_pc,
         });
         self.cur_pc = None;
-        reg
+        r1
     }
 
-    pub fn xor(&mut self, reg1: Reg, reg2: Reg) -> Reg {
-        let reg = self.alloc_reg().unwrap();
+    pub fn xor(&mut self, r1: PReg, r2: PReg, r3: PReg) -> PReg {
+        let v1 = self.get_reg(r1);
+        let v2 = self.get_reg(r2);
+        let v3 = self.get_reg(r3);
         self.instrs.push( Instruction {
             op: Operation::Xor,
-            i_reg: (Some(reg1), Some(reg2)),
-            o_reg: Some(reg),
+            i_reg: (Some(v2), Some(v3)),
+            o_reg: Some(v1),
             flags: Flag::NoFlag,
             pc: self.cur_pc,
         });
         self.cur_pc = None;
-        reg
+        r1
     }
 
-    pub fn or(&mut self, reg1: Reg, reg2: Reg) -> Reg {
-        let reg = self.alloc_reg().unwrap();
+    pub fn or(&mut self, r1: PReg, r2: PReg, r3: PReg) -> PReg {
+        let v1 = self.get_reg(r1);
+        let v2 = self.get_reg(r2);
+        let v3 = self.get_reg(r3);
         self.instrs.push( Instruction {
             op: Operation::Or,
-            i_reg: (Some(reg1), Some(reg2)),
-            o_reg: Some(reg),
+            i_reg: (Some(v2), Some(v3)),
+            o_reg: Some(v1),
             flags: Flag::NoFlag,
             pc: self.cur_pc,
         });
         self.cur_pc = None;
-        reg
+        r1
     }
 
-    pub fn and(&mut self, reg1: Reg, reg2: Reg) -> Reg {
-        let reg = self.alloc_reg().unwrap();
+    pub fn and(&mut self, r1: PReg, r2: PReg, r3: PReg) -> PReg {
+        let v1 = self.get_reg(r1);
+        let v2 = self.get_reg(r2);
+        let v3 = self.get_reg(r3);
         self.instrs.push( Instruction {
             op: Operation::And,
-            i_reg: (Some(reg1), Some(reg2)),
-            o_reg: Some(reg),
+            i_reg: (Some(v2), Some(v3)),
+            o_reg: Some(v1),
             flags: Flag::NoFlag,
             pc: self.cur_pc,
         });
         self.cur_pc = None;
-        reg
+        r1
     }
 
-    pub fn shl(&mut self, reg1: Reg, reg2: Reg, flags: u16) -> Reg {
-        let reg = self.alloc_reg().unwrap();
+    pub fn shl(&mut self, r1: PReg, r2: PReg, r3: PReg, flags: u16) -> PReg {
+        let v1 = self.get_reg(r1);
+        let v2 = self.get_reg(r2);
+        let v3 = self.get_reg(r3);
         self.instrs.push( Instruction {
             op: Operation::Shl,
-            i_reg: (Some(reg1), Some(reg2)),
-            o_reg: Some(reg),
+            i_reg: (Some(v2), Some(v3)),
+            o_reg: Some(v1),
             flags,
             pc: self.cur_pc,
         });
         self.cur_pc = None;
-        reg
+        r1
     }
 
-    pub fn shr(&mut self, reg1: Reg, reg2: Reg, flags: u16) -> Reg {
-        let reg = self.alloc_reg().unwrap();
+    pub fn shr(&mut self, r1: PReg, r2: PReg, r3: PReg, flags: u16) -> PReg {
+        let v1 = self.get_reg(r1);
+        let v2 = self.get_reg(r2);
+        let v3 = self.get_reg(r3);
         self.instrs.push( Instruction {
             op: Operation::Shr,
-            i_reg: (Some(reg1), Some(reg2)),
-            o_reg: Some(reg),
+            i_reg: (Some(v2), Some(v3)),
+            o_reg: Some(v1),
             flags,
             pc: self.cur_pc,
         });
         self.cur_pc = None;
-        reg
+        r1
     }
 
-    pub fn sar(&mut self, reg1: Reg, reg2: Reg, flags: u16) -> Reg {
-        let reg = self.alloc_reg().unwrap();
+    pub fn sar(&mut self, r1: PReg, r2: PReg, r3: PReg, flags: u16) -> PReg {
+        let v1 = self.get_reg(r1);
+        let v2 = self.get_reg(r2);
+        let v3 = self.get_reg(r3);
         self.instrs.push( Instruction {
             op: Operation::Sar,
-            i_reg: (Some(reg1), Some(reg2)),
-            o_reg: Some(reg),
+            i_reg: (Some(v2), Some(v3)),
+            o_reg: Some(v1),
             flags,
             pc: self.cur_pc,
         });
         self.cur_pc = None;
-        reg
+        r1
     }
 
     pub fn syscall(&mut self) {

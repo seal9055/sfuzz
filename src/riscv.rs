@@ -2,8 +2,9 @@ use crate::emulator::Register;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Instr {
-    Undefined,
-    Ecall,
+    Nil   ,
+    Fence ,
+    Ecall ,
     Ebreak,
     Lui    { rd: Register, imm: i32 },
     Auipc  { rd: Register, imm: i32 },
@@ -256,80 +257,73 @@ impl JType {
 pub fn decode_instr(instr: u32) -> Instr {
     let opcode = instr & 0b1111111;
 
-    match opcode {
+    let ret = match opcode {
         0b0110111 => { /* LUI */
             let instr = UType::new(instr);
-            return Instr::Lui { rd: instr.rd, imm: instr.imm };
+            Instr::Lui { rd: instr.rd, imm: instr.imm }
         },
         0b0010111 => { /* AUIPC */
             let instr = UType::new(instr);
-            return Instr::Auipc { rd: instr.rd, imm: instr.imm };
+            Instr::Auipc { rd: instr.rd, imm: instr.imm }
 
         },
         0b1101111 => { /* JAL */
             let instr = JType::new(instr);
-            return Instr::Jal { rd: instr.rd, imm: instr.imm };
+            Instr::Jal { rd: instr.rd, imm: instr.imm }
 
         },
         0b1100111 => { /* JALR */
             let instr = IType::new(instr);
-            return Instr::Jalr { rd: instr.rd, rs1: instr.rs1, imm: instr.imm };
+            Instr::Jalr { rd: instr.rd, rs1: instr.rs1, imm: instr.imm }
 
         },
         0b1100011 => {
             let instr = BType::new(instr);
             match instr.funct3 {
                 0b000 => { /* BEQ */
-                    return
-                        Instr::Beq { rs1: instr.rs1, rs2: instr.rs2, imm: instr.imm, mode: 0b000 };
+                    Instr::Beq { rs1: instr.rs1, rs2: instr.rs2, imm: instr.imm, mode: 0b000 }
                 },
                 0b001 => { /* BNE */
-                    return
-                        Instr::Bne { rs1: instr.rs1, rs2: instr.rs2, imm: instr.imm, mode: 0b001 };
+                    Instr::Bne { rs1: instr.rs1, rs2: instr.rs2, imm: instr.imm, mode: 0b001 }
                 },
                 0b100 => { /* BLT */
-                    return
-                        Instr::Blt { rs1: instr.rs1, rs2: instr.rs2, imm: instr.imm, mode: 0b100 };
+                    Instr::Blt { rs1: instr.rs1, rs2: instr.rs2, imm: instr.imm, mode: 0b100 }
                 },
                 0b101 => { /* BGE */
-                    return
-                        Instr::Bge { rs1: instr.rs1, rs2: instr.rs2, imm: instr.imm, mode: 0b101 };
+                    Instr::Bge { rs1: instr.rs1, rs2: instr.rs2, imm: instr.imm, mode: 0b101 }
                 },
                 0b110 => { /* BLTU */
-                    return
-                        Instr::Bltu { rs1: instr.rs1, rs2: instr.rs2, imm: instr.imm, mode: 0b110 };
+                    Instr::Bltu { rs1: instr.rs1, rs2: instr.rs2, imm: instr.imm, mode: 0b110 }
                 },
                 0b111 => { /* BGEU */
-                    return
-                        Instr::Bgeu { rs1: instr.rs1, rs2: instr.rs2, imm: instr.imm, mode: 0b111 };
+                    Instr::Bgeu { rs1: instr.rs1, rs2: instr.rs2, imm: instr.imm, mode: 0b111 }
                 },
                 _ => { unreachable!(); }
             }
-
         },
         0b0000011 => {
             let instr = IType::new(instr);
             match instr.funct3 {
                 0b000 => { /* LB */
-                    return Instr::Lb { rd: instr.rd, rs1: instr.rs1, imm: instr.imm, mode: 0b000 };
+                    Instr::Lb { rd: instr.rd, rs1: instr.rs1, imm: instr.imm, mode: 0b000 }
                 },
                 0b001 => { /* LH */
-                    return Instr::Lh { rd: instr.rd, rs1: instr.rs1, imm: instr.imm, mode: 0b001};
+                    Instr::Lh { rd: instr.rd, rs1: instr.rs1, imm: instr.imm, mode: 0b001}
                 },
                 0b010 => { /* LW */
-                    return Instr::Lw { rd: instr.rd, rs1: instr.rs1, imm: instr.imm, mode: 0b010};
+                    Instr::Lw { rd: instr.rd, rs1: instr.rs1, imm: instr.imm, mode: 0b010}
                 },
                 0b100 => { /* LBU */
-                    return Instr::Lbu { rd: instr.rd, rs1: instr.rs1, imm: instr.imm, mode: 0b100 };
+                    Instr::Lbu { rd: instr.rd, rs1: instr.rs1, imm: instr.imm, mode: 0b100 }
                 },
                 0b101 => { /* LHU */
-                    return Instr::Lhu { rd: instr.rd, rs1: instr.rs1, imm: instr.imm, mode: 0b101 };
+                    Instr::Lhu { rd: instr.rd, rs1: instr.rs1, imm: instr.imm, mode: 0b101 }
                 },
                 0b110 => { /* LWU */
-                    return Instr::Lwu { rd: instr.rd, rs1: instr.rs1, imm: instr.imm, mode: 0b110 };
+                    Instr::Lwu { rd: instr.rd, rs1: instr.rs1, imm: instr.imm, mode: 0b110 }
                 },
                 0b011 => { /* LD */
-                    return Instr::Ld { rd: instr.rd, rs1: instr.rs1, imm: instr.imm, mode: 0b011};
+                    Instr::Ld { rd: instr.rd, rs1: instr.rs1, imm: instr.imm, mode: 0b011}
                 },
                 _ => { unreachable!(); }
             }
@@ -338,20 +332,16 @@ pub fn decode_instr(instr: u32) -> Instr {
             let instr = SType::new(instr);
             match instr.funct3 {
                 0b000 => { /* SB */
-                    return
-                        Instr::Sb { rs1: instr.rs1, rs2: instr.rs2, imm: instr.imm, mode: 0b000 };
+                    Instr::Sb { rs1: instr.rs1, rs2: instr.rs2, imm: instr.imm, mode: 0b000 }
                 },
                 0b001 => { /* SH */
-                    return
-                        Instr::Sh { rs1: instr.rs1, rs2: instr.rs2, imm: instr.imm, mode: 0b001 };
+                    Instr::Sh { rs1: instr.rs1, rs2: instr.rs2, imm: instr.imm, mode: 0b001 }
                 },
                 0b010 => { /* SW */
-                    return
-                        Instr::Sw { rs1: instr.rs1, rs2: instr.rs2, imm: instr.imm, mode: 0b010 };
+                    Instr::Sw { rs1: instr.rs1, rs2: instr.rs2, imm: instr.imm, mode: 0b010 }
                 },
                 0b011 => { /* SD */
-                    return
-                        Instr::Sd { rs1: instr.rs1, rs2: instr.rs2, imm: instr.imm, mode: 0b011 };
+                    Instr::Sd { rs1: instr.rs1, rs2: instr.rs2, imm: instr.imm, mode: 0b011 }
                 },
                 _ => { unreachable!(); }
             }
@@ -360,36 +350,36 @@ pub fn decode_instr(instr: u32) -> Instr {
             let instr = IType::new(instr);
             match instr.funct3 {
                 0b000 => { /* ADDI */
-                    return Instr::Addi { rd: instr.rd, rs1: instr.rs1, imm: instr.imm };
+                    Instr::Addi  { rd: instr.rd, rs1: instr.rs1, imm: instr.imm }
                 },
                 0b010 => { /* SLTI */
-                    return Instr::Slti { rd: instr.rd, rs1: instr.rs1, imm: instr.imm };
+                    Instr::Slti  { rd: instr.rd, rs1: instr.rs1, imm: instr.imm }
                 },
                 0b011 => { /* SLTIU */
-                    return Instr::Sltiu { rd: instr.rd, rs1: instr.rs1, imm: instr.imm };
+                    Instr::Sltiu { rd: instr.rd, rs1: instr.rs1, imm: instr.imm }
                 },
                 0b100 => { /* XORI */
-                    return Instr::Xori { rd: instr.rd, rs1: instr.rs1, imm: instr.imm };
+                     Instr::Xori  { rd: instr.rd, rs1: instr.rs1, imm: instr.imm }
                 },
                 0b110 => { /* ORI */
-                    return Instr::Ori { rd: instr.rd, rs1: instr.rs1, imm: instr.imm };
+                     Instr::Ori   { rd: instr.rd, rs1: instr.rs1, imm: instr.imm }
                 },
                 0b111 => { /* ANDI */
-                    return Instr::Andi { rd: instr.rd, rs1: instr.rs1, imm: instr.imm };
+                     Instr::Andi  { rd: instr.rd, rs1: instr.rs1, imm: instr.imm }
                 },
                 0b001 => { /* SLLI */
                     let shamt = instr.imm & 0b111111;
-                    return Instr::Slli { rd: instr.rd, rs1: instr.rs1, imm: shamt};
+                     Instr::Slli  { rd: instr.rd, rs1: instr.rs1, imm: shamt}
                 },
                 0b101 => {
                     match (instr.imm >> 6) & 0b111111 {
                         0b000000 => { /* SRLI */
                             let shamt = instr.imm & 0b111111;
-                            return Instr::Srli { rd: instr.rd, rs1: instr.rs1, imm: shamt };
+                             Instr::Srli { rd: instr.rd, rs1: instr.rs1, imm: shamt }
                         },
                         0b010000 => { /* SRAI */
                             let shamt = instr.imm & 0b111111;
-                            return Instr::Srai { rd: instr.rd, rs1: instr.rs1, imm: shamt };
+                             Instr::Srai { rd: instr.rd, rs1: instr.rs1, imm: shamt }
                         },
                         _ => { unreachable!(); }
                     }
@@ -401,58 +391,58 @@ pub fn decode_instr(instr: u32) -> Instr {
             let instr = RType::new(instr);
             match (instr.funct3, instr.funct7) {
                 (0b000, 0b0000000) => { /* ADD */
-                    return Instr::Add { rd: instr.rd, rs1: instr.rs1, rs2: instr.rs2 };
+                    Instr::Add { rd: instr.rd, rs1: instr.rs1, rs2: instr.rs2 }
                 },
                 (0b000, 0b0100000) => { /* SUB */
-                    return Instr::Sub { rd: instr.rd, rs1: instr.rs1, rs2: instr.rs2 };
+                    Instr::Sub { rd: instr.rd, rs1: instr.rs1, rs2: instr.rs2 }
                 },
                 (0b000, 0b0000001) => { /* MUL */
-                    return Instr::Mul { rd: instr.rd, rs1: instr.rs1, rs2: instr.rs2 };
+                    Instr::Mul { rd: instr.rd, rs1: instr.rs1, rs2: instr.rs2 }
                 },
                 (0b001, 0b0000000) => { /* SLL */
-                    return Instr::Sll { rd: instr.rd, rs1: instr.rs1, rs2: instr.rs2 };
+                    Instr::Sll { rd: instr.rd, rs1: instr.rs1, rs2: instr.rs2 }
                 },
                 (0b001, 0b0000001) => { /* MULH */
-                    return Instr::Mulh { rd: instr.rd, rs1: instr.rs1, rs2: instr.rs2 };
+                    Instr::Mulh { rd: instr.rd, rs1: instr.rs1, rs2: instr.rs2 }
                 },
                 (0b010, 0b0000000) => { /* SLT */
-                    return Instr::Slt { rd: instr.rd, rs1: instr.rs1, rs2: instr.rs2 };
+                    Instr::Slt { rd: instr.rd, rs1: instr.rs1, rs2: instr.rs2 }
                 },
                 (0b010, 0b0000001) => { /* MULHSU */
-                    return Instr::Mulhsu { rd: instr.rd, rs1: instr.rs1, rs2: instr.rs2 };
+                    Instr::Mulhsu { rd: instr.rd, rs1: instr.rs1, rs2: instr.rs2 }
                 },
                 (0b011, 0b0000000) => { /* SLTU */
-                    return Instr::Sltu { rd: instr.rd, rs1: instr.rs1, rs2: instr.rs2 };
+                    Instr::Sltu { rd: instr.rd, rs1: instr.rs1, rs2: instr.rs2 }
                 },
                 (0b011, 0b0000001) => { /* MULHU */
-                    return Instr::Mulhu { rd: instr.rd, rs1: instr.rs1, rs2: instr.rs2 };
+                    Instr::Mulhu { rd: instr.rd, rs1: instr.rs1, rs2: instr.rs2 }
                 },
                 (0b100, 0b0000000) => { /* XOR */
-                    return Instr::Xor { rd: instr.rd, rs1: instr.rs1, rs2: instr.rs2 };
+                    Instr::Xor { rd: instr.rd, rs1: instr.rs1, rs2: instr.rs2 }
                 },
                 (0b100, 0b0000001) => { /* DIV */
-                    return Instr::Div { rd: instr.rd, rs1: instr.rs1, rs2: instr.rs2 };
+                    Instr::Div { rd: instr.rd, rs1: instr.rs1, rs2: instr.rs2 }
                 },
                 (0b101, 0b0000000) => { /* SRL */
-                    return Instr::Srl { rd: instr.rd, rs1: instr.rs1, rs2: instr.rs2 };
+                    Instr::Srl { rd: instr.rd, rs1: instr.rs1, rs2: instr.rs2 }
                 },
                 (0b101, 0b0100000) => { /* SRA */
-                    return Instr::Sra { rd: instr.rd, rs1: instr.rs1, rs2: instr.rs2 };
+                    Instr::Sra { rd: instr.rd, rs1: instr.rs1, rs2: instr.rs2 }
                 },
                 (0b101, 0b0000001) => { /* DIVU */
-                    return Instr::Divu { rd: instr.rd, rs1: instr.rs1, rs2: instr.rs2 };
+                    Instr::Divu { rd: instr.rd, rs1: instr.rs1, rs2: instr.rs2 }
                 },
                 (0b110, 0b0000000) => { /* OR */
-                    return Instr::Or { rd: instr.rd, rs1: instr.rs1, rs2: instr.rs2 };
+                    Instr::Or { rd: instr.rd, rs1: instr.rs1, rs2: instr.rs2 }
                 },
                 (0b110, 0b0000001) => { /* REM */
-                    return Instr::Rem { rd: instr.rd, rs1: instr.rs1, rs2: instr.rs2 };
+                    Instr::Rem { rd: instr.rd, rs1: instr.rs1, rs2: instr.rs2 }
                 },
                 (0b111, 0b0000000) => { /* AND */
-                    return Instr::And { rd: instr.rd, rs1: instr.rs1, rs2: instr.rs2 };
+                    Instr::And { rd: instr.rd, rs1: instr.rs1, rs2: instr.rs2 }
                 },
                 (0b111, 0b0000001) => { /* REMU */
-                    return Instr::Remu { rd: instr.rd, rs1: instr.rs1, rs2: instr.rs2 };
+                    Instr::Remu { rd: instr.rd, rs1: instr.rs1, rs2: instr.rs2 }
                 },
                 _ => { unreachable!(); }
             }
@@ -460,12 +450,13 @@ pub fn decode_instr(instr: u32) -> Instr {
         },
         0b0001111 => { /* Fence */
             // Nop
+            Instr::Fence
         },
         0b1110011 => {
             if instr == 0b00000000000000000000000001110011 { /* ECALL */
-                return Instr::Ecall;
+                Instr::Ecall
             } else if instr == 0b00000000000100000000000001110011 { /* EBREAK */
-                return Instr::Ebreak;
+                Instr::Ebreak
             } else { unreachable!(); }
         },
         0b0011011 => {
@@ -474,19 +465,19 @@ pub fn decode_instr(instr: u32) -> Instr {
 
             match (instr.funct3, mode) {
                 (0b000, _) => { /* ADDIW */
-                    return Instr::Addiw { rd: instr.rd, rs1: instr.rs1, imm: instr.imm };
+                    Instr::Addiw { rd: instr.rd, rs1: instr.rs1, imm: instr.imm }
                 },
                 (0b001, _) => { /* SLLIW */
                     let shamt = instr.imm & 0b11111;
-                    return Instr::Slliw { rd: instr.rd, rs1: instr.rs1, imm: shamt};
+                    Instr::Slliw { rd: instr.rd, rs1: instr.rs1, imm: shamt}
                 },
                 (0b101, 0b0000000 ) => { /* SRLIW */
                     let shamt = instr.imm & 0b11111;
-                    return Instr::Srliw { rd: instr.rd, rs1: instr.rs1, imm: shamt};
+                    Instr::Srliw { rd: instr.rd, rs1: instr.rs1, imm: shamt}
                 },
                 (0b101, 0b0100000 ) => { /* SRAIW */
                     let shamt = instr.imm & 0b11111;
-                    return Instr::Sraiw { rd: instr.rd, rs1: instr.rs1, imm: shamt};
+                    Instr::Sraiw { rd: instr.rd, rs1: instr.rs1, imm: shamt}
                 },
                 _ => { unreachable!(); },
             }
@@ -495,41 +486,41 @@ pub fn decode_instr(instr: u32) -> Instr {
             let instr = RType::new(instr);
             match (instr.funct3, instr.funct7) {
                 (0b000,  0b0000000) => { /* ADDW */
-                    return Instr::Addw { rd: instr.rd, rs1: instr.rs1, rs2: instr.rs2 };
+                    Instr::Addw { rd: instr.rd, rs1: instr.rs1, rs2: instr.rs2 }
                 },
                 (0b000,  0b0100000) => { /* SUBW */
-                    return Instr::Subw { rd: instr.rd, rs1: instr.rs1, rs2: instr.rs2 };
+                    Instr::Subw { rd: instr.rd, rs1: instr.rs1, rs2: instr.rs2 }
                 },
                 (0b000,  0b0000001) => { /* MULW */
-                    return Instr::Mulw { rd: instr.rd, rs1: instr.rs1, rs2: instr.rs2 };
+                    Instr::Mulw { rd: instr.rd, rs1: instr.rs1, rs2: instr.rs2 }
                 },
                 (0b001, 0b00000000) => { /* SLLW */
-                    return Instr::Sllw { rd: instr.rd, rs1: instr.rs1, rs2: instr.rs2 };
+                    Instr::Sllw { rd: instr.rd, rs1: instr.rs1, rs2: instr.rs2 }
                 },
                 (0b101,  0b0000000) => { /* SRLW */
-                    return Instr::Srlw { rd: instr.rd, rs1: instr.rs1, rs2: instr.rs2 };
+                    Instr::Srlw { rd: instr.rd, rs1: instr.rs1, rs2: instr.rs2 }
                 },
                 (0b101,  0b0100000) => { /* SRAW */
-                    return Instr::Sraw { rd: instr.rd, rs1: instr.rs1, rs2: instr.rs2 };
+                    Instr::Sraw { rd: instr.rd, rs1: instr.rs1, rs2: instr.rs2 }
                 },
                 (0b101,  0b0000001) => { /* DIVUW */
-                    return Instr::Divuw { rd: instr.rd, rs1: instr.rs1, rs2: instr.rs2 };
+                    Instr::Divuw { rd: instr.rd, rs1: instr.rs1, rs2: instr.rs2 }
                 },
                 (0b100,  0b0000001) => { /* DIVW */
-                    return Instr::Divw { rd: instr.rd, rs1: instr.rs1, rs2: instr.rs2 };
+                    Instr::Divw { rd: instr.rd, rs1: instr.rs1, rs2: instr.rs2 }
                 },
                 (0b110,  0b0000001) => { /* REMW */
-                    return Instr::Remw { rd: instr.rd, rs1: instr.rs1, rs2: instr.rs2 };
+                    Instr::Remw { rd: instr.rd, rs1: instr.rs1, rs2: instr.rs2 }
                 },
                 (0b111,  0b0000001) => { /* REMUW */
-                    return Instr::Remuw { rd: instr.rd, rs1: instr.rs1, rs2: instr.rs2 };
+                    Instr::Remuw { rd: instr.rd, rs1: instr.rs1, rs2: instr.rs2 }
                 },
                 _ => { panic!("Instr: {:#?}", instr); }//unreachable!(); }
             }
         },
-        _ => { return Instr::Undefined; }
-    }
-    Instr::Undefined
+        _ => { return Instr::Nil; }
+    };
+    ret
 }
 
 /// Unit tests for each Instruction encoding Riscv uses
@@ -538,8 +529,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn undefined() {
-        assert_eq!(decode_instr(0x0), Instr::Undefined)
+    fn nil() {
+        assert_eq!(decode_instr(0x0), Instr::Nil)
     }
 
     #[test]

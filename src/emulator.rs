@@ -56,6 +56,8 @@ pub enum Register {
     T5,
     T6,
     Pc,
+    Z1, // Z[1-2] are temporary registers used to generate ir instructions
+    Z2,
 }
 
 impl From<u32> for Register {
@@ -229,19 +231,19 @@ impl Emulator {
 
             let jit_addr = match (*self.jit).lookup(pc) {
                 None => {
-                    let mut irgraph = self.lift(pc).unwrap();
+                    let mut irgraph = self.lift_func(pc).unwrap();
 
                     let cfg = CFG::new(&irgraph);
                     cfg.dump_dot();
 
-                    //for b in &cfg.blocks {
-                    //    println!("[");
-                    //    for instr in b {
-                    //        println!("{}", instr);
-                    //    }
-                    //    println!("]\n");
-                    //}
-                    //println!("edges: {:?}", cfg.edges);
+                    for b in &cfg.blocks {
+                        println!("[");
+                        for instr in b {
+                            println!("{}", instr);
+                        }
+                        println!("]\n");
+                    }
+                    println!("edges: {:?}", cfg.edges);
 
                     irgraph.optimize();
                     (*self.jit).compile(irgraph).unwrap()
@@ -305,16 +307,12 @@ impl Emulator {
     }
 
     /// Returns a BTreeMap of pc value's at which a label should be created
-    fn extract_labels(&self, mut pc: usize, end_pc: usize) -> BTreeMap<usize, u8> {
+    fn extract_labels(&self, mut pc: usize, instrs: &Vec<Instr>) -> BTreeMap<usize, u8> {
         let mut ret = BTreeMap::new();
 
-        while pc < end_pc {
-            let opcodes: u32 = self.memory.read_at(pc, Perms::READ | Perms::EXECUTE).map_err(|_|
-                Fault::ExecFault(pc)).unwrap();
-            let instr = decode_instr(opcodes);
-
+        for instr in instrs {
             match instr {
-                Instr::Jal {rd: _, imm} => {
+                Instr::Jal { rd: _, imm} => {
                     ret.insert((pc as i32 + imm) as usize, 0);
                 },
                 Instr::Beq  { rs1: _, rs2: _, imm, mode: _ } |
@@ -333,373 +331,370 @@ impl Emulator {
         ret
     }
 
-    /// Generate a control flow graph for the riscv instructions
-    fn create_cfg(&self, instrs: &Vec<Instr>, mut pc: usize, end_pc: usize, keys: &mut Vec<usize>)
-            -> (Vec<(u32, u32)>, Vec<(Instr, usize)>) {
-        let mut graph = Vec::new();
-        let mut map: FxHashMap<usize, isize> = FxHashMap::default();
-        let mut edges = Vec::new();
-        let mut i = 0;
-        let mut index: isize = -1;
-        let mut leader_set: Vec<(Instr, usize)> = Vec::new();
+    ///// Generate a control flow graph for the riscv instructions
+    //fn create_cfg(&self, instrs: &Vec<Instr>, mut pc: usize, end_pc: usize, keys: &mut Vec<usize>)
+    //        -> (Vec<(u32, u32)>, Vec<(Instr, usize)>) {
+    //    let mut graph = Vec::new();
+    //    let mut map: FxHashMap<usize, isize> = FxHashMap::default();
+    //    let mut edges = Vec::new();
+    //    let mut i = 0;
+    //    let mut index: isize = -1;
+    //    let mut leader_set: Vec<(Instr, usize)> = Vec::new();
 
-        for instr in instrs {
-            if !keys.is_empty() && pc == keys[0] {
-                keys.remove(0);
-                index += 1;
-                map.insert(pc, index);
-                leader_set.push((*instr, i));
-            } else {
-                match instr {
-                    Instr::Beq  { rs1: _, rs2: _, imm, mode: _ } |
-                    Instr::Bne  { rs1: _, rs2: _, imm, mode: _ } |
-                    Instr::Blt  { rs1: _, rs2: _, imm, mode: _ } |
-                    Instr::Bge  { rs1: _, rs2: _, imm, mode: _ } |
-                    Instr::Bltu { rs1: _, rs2: _, imm, mode: _ } |
-                    Instr::Bgeu { rs1: _, rs2: _, imm, mode: _ } => {
-                        edges.push((index as u32, (pc as i32 + imm) as u32));
-                        edges.push((index as u32, (pc+4) as u32));
-                    },
-                    Instr::Jal { rd, imm} => {
-                        if *rd == Register::Zero {
-                            edges.push((index as u32, (pc as i32 + imm) as u32));
-                        }
-                    },
-                    Instr::Jalr { .. } => {
-                    },
-                    _ => {
-                        let next_pc = pc + 4;
-                        if !keys.is_empty() && next_pc == keys[0] && next_pc < end_pc {
-                            edges.push((index as u32, next_pc as u32));
-                        }
-                    }
-                }
-            }
-            pc += 4;
-            i  += 1;
-        }
-        for edge in edges {
-            let v = *(map.get(&(edge.1 as usize)).unwrap()) as u32;
-            graph.push((edge.0, v));
-        }
-        (graph, leader_set)
-    }
+    //    for instr in instrs {
+    //        if !keys.is_empty() && pc == keys[0] {
+    //            keys.remove(0);
+    //            index += 1;
+    //            map.insert(pc, index);
+    //            leader_set.push((*instr, i));
+    //        } else {
+    //            match instr {
+    //                Instr::Beq  { rs1: _, rs2: _, imm, mode: _ } |
+    //                Instr::Bne  { rs1: _, rs2: _, imm, mode: _ } |
+    //                Instr::Blt  { rs1: _, rs2: _, imm, mode: _ } |
+    //                Instr::Bge  { rs1: _, rs2: _, imm, mode: _ } |
+    //                Instr::Bltu { rs1: _, rs2: _, imm, mode: _ } |
+    //                Instr::Bgeu { rs1: _, rs2: _, imm, mode: _ } => {
+    //                    edges.push((index as u32, (pc as i32 + imm) as u32));
+    //                    edges.push((index as u32, (pc+4) as u32));
+    //                },
+    //                Instr::Jal { rd, imm} => {
+    //                    if *rd == Register::Zero {
+    //                        edges.push((index as u32, (pc as i32 + imm) as u32));
+    //                    }
+    //                },
+    //                Instr::Jalr { .. } => {
+    //                },
+    //                _ => {
+    //                    let next_pc = pc + 4;
+    //                    if !keys.is_empty() && next_pc == keys[0] && next_pc < end_pc {
+    //                        edges.push((index as u32, next_pc as u32));
+    //                    }
+    //                }
+    //            }
+    //        }
+    //        pc += 4;
+    //        i  += 1;
+    //    }
+    //    for edge in edges {
+    //        let v = *(map.get(&(edge.1 as usize)).unwrap()) as u32;
+    //        graph.push((edge.0, v));
+    //    }
+    //    (graph, leader_set)
+    //}
 
-    /// Generate dominator tree
-    fn generate_domtree(&self, graph: &Vec<(u32, u32)>, num_leaders: usize)
-            -> (Vec<(isize, isize)>, Vec<BTreeSet<isize>>) {
-        let initial: isize = graph[0].0 as isize;
-        let mut dom_temp: Vec<BTreeSet<isize>> = Vec::new();
+    ///// Generate dominator tree
+    //fn generate_domtree(&self, graph: &Vec<(u32, u32)>, num_leaders: usize)
+    //        -> (Vec<(isize, isize)>, Vec<BTreeSet<isize>>) {
+    //    let initial: isize = graph[0].0 as isize;
+    //    let mut dom_temp: Vec<BTreeSet<isize>> = Vec::new();
 
-        for i in 0..num_leaders {
-            let mut v: BTreeSet<isize> = BTreeSet::new();
-            v.insert(initial);
-            v.insert(i as isize);
-            dom_temp.push(v);
-        }
-        let mut dom = move |n: usize| {
-            let mut dom_set = dom_temp[n].clone();
-            let pred: Vec<u32> = graph.iter().filter(|e| e.1 == n as u32).map(|e| e.0).collect();
-            let mut dom_check: Vec<BTreeSet<isize>> = Vec::new();
-            pred.iter().for_each(|e| { dom_check.push(dom_temp.iter().nth(*e as usize)
-                                                      .unwrap().clone()); });
+    //    for i in 0..num_leaders {
+    //        let mut v: BTreeSet<isize> = BTreeSet::new();
+    //        v.insert(initial);
+    //        v.insert(i as isize);
+    //        dom_temp.push(v);
+    //    }
+    //    let mut dom = move |n: usize| {
+    //        let mut dom_set = dom_temp[n].clone();
+    //        let pred: Vec<u32> = graph.iter().filter(|e| e.1 == n as u32).map(|e| e.0).collect();
+    //        let mut dom_check: Vec<BTreeSet<isize>> = Vec::new();
+    //        pred.iter().for_each(|e| { dom_check.push(dom_temp.iter().nth(*e as usize)
+    //                                                  .unwrap().clone()); });
 
-            let dom_inter = dom_check.iter().nth(0).unwrap();
-            let dom_inter = dom_check.iter().fold(BTreeSet::new(), |_, e| {
-                e.intersection(&dom_inter).collect()
-            });
+    //        let dom_inter = dom_check.iter().nth(0).unwrap();
+    //        let dom_inter = dom_check.iter().fold(BTreeSet::new(), |_, e| {
+    //            e.intersection(&dom_inter).collect()
+    //        });
 
-            dom_inter.iter().for_each(|e| { dom_set.insert(**e); });
-            dom_set.iter().for_each(|e| { dom_temp[n].insert(*e); });
-            dom_set
-        };
+    //        dom_inter.iter().for_each(|e| { dom_set.insert(**e); });
+    //        dom_set.iter().for_each(|e| { dom_temp[n].insert(*e); });
+    //        dom_set
+    //    };
 
-        let mut dom_tree: Vec<(isize, isize)> = Vec::new();
-        let mut dom_set: Vec<BTreeSet<isize>> = Vec::new();
+    //    let mut dom_tree: Vec<(isize, isize)> = Vec::new();
+    //    let mut dom_set: Vec<BTreeSet<isize>> = Vec::new();
 
-        for i in 1..num_leaders {
-            let mut dom_tempset: BTreeSet<isize> = dom(i);
+    //    for i in 1..num_leaders {
+    //        let mut dom_tempset: BTreeSet<isize> = dom(i);
 
-            dom_set.push(dom_tempset.clone());
+    //        dom_set.push(dom_tempset.clone());
 
-            dom_tempset.remove(&(i as isize));
-            let max_val = dom_tempset.into_iter().max().unwrap();
-            dom_tree.push((max_val as isize, i as isize));
-        }
+    //        dom_tempset.remove(&(i as isize));
+    //        let max_val = dom_tempset.into_iter().max().unwrap();
+    //        dom_tree.push((max_val as isize, i as isize));
+    //    }
 
-        (dom_tree, dom_set)
-    }
+    //    (dom_tree, dom_set)
+    //}
 
-    fn find_domfrontier(&self, dom_tree: &mut Vec<(isize, isize)>, graph: &Vec<(u32, u32)>,
-            dom_set: &mut Vec<BTreeSet<isize>>) -> Vec<BTreeSet<isize>> {
-        let mut v = BTreeSet::new();
-        v.insert(0);
-        dom_set.insert(0, v);
-        dom_tree.insert(0, (-1, 0));
+    //fn find_domfrontier(&self, dom_tree: &mut Vec<(isize, isize)>, graph: &Vec<(u32, u32)>,
+    //        dom_set: &mut Vec<BTreeSet<isize>>) -> Vec<BTreeSet<isize>> {
+    //    let mut v = BTreeSet::new();
+    //    v.insert(0);
+    //    dom_set.insert(0, v);
+    //    dom_tree.insert(0, (-1, 0));
 
-        let mut df_set: Vec<BTreeSet<isize>> = Vec::new();
-        dom_set.iter().for_each(|_| df_set.push(BTreeSet::new()));
+    //    let mut df_set: Vec<BTreeSet<isize>> = Vec::new();
+    //    dom_set.iter().for_each(|_| df_set.push(BTreeSet::new()));
 
-        for v in &dom_tree.clone() {
-            let node = v.1;
-            let pred: Vec<u32> = graph.iter().filter(|e| e.1 == node as u32).map(|e| e.0).collect();
+    //    for v in &dom_tree.clone() {
+    //        let node = v.1;
+    //        let pred: Vec<u32> = graph.iter().filter(|e| e.1 == node as u32).map(|e| e.0).collect();
 
-            for e in pred {
-                let mut runner: isize = e as isize;
+    //        for e in pred {
+    //            let mut runner: isize = e as isize;
 
-                while runner != dom_tree[node as usize].0 {
-                    let mut new_set = BTreeSet::new();
-                    new_set.insert(node);
-                    df_set[runner as usize] = new_set.clone();
-                    runner = dom_tree[runner as usize].0;
-                }
-            }
-        }
-        df_set
-    }
+    //            while runner != dom_tree[node as usize].0 {
+    //                let mut new_set = BTreeSet::new();
+    //                new_set.insert(node);
+    //                df_set[runner as usize] = new_set.clone();
+    //                runner = dom_tree[runner as usize].0;
+    //            }
+    //        }
+    //    }
+    //    df_set
+    //}
 
-    fn find_var_origin(&self, instrs: &Vec<Instr>, leader_set: &mut Vec<(Instr, usize)>)
-            -> (Vec<Register>, Vec<(Register, usize)>, Vec<Vec<Register>>, Vec<(Register, usize)>) {
+    //fn find_var_origin(&self, instrs: &Vec<Instr>, leader_set: &mut Vec<(Instr, usize)>)
+    //        -> (Vec<Register>, Vec<(Register, usize)>, Vec<Vec<Register>>, Vec<(Register, usize)>) {
 
-        let mut var_origin = Vec::new();
+    //    let mut var_origin = Vec::new();
 
-        // Extract all register definitions from the function
-        for (i, instr) in instrs.iter().enumerate() {
-            match instr {
-                Instr::Add    { rd, rs1: _, rs2: _ } |
-                Instr::Sub    { rd, rs1: _, rs2: _ } |
-                Instr::Sll    { rd, rs1: _, rs2: _ } |
-                Instr::Slt    { rd, rs1: _, rs2: _ } |
-                Instr::Sltu   { rd, rs1: _, rs2: _ } |
-                Instr::Xor    { rd, rs1: _, rs2: _ } |
-                Instr::Srl    { rd, rs1: _, rs2: _ } |
-                Instr::Sra    { rd, rs1: _, rs2: _ } |
-                Instr::Or     { rd, rs1: _, rs2: _ } |
-                Instr::And    { rd, rs1: _, rs2: _ } |
-                Instr::Addw   { rd, rs1: _, rs2: _ } |
-                Instr::Subw   { rd, rs1: _, rs2: _ } |
-                Instr::Sllw   { rd, rs1: _, rs2: _ } |
-                Instr::Srlw   { rd, rs1: _, rs2: _ } |
-                Instr::Sraw   { rd, rs1: _, rs2: _ } |
-                Instr::Mul    { rd, rs1: _, rs2: _ } |
-                Instr::Mulh   { rd, rs1: _, rs2: _ } |
-                Instr::Mulhsu { rd, rs1: _, rs2: _ } |
-                Instr::Mulhu  { rd, rs1: _, rs2: _ } |
-                Instr::Div    { rd, rs1: _, rs2: _ } |
-                Instr::Divu   { rd, rs1: _, rs2: _ } |
-                Instr::Rem    { rd, rs1: _, rs2: _ } |
-                Instr::Remu   { rd, rs1: _, rs2: _ } |
-                Instr::Mulw   { rd, rs1: _, rs2: _ } |
-                Instr::Divw   { rd, rs1: _, rs2: _ } |
-                Instr::Divuw  { rd, rs1: _, rs2: _ } |
-                Instr::Remw   { rd, rs1: _, rs2: _ } |
-                Instr::Remuw  { rd, rs1: _, rs2: _ } => {
-                    if *rd != Register::Zero { var_origin.push((*rd, i)); }
-                },
-                Instr::Addi   { rd, rs1: _, imm: _ } |
-                Instr::Slti   { rd, rs1: _, imm: _ } |
-                Instr::Sltiu  { rd, rs1: _, imm: _ } |
-                Instr::Xori   { rd, rs1: _, imm: _ } |
-                Instr::Ori    { rd, rs1: _, imm: _ } |
-                Instr::Andi   { rd, rs1: _, imm: _ } |
-                Instr::Slli   { rd, rs1: _, imm: _ } |
-                Instr::Srli   { rd, rs1: _, imm: _ } |
-                Instr::Srai   { rd, rs1: _, imm: _ } |
-                Instr::Addiw  { rd, rs1: _, imm: _ } |
-                Instr::Slliw  { rd, rs1: _, imm: _ } |
-                Instr::Srliw  { rd, rs1: _, imm: _ } |
-                Instr::Sraiw  { rd, rs1: _, imm: _ } => {
-                    if *rd != Register::Zero { var_origin.push((*rd, i)); }
-                },
-                Instr::Lb     { rd, rs1: _, imm: _, mode: _ } |
-                Instr::Lh     { rd, rs1: _, imm: _, mode: _ } |
-                Instr::Lw     { rd, rs1: _, imm: _, mode: _ } |
-                Instr::Lbu    { rd, rs1: _, imm: _, mode: _ } |
-                Instr::Lhu    { rd, rs1: _, imm: _, mode: _ } |
-                Instr::Lwu    { rd, rs1: _, imm: _, mode: _ } |
-                Instr::Ld     { rd, rs1: _, imm: _, mode: _ } => {
-                    if *rd != Register::Zero { var_origin.push((*rd, i)); }
-                },
-                Instr::Jal { rd, imm: _,} => {
-                    if *rd != Register::Zero { var_origin.push((*rd, i)); }
-                },
-                Instr::Jalr { rd, rs1, imm: _,} => {
-                    if *rd != Register::Zero { var_origin.push((*rd, i)); }
-                },
-                Instr::Lui   { rd, imm: _,} |
-                Instr::Auipc { rd, imm: _,} => {
-                    if *rd != Register::Zero { var_origin.push((*rd, i)); }
-                },
-                _ => { },
-            }
-        }
-        let mut leader_set_index: Vec<usize> = leader_set.iter().map(|e| e.1).collect();
-        leader_set_index.push(instrs.len());
+    //    // Extract all register definitions from the function
+    //    for (i, instr) in instrs.iter().enumerate() {
+    //        match instr {
+    //            Instr::Add    { rd, rs1: _, rs2: _ } |
+    //            Instr::Sub    { rd, rs1: _, rs2: _ } |
+    //            Instr::Sll    { rd, rs1: _, rs2: _ } |
+    //            Instr::Slt    { rd, rs1: _, rs2: _ } |
+    //            Instr::Sltu   { rd, rs1: _, rs2: _ } |
+    //            Instr::Xor    { rd, rs1: _, rs2: _ } |
+    //            Instr::Srl    { rd, rs1: _, rs2: _ } |
+    //            Instr::Sra    { rd, rs1: _, rs2: _ } |
+    //            Instr::Or     { rd, rs1: _, rs2: _ } |
+    //            Instr::And    { rd, rs1: _, rs2: _ } |
+    //            Instr::Addw   { rd, rs1: _, rs2: _ } |
+    //            Instr::Subw   { rd, rs1: _, rs2: _ } |
+    //            Instr::Sllw   { rd, rs1: _, rs2: _ } |
+    //            Instr::Srlw   { rd, rs1: _, rs2: _ } |
+    //            Instr::Sraw   { rd, rs1: _, rs2: _ } |
+    //            Instr::Mul    { rd, rs1: _, rs2: _ } |
+    //            Instr::Mulh   { rd, rs1: _, rs2: _ } |
+    //            Instr::Mulhsu { rd, rs1: _, rs2: _ } |
+    //            Instr::Mulhu  { rd, rs1: _, rs2: _ } |
+    //            Instr::Div    { rd, rs1: _, rs2: _ } |
+    //            Instr::Divu   { rd, rs1: _, rs2: _ } |
+    //            Instr::Rem    { rd, rs1: _, rs2: _ } |
+    //            Instr::Remu   { rd, rs1: _, rs2: _ } |
+    //            Instr::Mulw   { rd, rs1: _, rs2: _ } |
+    //            Instr::Divw   { rd, rs1: _, rs2: _ } |
+    //            Instr::Divuw  { rd, rs1: _, rs2: _ } |
+    //            Instr::Remw   { rd, rs1: _, rs2: _ } |
+    //            Instr::Remuw  { rd, rs1: _, rs2: _ } => {
+    //                if *rd != Register::Zero { var_origin.push((*rd, i)); }
+    //            },
+    //            Instr::Addi   { rd, rs1: _, imm: _ } |
+    //            Instr::Slti   { rd, rs1: _, imm: _ } |
+    //            Instr::Sltiu  { rd, rs1: _, imm: _ } |
+    //            Instr::Xori   { rd, rs1: _, imm: _ } |
+    //            Instr::Ori    { rd, rs1: _, imm: _ } |
+    //            Instr::Andi   { rd, rs1: _, imm: _ } |
+    //            Instr::Slli   { rd, rs1: _, imm: _ } |
+    //            Instr::Srli   { rd, rs1: _, imm: _ } |
+    //            Instr::Srai   { rd, rs1: _, imm: _ } |
+    //            Instr::Addiw  { rd, rs1: _, imm: _ } |
+    //            Instr::Slliw  { rd, rs1: _, imm: _ } |
+    //            Instr::Srliw  { rd, rs1: _, imm: _ } |
+    //            Instr::Sraiw  { rd, rs1: _, imm: _ } => {
+    //                if *rd != Register::Zero { var_origin.push((*rd, i)); }
+    //            },
+    //            Instr::Lb     { rd, rs1: _, imm: _, mode: _ } |
+    //            Instr::Lh     { rd, rs1: _, imm: _, mode: _ } |
+    //            Instr::Lw     { rd, rs1: _, imm: _, mode: _ } |
+    //            Instr::Lbu    { rd, rs1: _, imm: _, mode: _ } |
+    //            Instr::Lhu    { rd, rs1: _, imm: _, mode: _ } |
+    //            Instr::Lwu    { rd, rs1: _, imm: _, mode: _ } |
+    //            Instr::Ld     { rd, rs1: _, imm: _, mode: _ } => {
+    //                if *rd != Register::Zero { var_origin.push((*rd, i)); }
+    //            },
+    //            Instr::Jal { rd, imm: _,} => {
+    //                if *rd != Register::Zero { var_origin.push((*rd, i)); }
+    //            },
+    //            Instr::Jalr { rd, rs1, imm: _,} => {
+    //                if *rd != Register::Zero { var_origin.push((*rd, i)); }
+    //            },
+    //            Instr::Lui   { rd, imm: _,} |
+    //            Instr::Auipc { rd, imm: _,} => {
+    //                if *rd != Register::Zero { var_origin.push((*rd, i)); }
+    //            },
+    //            _ => { },
+    //        }
+    //    }
+    //    let mut leader_set_index: Vec<usize> = leader_set.iter().map(|e| e.1).collect();
+    //    leader_set_index.push(instrs.len());
 
-        let mut varnode_origin: Vec<usize> = Vec::new();
-        let mut i = 0;
+    //    let mut varnode_origin: Vec<usize> = Vec::new();
+    //    let mut i = 0;
 
-        for x in &var_origin {
-            let instr_index = x.1;
-            if instr_index >= leader_set_index[i+1] { i += 1; }
-            varnode_origin.push(i);
-        }
+    //    for x in &var_origin {
+    //        let instr_index = x.1;
+    //        if instr_index >= leader_set_index[i+1] { i += 1; }
+    //        varnode_origin.push(i);
+    //    }
 
-        let mut varlist_temp: Vec<(Register, usize)> = Vec::new();
-        for i in 0..var_origin.len() {
-            varlist_temp.push((var_origin[i].0, varnode_origin[i]));
-        }
+    //    let mut varlist_temp: Vec<(Register, usize)> = Vec::new();
+    //    for i in 0..var_origin.len() {
+    //        varlist_temp.push((var_origin[i].0, varnode_origin[i]));
+    //    }
 
-        let mut varlist_origin: Vec<Vec<Register>> = Vec::new();
-        for v in &varlist_temp {
-            if varlist_origin.len() <= v.1 {
-                let tmp: Vec<Register> = Vec::new();
-                varlist_origin.push(tmp);
-            }
-            varlist_origin[v.1].push(v.0);
-        }
+    //    let mut varlist_origin: Vec<Vec<Register>> = Vec::new();
+    //    for v in &varlist_temp {
+    //        if varlist_origin.len() <= v.1 {
+    //            let tmp: Vec<Register> = Vec::new();
+    //            varlist_origin.push(tmp);
+    //        }
+    //        varlist_origin[v.1].push(v.0);
+    //    }
 
-        let var_list = var_origin.iter().map(|v| v.0).collect();
+    //    let var_list = var_origin.iter().map(|v| v.0).collect();
 
-        (var_list, var_origin, varlist_origin, varlist_temp)
-    }
+    //    (var_list, var_origin, varlist_origin, varlist_temp)
+    //}
 
-    fn insert_phi_func(&self, graph: &Vec<(u32, u32)>, instrs: &Vec<Instr>,
-                       df_list: &Vec<BTreeSet<isize>>, varlist_origin: &Vec<Vec<Register>>,
-                       var_tuple: &Vec<(Register, usize)>)
-        -> (Vec<Vec<usize>>, Vec<BTreeSet<usize>>, Vec<BTreeSet<(Register, isize)>>) {
+    //fn insert_phi_func(&self, graph: &Vec<(u32, u32)>, instrs: &Vec<Instr>,
+    //                   df_list: &Vec<BTreeSet<isize>>, varlist_origin: &Vec<Vec<Register>>,
+    //                   var_tuple: &Vec<(Register, usize)>)
+    //    -> (Vec<Vec<usize>>, Vec<BTreeSet<usize>>, Vec<BTreeSet<(Register, isize)>>) {
 
-        let mut def_sites: Vec<Vec<usize>>      = vec![Vec::new(); 32];
-        let mut var_phi:   Vec<BTreeSet<usize>> = Vec::new();
-        let mut phi_func:  Vec<BTreeSet<(Register, isize)>> = Vec::new();
+    //    let mut def_sites: Vec<Vec<usize>>      = vec![Vec::new(); 32];
+    //    let mut var_phi:   Vec<BTreeSet<usize>> = Vec::new();
+    //    let mut phi_func:  Vec<BTreeSet<(Register, isize)>> = Vec::new();
 
-        for v in var_tuple {
-            def_sites[v.0 as usize].push(v.1);
-            var_phi.push(BTreeSet::new());
-        }
+    //    for v in var_tuple {
+    //        def_sites[v.0 as usize].push(v.1);
+    //        var_phi.push(BTreeSet::new());
+    //    }
 
-        for _ in 0..df_list.len() {
-            phi_func.push(BTreeSet::new());
-        }
+    //    for _ in 0..df_list.len() {
+    //        phi_func.push(BTreeSet::new());
+    //    }
 
-        let mut count = 0;
-        for (i, var) in def_sites.iter().enumerate() {
-            if var.len() == 0 { continue; }
-            count += 1;
-            let mut temp_list = def_sites[i].clone();
+    //    let mut count = 0;
+    //    for (i, var) in def_sites.iter().enumerate() {
+    //        if var.len() == 0 { continue; }
+    //        count += 1;
+    //        let mut temp_list = def_sites[i].clone();
 
-            while let Some(n) = temp_list.pop() {
-                for y in &df_list[n] {
-                    if !var_phi[count].contains(&(*y as usize)) {
-                        let len = graph.iter().filter(|x| x.1 as isize == *y).count() as isize;
-                        phi_func[*y as usize].insert((Register::from(i as u32), len));
-                        var_phi[count].insert(*y as usize);
-                        if varlist_origin[n].iter().find(|&&x| x == Register::from(*y as u32))
-                            .is_none() {
-                            temp_list.push(*y as usize);
-                        }
-                    }
-                }
-            }
-        }
-        (def_sites, var_phi, phi_func)
-    }
+    //        while let Some(n) = temp_list.pop() {
+    //            for y in &df_list[n] {
+    //                if !var_phi[count].contains(&(*y as usize)) {
+    //                    let len = graph.iter().filter(|x| x.1 as isize == *y).count() as isize;
+    //                    phi_func[*y as usize].insert((Register::from(i as u32), len));
+    //                    var_phi[count].insert(*y as usize);
+    //                    if varlist_origin[n].iter().find(|&&x| x == Register::from(*y as u32))
+    //                        .is_none() {
+    //                        temp_list.push(*y as usize);
+    //                    }
+    //                }
+    //            }
+    //        }
+    //    }
+    //    (def_sites, var_phi, phi_func)
+    //}
 
-    fn rename_regs(&self, graph: &Vec<(u32, u32)>, instrs: &mut Vec<Instr>,
-                   leader_set: &mut Vec<(Instr, usize)>, dom_tree: &Vec<(isize, isize)>,
-                   var_list: &Vec<Register>, var_origin: &Vec<(Register, usize)>,
-                   phi_func: &Vec<BTreeSet<(Register, isize)>>) {
+    //fn rename_regs(&self, graph: &Vec<(u32, u32)>, instrs: &mut Vec<Instr>,
+    //               leader_set: &mut Vec<(Instr, usize)>, dom_tree: &Vec<(isize, isize)>,
+    //               var_list: &Vec<Register>, var_origin: &Vec<(Register, usize)>,
+    //               phi_func: &Vec<BTreeSet<(Register, isize)>>) {
 
-        let mut var_dict: Vec<(usize, Vec<usize>)> = vec![(0, Vec::new()); 32];
+    //    let mut var_dict: Vec<(usize, Vec<usize>)> = vec![(0, Vec::new()); 32];
 
-        for var in var_list {
-            var_dict[*var as usize] = (0, vec![0; 1]);
-        }
+    //    for var in var_list {
+    //        var_dict[*var as usize] = (0, vec![0; 1]);
+    //    }
 
-        let mut phi_func_mod: Vec<Vec<Vec<(Register, isize)>>>  = Vec::new();
-        let mut phi_func_temp: Vec<Vec<Vec<Register>>> = Vec::new();
-        let mut blocks: Vec<((usize, usize), usize)> = Vec::new();
+    //    let mut phi_func_mod: Vec<Vec<Vec<(Register, isize)>>>  = Vec::new();
+    //    let mut phi_func_temp: Vec<Vec<Vec<Register>>> = Vec::new();
+    //    let mut blocks: Vec<((usize, usize), usize)> = Vec::new();
 
-        for (i, var) in phi_func.iter().enumerate() {
-            if phi_func_temp.len() <= i {
-                phi_func_temp.push(Vec::new());
-                phi_func_mod.push(Vec::new());
-            }
-            for t in &phi_func[i] {
-                phi_func_temp[i].push(vec![t.0; t.1 as usize]);
-            }
-        }
-        //println!("phi_func_temp: {:?}", phi_func_temp);
-        //println!("phi_func_mod: {:?}", phi_func_mod);
-        leader_set.push((Instr::Undefined, instrs.len()));
-        //println!("leader_set: {:?}", leader_set);
+    //    for (i, var) in phi_func.iter().enumerate() {
+    //        if phi_func_temp.len() <= i {
+    //            phi_func_temp.push(Vec::new());
+    //            phi_func_mod.push(Vec::new());
+    //        }
+    //        for t in &phi_func[i] {
+    //            phi_func_temp[i].push(vec![t.0; t.1 as usize]);
+    //        }
+    //    }
+    //    //println!("phi_func_temp: {:?}", phi_func_temp);
+    //    //println!("phi_func_mod: {:?}", phi_func_mod);
+    //    leader_set.push((Instr::Undefined, instrs.len()));
+    //    //println!("leader_set: {:?}", leader_set);
 
-        for (i, v) in leader_set.iter().enumerate() {
-            blocks.push(((v.1, leader_set[i+1].1), i));
-            if i == leader_set.len()-2 { break; }
-        }
+    //    for (i, v) in leader_set.iter().enumerate() {
+    //        blocks.push(((v.1, leader_set[i+1].1), i));
+    //        if i == leader_set.len()-2 { break; }
+    //    }
 
-        let mut rename_block = |block: ((usize, usize), usize)| {
-            let block_line_nums = block.0;
-            //let block_num       = block.1;
-            let block_num       = 2; // TODO Revert
-            let mut block_lines = Vec::new();
+    //    let mut rename_block = |block: ((usize, usize), usize)| {
+    //        let block_line_nums = block.0;
+    //        //let block_num       = block.1;
+    //        let block_num       = 2; // TODO Revert
+    //        let mut block_lines = Vec::new();
 
-            for i in block_line_nums.0..block_line_nums.1 {
-                block_lines.push((i, instrs[i]));
-            }
+    //        for i in block_line_nums.0..block_line_nums.1 {
+    //            block_lines.push((i, instrs[i]));
+    //        }
 
-            for each in &phi_func[block_num] {
-                //println!("each: {:?}", each);
-                var_dict[each.0 as usize].0 += 1;
-                let x = var_dict[each.0 as usize].0;
-                var_dict[each.0 as usize].1.push(x);
-                let add = (each.0, each.1);
-                //println!("add: {:?}", add);
-                let mut n_each = vec![(each.0, 1); 1];
-                n_each.push(add);
-                //println!("n_each: {:?}", n_each);
+    //        for each in &phi_func[block_num] {
+    //            //println!("each: {:?}", each);
+    //            var_dict[each.0 as usize].0 += 1;
+    //            let x = var_dict[each.0 as usize].0;
+    //            var_dict[each.0 as usize].1.push(x);
+    //            let add = (each.0, each.1);
+    //            //println!("add: {:?}", add);
+    //            let mut n_each = vec![(each.0, 1); 1];
+    //            n_each.push(add);
+    //            //println!("n_each: {:?}", n_each);
 
-                phi_func_mod[block_num].push(n_each);
-                //println!("phi_func_mod: {:?}", phi_func_mod);
-            }
+    //            phi_func_mod[block_num].push(n_each);
+    //            //println!("phi_func_mod: {:?}", phi_func_mod);
+    //        }
 
-            for (i, each_line) in block_lines.iter().enumerate() {
-                let mut def_var: Register = Register::Zero;
-                for var in var_origin {
-                    if var.1 == each_line.0 {
-                        def_var = var.0;
-                    }
-                }
-                //println!("def_var: {:?}", def_var);
+    //        for (i, each_line) in block_lines.iter().enumerate() {
+    //            let mut def_var: Register = Register::Zero;
+    //            for var in var_origin {
+    //                if var.1 == each_line.0 {
+    //                    def_var = var.0;
+    //                }
+    //            }
+    //            //println!("def_var: {:?}", def_var);
 
-                var_dict[def_var as usize].0 += 1;
-                let x = var_dict[def_var as usize].0;
-                var_dict[def_var as usize].1.push(x);
+    //            var_dict[def_var as usize].0 += 1;
+    //            let x = var_dict[def_var as usize].0;
+    //            var_dict[def_var as usize].1.push(x);
 
-                let mut new_instr = each_line.1;
-                //new_instr.rd
+    //            let mut new_instr = each_line.1;
+    //            //new_instr.rd
 
-                println!("new_instr: {:?}", new_instr);
-            }
+    //            println!("new_instr: {:?}", new_instr);
+    //        }
 
-        };
+    //    };
 
-        println!("blocks: {:?}", blocks);
-        rename_block(blocks[0]);
-    }
+    //    println!("blocks: {:?}", blocks);
+    //    rename_block(blocks[0]);
+    //}
 
-
-    /// Lift a function into an immediate representation that can be used to apply optimizations and
-    /// compile into the final jit-code
-    fn lift(&mut self, mut pc: usize) -> Result<IRGraph, ()> {
+    fn lift_func(&mut self, mut pc: usize) -> Result<IRGraph, ()> {
         let mut irgraph = IRGraph::default();
         let mut instrs: Vec<Instr> = Vec::new();
 
         pc = 0x100b0;
-
         let start_pc = pc;
-        let end_pc   = start_pc + self.functions.get(&pc).unwrap();
+        //let end_pc   = start_pc + self.functions.get(&pc).unwrap();
+        let end_pc = 0x1034;
 
         while pc < end_pc {
             let opcodes: u32 = self.memory.read_at(pc, Perms::READ | Perms::EXECUTE).map_err(|_|
@@ -710,247 +705,216 @@ impl Emulator {
         }
 
         // These are used to determine jump locations ahead of time
-        let mut keys: Vec<usize> = self.extract_labels(start_pc, end_pc).keys().cloned().collect();
+        let mut keys: Vec<usize> = self.extract_labels(start_pc, &instrs).keys().cloned().collect();
         keys.insert(0, start_pc);
 
-        let (cfg, mut leader_set) = self.create_cfg(&instrs, start_pc, end_pc, &mut keys);
+        println!("keys: {:x?}", keys);
 
-        let (mut dom_tree, mut dom_set) = self.generate_domtree(&cfg, leader_set.len());
+        // Add a label b4 first instruction of this function
+        //irgraph.set_label(start_pc);
 
-        let df_list = self.find_domfrontier(&mut dom_tree, &cfg, &mut dom_set);
+        self.lift(&mut irgraph, &instrs, &mut keys, start_pc);
 
-        let (var_list, var_origin, varlist_origin, var_tuple) =
-            self.find_var_origin(&instrs, &mut leader_set);
+        Ok(irgraph)
+    }
 
-        let (def_sites, var_phi, phi_func) = self.insert_phi_func(&cfg, &instrs, &df_list,
-                                                                    &varlist_origin, &var_tuple);
+    /// Lift a function into an immediate representation that can be used to apply optimizations and
+    /// compile into the final jit-code
+    fn lift(&mut self, irgraph: &mut IRGraph, instrs: &Vec<Instr>, keys: &mut Vec<usize>,
+            mut pc: usize) {
 
-        //println!("def_sites: {:?}\n", def_sites);
-        //println!("var_phi: {:?}\n", var_phi);
-        //println!("phi_func: {:?}\n", phi_func);
+        // Lift instructions until we reach the end of the function
+        for instr in instrs {
 
-        // Insert lable at start of function
-        //irgraph.set_label(pc);
+            irgraph.init_instr(pc);
 
-       // // Lift instructions until we reach the end of the function
-       // while pc < end_pc {
+            if !keys.is_empty() && pc == keys[0] {
+                keys.remove(0);
+                irgraph.set_label(pc);
+            }
 
-       //     irgraph.init_instr(pc);
+            match *instr {
+                Instr::Lui {rd, imm} => {
+                    irgraph.loadi(rd, imm, Flag::Signed);
+                },
+                Instr::Auipc {rd, imm} => {
+                    let val = (imm).wrapping_add(pc as i32);
+                    let res = irgraph.loadi(rd, val, Flag::Signed);
+                },
+                Instr::Jal {rd, imm} => {
+                    let ret_val = pc.wrapping_add(4);
+                    let jmp_target = ((pc as i32).wrapping_add(imm)) as usize;
 
-       //     if !keys.is_empty() && pc == keys[0] {
-       //         keys.remove(0);
-       //         irgraph.set_label(pc);
-       //     }
-       //     // If an error occurs during this read, it is most likely due to missing read or execute
-       //     // permissions, so we mark it as an ExecFault
-       //     let opcodes: u32 = self.memory.read_at(pc, Perms::READ | Perms::EXECUTE).map_err(|_|
-       //         Fault::ExecFault(pc)).unwrap();
-       //     let instr = decode_instr(opcodes);
+                    // Load return value into newly allocated register
+                    if rd != Register::Zero {
+                        let res = irgraph.loadi(rd, ret_val as i32, Flag::Unsigned);
+                        irgraph.call(jmp_target);
+                    } else {
+                        irgraph.jmp(jmp_target);
+                    }
+                },
+                Instr::Jalr {rd, imm, rs1} => {
+                    let ret_val = pc.wrapping_add(4);
 
-       //     match instr {
-       //         Instr::Lui {rd, imm} => {
-       //             let res = irgraph.loadi(imm, Flag::Signed);
-       //             set_reg!(rd, res);
-       //         },
-       //         Instr::Auipc {rd, imm} => {
-       //             let val = (imm).wrapping_add(pc as i32);
-       //             let res = irgraph.loadi(val, Flag::Signed);
-       //             set_reg!(rd, res);
-       //         },
-       //         Instr::Jal {rd, imm} => {
-       //             let ret_val = pc.wrapping_add(4);
-       //             let jmp_target = ((pc as i32).wrapping_add(imm)) as usize;
+                    let imm_reg = irgraph.loadi(Register::Z1, imm, Flag::Signed);
+                    let jmp_target = irgraph.add(Register::Z2, rs1, imm_reg, Flag::DWord);
 
-       //             // Load return value into newly allocated register
-       //             if rd != Register::Zero {
-       //                 let res = irgraph.loadi(ret_val as i32, Flag::Unsigned);
-       //                 set_reg!(rd, res);
-       //                 irgraph.call(jmp_target);
-       //             } else {
-       //                 irgraph.jmp(jmp_target);
-       //             }
-       //         },
-       //         Instr::Jalr {rd, imm, rs1} => {
-       //             let ret_val = pc.wrapping_add(4);
-       //             let rs1_reg = IRReg(get_reg!(rs1));
+                    if rd != Register::Zero {
+                        let res = irgraph.loadi(rd, ret_val as i32, Flag::Unsigned);
+                        irgraph.call_reg(jmp_target)
+                    } else {
+                        irgraph.ret();
+                    }
+                },
+                Instr::Beq  { rs1, rs2, imm, mode } |
+                Instr::Bne  { rs1, rs2, imm, mode } |
+                Instr::Blt  { rs1, rs2, imm, mode } |
+                Instr::Bge  { rs1, rs2, imm, mode } |
+                Instr::Bltu { rs1, rs2, imm, mode } |
+                Instr::Bgeu { rs1, rs2, imm, mode } => {
+                    let true_part  = ((pc as i32).wrapping_add(imm)) as usize;
+                    let false_part = ((pc as i32).wrapping_add(4)) as usize;
 
-       //             let imm_reg = irgraph.loadi(imm, Flag::Signed);
-       //             let jmp_target = irgraph.add(rs1_reg, imm_reg, Flag::DWord);
+                    match mode {
+                        0b000 => { /* BEQ */
+                            irgraph.branch(rs1, rs2, true_part, false_part,
+                                Flag::Equal | Flag::Signed)
+                        },
+                        0b001 => { /* BNE */
+                            irgraph.branch(rs1, rs2, true_part, false_part,
+                                           Flag::NEqual | Flag::Signed)
+                        },
+                        0b100 => { /* BLT */
+                            irgraph.branch(rs1, rs2, true_part, false_part,
+                                           Flag::Less | Flag::Signed)
+                        },
+                        0b101 => { /* BGE */
+                            irgraph.branch(rs1, rs2, true_part, false_part,
+                                           Flag::Greater | Flag::Signed)
+                        },
+                        0b110 => { /* BLTU */
+                            irgraph.branch(rs1, rs2, true_part, false_part,
+                                           Flag::Less | Flag::Signed)
+                        },
+                        0b111 => { /* BGEU */
+                            irgraph.branch(rs1, rs2, true_part, false_part,
+                                           Flag::Greater | Flag::Signed)
+                        },
+                        _ => { unreachable!(); },
+                    }
+                },
+                Instr::Lb  {rd, rs1, imm, mode} |
+                Instr::Lh  {rd, rs1, imm, mode} |
+                Instr::Lw  {rd, rs1, imm, mode} |
+                Instr::Lbu {rd, rs1, imm, mode} |
+                Instr::Lhu {rd, rs1, imm, mode} |
+                Instr::Lwu {rd, rs1, imm, mode} |
+                Instr::Ld  {rd, rs1, imm, mode} => {
+                    let imm_reg  = irgraph.loadi(Register::Z1, imm, Flag::Signed);
+                    let mem_addr = irgraph.add(Register::Z2, rs1, imm_reg, Flag::DWord);
 
-       //             if rd != Register::Zero {
-       //                 let res = irgraph.loadi(ret_val as i32, Flag::Unsigned);
-       //                 set_reg!(rd, res);
-       //                 irgraph.call_reg(jmp_target)
-       //             } else {
-       //                 irgraph.ret(jmp_target);
-       //             }
-       //         },
-       //         Instr::Beq  { rs1, rs2, imm, mode } |
-       //         Instr::Bne  { rs1, rs2, imm, mode } |
-       //         Instr::Blt  { rs1, rs2, imm, mode } |
-       //         Instr::Bge  { rs1, rs2, imm, mode } |
-       //         Instr::Bltu { rs1, rs2, imm, mode } |
-       //         Instr::Bgeu { rs1, rs2, imm, mode } => {
-       //             let rs1_reg    = IRReg(get_reg!(rs1));
-       //             let rs2_reg    = IRReg(get_reg!(rs2));
-       //             let true_part  = ((pc as i32).wrapping_add(imm)) as usize;
-       //             let false_part = ((pc as i32).wrapping_add(4)) as usize;
+                    let res = match mode {
+                        0b000 => irgraph.load(rd, mem_addr, Flag::Byte | Flag::Signed),    // LB
+                        0b001 => irgraph.load(rd, mem_addr, Flag::Word | Flag::Signed),    // LH
+                        0b010 => irgraph.load(rd, mem_addr, Flag::DWord | Flag::Signed),   // LW
+                        0b100 => irgraph.load(rd, mem_addr, Flag::Byte | Flag::Unsigned),  // LBU
+                        0b101 => irgraph.load(rd, mem_addr, Flag::Word | Flag::Unsigned),  // LHU
+                        0b110 => irgraph.load(rd, mem_addr, Flag::DWord | Flag::Unsigned), // LWU
+                        0b011 => irgraph.load(rd, mem_addr, Flag::QWord),                  // LD
+                        _ => unreachable!(),
+                    };
+                },
+                Instr::Sb  {rs1, rs2, imm, mode} |
+                Instr::Sh  {rs1, rs2, imm, mode} |
+                Instr::Sw  {rs1, rs2, imm, mode} |
+                Instr::Sd  {rs1, rs2, imm, mode} => {
+                    let imm_reg  = irgraph.loadi(Register::Z1, imm, Flag::Signed);
+                    let mem_addr = irgraph.add(Register::Z2, rs1, imm_reg, Flag::DWord);
 
-       //             match mode {
-       //                 0b000 => { /* BEQ */
-       //                     irgraph.branch(rs1_reg, rs2_reg, true_part, false_part,
-       //                         Flag::Equal | Flag::Signed)
-       //                 },
-       //                 0b001 => { /* BNE */
-       //                     irgraph.branch(rs1_reg, rs2_reg, true_part, false_part,
-       //                                    Flag::NEqual | Flag::Signed)
-       //                 },
-       //                 0b100 => { /* BLT */
-       //                     irgraph.branch(rs1_reg, rs2_reg, true_part, false_part,
-       //                                    Flag::Less | Flag::Signed)
-       //                 },
-       //                 0b101 => { /* BGE */
-       //                     irgraph.branch(rs1_reg, rs2_reg, true_part, false_part,
-       //                                    Flag::Greater | Flag::Signed)
-       //                 },
-       //                 0b110 => { /* BLTU */
-       //                     irgraph.branch(rs1_reg, rs2_reg, true_part, false_part,
-       //                                    Flag::Less | Flag::Signed)
-       //                 },
-       //                 0b111 => { /* BGEU */
-       //                     irgraph.branch(rs1_reg, rs2_reg, true_part, false_part,
-       //                                    Flag::Greater | Flag::Signed)
-       //                 },
-       //                 _ => { unreachable!(); },
-       //             }
-       //         },
-       //         Instr::Lb  {rd, rs1, imm, mode} |
-       //         Instr::Lh  {rd, rs1, imm, mode} |
-       //         Instr::Lw  {rd, rs1, imm, mode} |
-       //         Instr::Lbu {rd, rs1, imm, mode} |
-       //         Instr::Lhu {rd, rs1, imm, mode} |
-       //         Instr::Lwu {rd, rs1, imm, mode} |
-       //         Instr::Ld  {rd, rs1, imm, mode} => {
-       //             let rs1_reg = IRReg(get_reg!(rs1));
-
-       //             let imm_reg = irgraph.loadi(imm, Flag::Signed);
-       //             let tmp_reg = irgraph.add(rs1_reg, imm_reg, Flag::DWord);
-
-       //             let res = match mode {
-       //                 0b000 => irgraph.load(tmp_reg, Flag::Byte | Flag::Signed),    // LB
-       //                 0b001 => irgraph.load(tmp_reg, Flag::Word | Flag::Signed),    // LH
-       //                 0b010 => irgraph.load(tmp_reg, Flag::DWord | Flag::Signed),   // LW
-       //                 0b100 => irgraph.load(tmp_reg, Flag::Byte | Flag::Unsigned),  // LBU
-       //                 0b101 => irgraph.load(tmp_reg, Flag::Word | Flag::Unsigned),  // LHU
-       //                 0b110 => irgraph.load(tmp_reg, Flag::DWord | Flag::Unsigned), // LWU
-       //                 0b011 => irgraph.load(tmp_reg, Flag::QWord),                  // LD
-       //                 _ => unreachable!(),
-       //             };
-       //             set_reg!(rd, res);
-       //         },
-       //         Instr::Sb  {rs1, rs2, imm, mode} |
-       //         Instr::Sh  {rs1, rs2, imm, mode} |
-       //         Instr::Sw  {rs1, rs2, imm, mode} |
-       //         Instr::Sd  {rs1, rs2, imm, mode} => {
-       //             let rs1_reg  = IRReg(get_reg!(rs1));
-       //             let rs2_reg  = IRReg(get_reg!(rs2));
-
-       //             let imm_reg  = irgraph.loadi(imm, Flag::Signed);
-       //             let mem_addr = irgraph.add(rs1_reg, imm_reg, Flag::DWord);
-
-       //             match mode {
-       //                 0b000 => { irgraph.store(rs2_reg, mem_addr, Flag::Byte) },  // SB
-       //                 0b001 => { irgraph.store(rs2_reg, mem_addr, Flag::Word) },  // SH
-       //                 0b010 => { irgraph.store(rs2_reg, mem_addr, Flag::DWord) }, // SW
-       //                 0b011 => { irgraph.store(rs2_reg, mem_addr, Flag::QWord) }, // SD
-       //                 _ => { unreachable!(); },
-       //             }
-       //         },
-       //         Instr::Addi  {rd, rs1, imm } |
-       //         Instr::Slti  {rd, rs1, imm } |
-       //         Instr::Sltiu {rd, rs1, imm } |
-       //         Instr::Xori  {rd, rs1, imm } |
-       //         Instr::Ori   {rd, rs1, imm } |
-       //         Instr::Andi  {rd, rs1, imm } |
-       //         Instr::Slli  {rd, rs1, imm } |
-       //         Instr::Srli  {rd, rs1, imm } |
-       //         Instr::Srai  {rd, rs1, imm } |
-       //         Instr::Addiw {rd, rs1, imm } |
-       //         Instr::Slliw {rd, rs1, imm } |
-       //         Instr::Srliw {rd, rs1, imm } |
-       //         Instr::Sraiw {rd, rs1, imm } => {
-       //             let rs1_reg = IRReg(get_reg!(rs1));
-       //             let imm_reg = irgraph.loadi(imm, Flag::Signed);
-       //             let res = match instr {
-       //                 Instr::Addi  { .. } => irgraph.add(rs1_reg, imm_reg, Flag::QWord),
-       //                 Instr::Slti  { .. } => irgraph.slt(rs1_reg, imm_reg, Flag::Signed),
-       //                 Instr::Sltiu { .. } => irgraph.slt(rs1_reg, imm_reg, Flag::Unsigned),
-       //                 Instr::Xori  { .. } => irgraph.xor(rs1_reg, imm_reg),
-       //                 Instr::Ori   { .. } => irgraph.or(rs1_reg, imm_reg),
-       //                 Instr::Andi  { .. } => irgraph.and(rs1_reg, imm_reg),
-       //                 Instr::Slli  { .. } => irgraph.shl(rs1_reg, imm_reg, Flag::QWord),
-       //                 Instr::Srli  { .. } => irgraph.shr(rs1_reg, imm_reg, Flag::QWord),
-       //                 Instr::Srai  { .. } => irgraph.sar(rs1_reg, imm_reg, Flag::QWord),
-       //                 Instr::Addiw { .. } => irgraph.add(rs1_reg, imm_reg, Flag::DWord),
-       //                 Instr::Slliw { .. } => irgraph.shl(rs1_reg, imm_reg, Flag::DWord),
-       //                 Instr::Srliw { .. } => irgraph.shr(rs1_reg, imm_reg, Flag::DWord),
-       //                 Instr::Sraiw { .. } => irgraph.sar(rs1_reg, imm_reg, Flag::DWord),
-       //                 _ => unreachable!(),
-       //             };
-       //             set_reg!(rd, res);
-       //         },
-       //         Instr::Add  {rd, rs1, rs2 } |
-       //         Instr::Sub  {rd, rs1, rs2 } |
-       //         Instr::Sll  {rd, rs1, rs2 } |
-       //         Instr::Slt  {rd, rs1, rs2 } |
-       //         Instr::Sltu {rd, rs1, rs2 } |
-       //         Instr::Xor  {rd, rs1, rs2 } |
-       //         Instr::Srl  {rd, rs1, rs2 } |
-       //         Instr::Sra  {rd, rs1, rs2 } |
-       //         Instr::Or   {rd, rs1, rs2 } |
-       //         Instr::And  {rd, rs1, rs2 } |
-       //         Instr::Addw {rd, rs1, rs2 } |
-       //         Instr::Subw {rd, rs1, rs2 } |
-       //         Instr::Sllw {rd, rs1, rs2 } |
-       //         Instr::Srlw {rd, rs1, rs2 } |
-       //         Instr::Sraw {rd, rs1, rs2 } => {
-       //             let rs1_reg = IRReg(get_reg!(rs1));
-       //             let rs2_reg = IRReg(get_reg!(rs2));
-       //             let res =  match instr   {
-       //                 Instr::Add  { .. } => irgraph.add(rs1_reg, rs2_reg, Flag::QWord),
-       //                 Instr::Sub  { .. } => irgraph.sub(rs1_reg, rs2_reg, Flag::QWord),
-       //                 Instr::Sll  { .. } => irgraph.shl(rs1_reg, rs2_reg, Flag::QWord),
-       //                 Instr::Slt  { .. } => irgraph.slt(rs1_reg, rs2_reg, Flag::Signed),
-       //                 Instr::Sltu { .. } => irgraph.slt(rs1_reg, rs2_reg, Flag::Unsigned),
-       //                 Instr::Xor  { .. } => irgraph.xor(rs1_reg, rs2_reg),
-       //                 Instr::Srl  { .. } => irgraph.shr(rs1_reg, rs2_reg, Flag::QWord),
-       //                 Instr::Sra  { .. } => irgraph.sar(rs1_reg, rs2_reg, Flag::QWord),
-       //                 Instr::Or   { .. } => irgraph.or(rs1_reg, rs2_reg),
-       //                 Instr::And  { .. } => irgraph.and(rs1_reg, rs2_reg),
-       //                 Instr::Addw { .. } => irgraph.add(rs1_reg, rs2_reg, Flag::DWord),
-       //                 Instr::Subw { .. } => irgraph.sub(rs1_reg, rs2_reg, Flag::DWord),
-       //                 Instr::Sllw { .. } => irgraph.shl(rs1_reg, rs2_reg, Flag::DWord),
-       //                 Instr::Srlw { .. } => irgraph.shr(rs1_reg, rs2_reg, Flag::DWord),
-       //                 Instr::Sraw { .. } => irgraph.sar(rs1_reg, rs2_reg, Flag::DWord),
-       //                 _ => unreachable!(),
-       //             };
-       //             set_reg!(rd, res);
-       //         },
-       //         Instr::Ecall {} => {
-       //             irgraph.syscall();
-       //         },
-       //         _ => {
-       //             panic!("unimplemented instruction hit\npc: 0x{:x} \nopcodes: {:x} \ninstr: \
-       //                    {:?}\n {:#?}", pc, opcodes, instr, irgraph);
-       //         },
-       //     }
-       //     pc += 4;
-       // }
+                    match mode {
+                        0b000 => { irgraph.store(rs2, mem_addr, Flag::Byte) },  // SB
+                        0b001 => { irgraph.store(rs2, mem_addr, Flag::Word) },  // SH
+                        0b010 => { irgraph.store(rs2, mem_addr, Flag::DWord) }, // SW
+                        0b011 => { irgraph.store(rs2, mem_addr, Flag::QWord) }, // SD
+                        _ => { unreachable!(); },
+                    }
+                },
+                Instr::Addi  {rd, rs1, imm } |
+                Instr::Slti  {rd, rs1, imm } |
+                Instr::Sltiu {rd, rs1, imm } |
+                Instr::Xori  {rd, rs1, imm } |
+                Instr::Ori   {rd, rs1, imm } |
+                Instr::Andi  {rd, rs1, imm } |
+                Instr::Slli  {rd, rs1, imm } |
+                Instr::Srli  {rd, rs1, imm } |
+                Instr::Srai  {rd, rs1, imm } |
+                Instr::Addiw {rd, rs1, imm } |
+                Instr::Slliw {rd, rs1, imm } |
+                Instr::Srliw {rd, rs1, imm } |
+                Instr::Sraiw {rd, rs1, imm } => {
+                    let imm_reg = irgraph.loadi(Register::Z1, imm, Flag::Signed);
+                    let res = match instr {
+                        Instr::Addi  { .. } => irgraph.add(rd, rs1, imm_reg, Flag::QWord),
+                        Instr::Slti  { .. } => irgraph.slt(rd, rs1, imm_reg, Flag::Signed),
+                        Instr::Sltiu { .. } => irgraph.slt(rd, rs1, imm_reg, Flag::Unsigned),
+                        Instr::Xori  { .. } => irgraph.xor(rd, rs1, imm_reg),
+                        Instr::Ori   { .. } => irgraph.or(rd, rs1, imm_reg),
+                        Instr::Andi  { .. } => irgraph.and(rd, rs1, imm_reg),
+                        Instr::Slli  { .. } => irgraph.shl(rd, rs1, imm_reg, Flag::QWord),
+                        Instr::Srli  { .. } => irgraph.shr(rd, rs1, imm_reg, Flag::QWord),
+                        Instr::Srai  { .. } => irgraph.sar(rd, rs1, imm_reg, Flag::QWord),
+                        Instr::Addiw { .. } => irgraph.add(rd, rs1, imm_reg, Flag::DWord),
+                        Instr::Slliw { .. } => irgraph.shl(rd, rs1, imm_reg, Flag::DWord),
+                        Instr::Srliw { .. } => irgraph.shr(rd, rs1, imm_reg, Flag::DWord),
+                        Instr::Sraiw { .. } => irgraph.sar(rd, rs1, imm_reg, Flag::DWord),
+                        _ => unreachable!(),
+                    };
+                },
+                Instr::Add  {rd, rs1, rs2 } |
+                Instr::Sub  {rd, rs1, rs2 } |
+                Instr::Sll  {rd, rs1, rs2 } |
+                Instr::Slt  {rd, rs1, rs2 } |
+                Instr::Sltu {rd, rs1, rs2 } |
+                Instr::Xor  {rd, rs1, rs2 } |
+                Instr::Srl  {rd, rs1, rs2 } |
+                Instr::Sra  {rd, rs1, rs2 } |
+                Instr::Or   {rd, rs1, rs2 } |
+                Instr::And  {rd, rs1, rs2 } |
+                Instr::Addw {rd, rs1, rs2 } |
+                Instr::Subw {rd, rs1, rs2 } |
+                Instr::Sllw {rd, rs1, rs2 } |
+                Instr::Srlw {rd, rs1, rs2 } |
+                Instr::Sraw {rd, rs1, rs2 } => {
+                    let res =  match instr   {
+                        Instr::Add  { .. } => irgraph.add(rd, rs1, rs2, Flag::QWord),
+                        Instr::Sub  { .. } => irgraph.sub(rd, rs1, rs2, Flag::QWord),
+                        Instr::Sll  { .. } => irgraph.shl(rd, rs1, rs2, Flag::QWord),
+                        Instr::Slt  { .. } => irgraph.slt(rd, rs1, rs2, Flag::Signed),
+                        Instr::Sltu { .. } => irgraph.slt(rd, rs1, rs2, Flag::Unsigned),
+                        Instr::Xor  { .. } => irgraph.xor(rd, rs1, rs2),
+                        Instr::Srl  { .. } => irgraph.shr(rd, rs1, rs2, Flag::QWord),
+                        Instr::Sra  { .. } => irgraph.sar(rd, rs1, rs2, Flag::QWord),
+                        Instr::Or   { .. } => irgraph.or(rd, rs1, rs2),
+                        Instr::And  { .. } => irgraph.and(rd, rs1, rs2),
+                        Instr::Addw { .. } => irgraph.add(rd, rs1, rs2, Flag::DWord),
+                        Instr::Subw { .. } => irgraph.sub(rd, rs1, rs2, Flag::DWord),
+                        Instr::Sllw { .. } => irgraph.shl(rd, rs1, rs2, Flag::DWord),
+                        Instr::Srlw { .. } => irgraph.shr(rd, rs1, rs2, Flag::DWord),
+                        Instr::Sraw { .. } => irgraph.sar(rd, rs1, rs2, Flag::DWord),
+                        _ => unreachable!(),
+                    };
+                },
+                Instr::Ecall {} => {
+                    irgraph.syscall();
+                },
+                _ => { panic!("a problem in lift"); },
+            }
+            pc += 4;
+        }
 
         //for instr in &irgraph.instrs {
         //    println!("{:x?}", instr);
         //}
-        Ok(irgraph)
     }
 }
 
@@ -964,22 +928,14 @@ mod tests {
         let jit = Arc::new(Jit::new(16 * 1024 * 1024));
         let mut emu = Emulator::new(64 * 1024 * 1024, jit);
 
-        /*
-           A0 = x
-           A1 = y
-           A2 = z
-           A3 = f
-           A4 = a
-           A5 = b
-           A6 = c
-        */
-
         /*0x1000*/ instrs.push(Instr::Lui { rd: Register::A0, imm: 20 });
         /*0x1004*/ instrs.push(Instr::Lui { rd: Register::A1, imm: 10 });
-        /*0x1008*/ instrs.push(Instr::Blt { rs1: Register::A0, rs2: Register::A1, imm: 0x20, mode: 1});
+        /*0x1008*/ instrs.push(Instr::Beq { rs1: Register::A0, rs2: Register::A1,
+            imm: 0x20, mode: 0});
 
         //b1
-        /*0x100c*/ instrs.push(Instr::Add { rd: Register::A2, rs1: Register::A0, rs2: Register::A1 });
+        /*0x100c*/ instrs.push(Instr::Add { rd: Register::A2, rs1: Register::A0,
+            rs2: Register::A1 });
         /*0x1010*/ instrs.push(Instr::Lui { rd: Register::A3, imm: 1 });
         /*0x1014*/ instrs.push(Instr::Jal { rd: Register::Zero, imm: 0x4 }); //goto b2
 
@@ -990,7 +946,8 @@ mod tests {
         /*0x1024*/ instrs.push(Instr::Jal { rd: Register::Zero, imm: 0x10 }); //goto end
 
         //b3
-        /*0x1028*/ instrs.push(Instr::Sub { rd: Register::A2, rs1: Register::A0, rs2: Register::A1 });
+        /*0x1028*/ instrs.push(Instr::Sub { rd: Register::A2, rs1: Register::A0,
+            rs2: Register::A1 });
         /*0x102c*/ instrs.push(Instr::Lui { rd: Register::A3, imm: 2 });
         /*0x1030*/ instrs.push(Instr::Jal { rd: Register::Zero, imm: -0x18 }); //goto b2
 
@@ -999,27 +956,47 @@ mod tests {
         // end
 
         let mut keys = vec![0x1000, 0x100c, 0x1018, 0x1028, 0x1034];
-        let (cfg, mut leader_set) = emu.create_cfg(&instrs, 0x1000, 0x1034, &mut keys);
-        let (mut dom_tree, mut dom_set) = emu.generate_domtree(&cfg, leader_set.len());
-        let df_list = emu.find_domfrontier(&mut dom_tree, &cfg, &mut dom_set);
-        let (var_list, var_origin, varlist_origin, var_tuple) =
-            emu.find_var_origin(&instrs, &mut leader_set);
-        let (def_sites, var_phi, phi_func) = emu.insert_phi_func(&cfg, &instrs, &df_list,
-                                                                    &varlist_origin, &var_tuple);
+        let mut irgraph = IRGraph::default();
+        emu.lift(&mut irgraph, &instrs, &mut keys, 0x1000);
 
-        emu.rename_regs(&cfg, &mut instrs, &mut leader_set, &dom_tree,
-                        &var_list, &var_origin, &phi_func);
+        let mut cfg = CFG::new(&irgraph);
+        cfg.dump_dot();
 
-        println!("cfg: {:?}", cfg);
-        println!("leader_set: {:?}", leader_set);
-        println!("dom_tree: {:?}", dom_tree);
-        println!("dom_set: {:?}", dom_set);
-        println!("df_list: {:?}", df_list);
-        println!("var_list: {:?}", var_list);
-        println!("var_list_origin: {:?}", varlist_origin);
-        println!("var_tuple: {:?}", var_tuple);
-        println!("def_sites: {:?}\n", def_sites);
-        println!("var_phi: {:?}\n", var_phi);
-        println!("phi_func: {:?}\n", phi_func);
+        cfg.convert_to_ssa();
+
+        panic!("done");
+
+        //let df_list = emu.find_domfrontier(&mut dom_tree, &cfg, &mut dom_set);
+        //let (var_list, var_origin, varlist_origin, var_tuple) =
+        //    emu.find_var_origin(&instrs, &mut leader_set);
+        //let (def_sites, var_phi, phi_func) = emu.insert_phi_func(&cfg, &instrs, &df_list,
+        //                                                            &varlist_origin, &var_tuple);
+
+        //emu.rename_regs(&cfg, &mut instrs, &mut leader_set, &dom_tree,
+        //                &var_list, &var_origin, &phi_func);
+
+        //println!("cfg: {:?}", cfg);
+        //println!("leader_set: {:?}", leader_set);
+        //println!("dom_tree: {:?}", dom_tree);
+        //println!("dom_set: {:?}", dom_set);
+        //println!("df_list: {:?}", df_list);
+        //println!("var_list: {:?}", var_list);
+        //println!("var_list_origin: {:?}", varlist_origin);
+        //println!("var_tuple: {:?}", var_tuple);
+        //println!("def_sites: {:?}\n", def_sites);
+        //println!("var_phi: {:?}\n", var_phi);
+        //println!("phi_func: {:?}\n", phi_func);
+    }
+
+    #[test]
+    fn temporary2() {
+        let jit = Arc::new(Jit::new(16 * 1024 * 1024));
+        let mut emu = Emulator::new(64 * 1024 * 1024, jit);
+
+        let irgraph = emu.lift_func(0x100b0);
+
+        //for instr in irgraph {
+            //println!("{:?}", instr);
+        //}
     }
 }
