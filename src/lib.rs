@@ -6,6 +6,7 @@ pub mod syscalls;
 pub mod irgraph;
 pub mod cfg;
 
+#[macro_use] extern crate maplit;
 extern crate iced_x86;
 
 use elfparser::{self, ARCH64, ELFMAGIC, LITTLEENDIAN, TYPEEXEC, RISCV};

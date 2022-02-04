@@ -1,7 +1,6 @@
 use crate::{
     irgraph::{Operation, IRGraph, Instruction, Reg},
     emulator::Register as PReg,
-    maplit,
 };
 
 use std::fs::File;
@@ -11,7 +10,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use petgraph::Graph;
 use petgraph::dot::{Dot, Config};
 use rustc_hash::FxHashMap;
-
 
 /// Controlflow graph used in the ir
 #[derive(Debug, Default)]
@@ -111,16 +109,16 @@ impl CFG {
         let (def_sites, var_phi, phi_func) =
             self.insert_phi_func(&df_list, &varlist_origin, &var_tuple);
 
-        //println!("cfg: {:?}\n\n", self.edges);
-        //println!("leader_set: {:?}", self.leader_set);
-        //println!("dom_tree: {:?}", dom_tree);
-        //println!("dom_set: {:?}", dom_set);
-        //println!("df_list: {:?}", df_list);
-        //println!("\nvar_list: {:?}", var_list);
-        //println!("\nvar_origin: {:?}", var_origin);
-        //println!("\nvar_list_origin: {:?}", varlist_origin);
-        //println!("\nvar_tuple: {:?}", var_tuple);
-        //println!("def_sites: {:?}\n", def_sites);
+        println!("cfg: {:?}\n\n", self.edges);
+        println!("leader_set: {:?}", self.leader_set);
+        println!("dom_tree: {:?}", dom_tree);
+        println!("dom_set: {:?}", dom_set);
+        println!("df_list: {:?}", df_list);
+        println!("\nvar_list: {:?}", var_list);
+        println!("\nvar_origin: {:?}", var_origin);
+        println!("\nvar_list_origin: {:?}", varlist_origin);
+        println!("\nvar_tuple: {:?}", var_tuple);
+        println!("def_sites: {:?}\n", def_sites);
         println!("var_phi: {:?}\n", var_phi);
         println!("phi_func: {:?}\n", phi_func);
 
@@ -141,10 +139,11 @@ impl CFG {
             dom_temp.push(v);
         }
 
+        //println!("dom_temp: {:?}", dom_temp);
+
         let mut dom = move |n: usize| {
             let mut dom_set = dom_temp[n].clone();
-            let pred: Vec<u32> = self.edges.iter().filter(|e| e.1 == n as u32)
-                .map(|e| e.0).collect();
+            let pred: Vec<u32> = self.edges.iter().filter(|e| e.1 == n as u32).map(|e| e.0).collect();
             let mut dom_check: Vec<BTreeSet<isize>> = Vec::new();
             pred.iter().for_each(|e| { dom_check.push(dom_temp.iter().nth(*e as usize)
                                                       .unwrap().clone()); });
@@ -162,11 +161,16 @@ impl CFG {
         let mut dom_tree: Vec<(isize, isize)> = Vec::new();
         let mut dom_set: Vec<BTreeSet<isize>> = Vec::new();
 
+        println!("num_leaders: {:?}", num_leaders);
+
         for i in 1..num_leaders {
             let mut dom_tempset: BTreeSet<isize> = dom(i);
+            println!("dom_tempset: {:?}", dom_tempset);
 
             dom_set.push(dom_tempset.clone());
+
             dom_tempset.remove(&(i as isize));
+
             let max_val = dom_tempset.into_iter().max().unwrap();
             dom_tree.push((max_val as isize, i as isize));
         }
@@ -174,41 +178,27 @@ impl CFG {
         (dom_tree, dom_set)
     }
 
-    /*
-        Algorithm:
-            Locate all join points j
-            For each predecessor p of j, walk up the dominator tree from p until a node is found
-            that dominates j. All nodes in this traversal from p to the node that dominates j, but
-            not including j belong to the dominance frontier.
-    */
-    /// Find Dominance Frontiers
     fn find_domfrontier(&self, dom_tree: &mut Vec<(isize, isize)>,
-            dom_set: &mut Vec<BTreeSet<isize>>) -> Vec<BTreeSet<usize>> {
-
-        // Add an extra node at the beginning of the graph that dominates everything.
-        // This makes the implementation a little simpler
-        dom_set.insert(0, btreeset!{0});
+            dom_set: &mut Vec<BTreeSet<isize>>) -> Vec<BTreeSet<isize>> {
+        let mut v = BTreeSet::new();
+        v.insert(0);
+        dom_set.insert(0, v);
         dom_tree.insert(0, (-1, 0));
 
-        let mut df_set: Vec<BTreeSet<usize>> = Vec::new();
-
-        // Create an index in the set for every node in the graph
+        let mut df_set: Vec<BTreeSet<isize>> = Vec::new();
         dom_set.iter().for_each(|_| df_set.push(BTreeSet::new()));
 
         for v in &dom_tree.clone() {
-            let join_point = v.1;
+            let node = v.1;
+            let pred: Vec<u32> = self.edges.iter().filter(|e| e.1 == node as u32).map(|e| e.0).collect();
 
-            // Collect all predecessor nodes for the current join point from the cfg
-            let predecessors: Vec<u32> = self.edges.iter().filter(|e| e.1 == join_point as u32)
-                .map(|e| e.0).collect();
+            for e in pred {
+                let mut runner: isize = e as isize;
 
-            // Loop through all predecessors of the join point. If a predecessor is not an idom,
-            // insert it into the dominance frontier set
-            for p in predecessors {
-                let mut runner: isize = p as isize;
-
-                while runner != dom_tree[join_point as usize].0 {
-                    df_set[runner as usize] = btreeset!{join_point as usize};
+                while runner != dom_tree[node as usize].0 {
+                    let mut new_set = BTreeSet::new();
+                    new_set.insert(node);
+                    df_set[runner as usize] = new_set.clone();
                     runner = dom_tree[runner as usize].0;
                 }
             }
@@ -216,28 +206,32 @@ impl CFG {
         df_set
     }
 
-    /*
-       Returns a couple of structures describing def/use relationships between registers and their
-       corresponding blocks. These are useful to simplify the algorithms in future functions.
-    */
-    ///
     fn find_var_origin(&self)
         -> (Vec<Reg>, Vec<(Reg, usize)>, Vec<Vec<Reg>>, Vec<(Reg, usize)>) {
 
         let mut var_origin = Vec::new();
 
         //// Extract all register definitions from the function
-        for (i, instr) in self.instrs.iter().enumerate() {
-            if instr.o_reg.is_some() && instr.o_reg.unwrap().0 != PReg::Zero {
-                var_origin.push((instr.o_reg.unwrap(), i));
+        let mut i = 0;
+        for block in &self.blocks {
+            for instr in block {
+                let out_reg = match instr.o_reg {
+                    Some(reg) => reg,
+                    _ => Reg(PReg::Zero, 0),
+                };
+                if out_reg.0 != PReg::Zero {
+                    var_origin.push((out_reg, i));
+                }
+                i += 1;
             }
         }
 
+        //println!("var_origin: {:?}", var_origin);
         let mut leader_set_index: Vec<usize> = self.leader_set.iter().map(|e| e.1).collect();
         leader_set_index.push(self.num_instrs);
 
         let mut varnode_origin: Vec<usize> = Vec::new();
-        let mut i = 0;
+        i = 0;
 
         for x in &var_origin {
             let instr_index = x.1;
@@ -264,51 +258,38 @@ impl CFG {
         (var_list, var_origin, varlist_origin, varlist_temp)
     }
 
-    /*
-        Algorithm:
-            Whenever a register x is defined in a block b, a phi function needs to be inserted at
-            the start of every dominance frontier of b. Since every phi function insertion may lead
-            to more phi functions being inserted, we need to loop through all potential register
-            definitions after every insertion.
-    */
-    ///
-    fn insert_phi_func(&self, domination_frontier: &Vec<BTreeSet<usize>>,
-                       varlist_origin: &Vec<Vec<Reg>>, var_tuple: &Vec<(Reg, usize)>)
+    fn insert_phi_func(&self, df_list: &Vec<BTreeSet<isize>>, varlist_origin: &Vec<Vec<Reg>>,
+                       var_tuple: &Vec<(Reg, usize)>)
         -> (Vec<Vec<usize>>, Vec<BTreeSet<usize>>, Vec<BTreeSet<(Reg, isize)>>) {
 
         let mut def_sites: Vec<Vec<usize>>      = vec![Vec::new(); 34];
         let mut var_phi:   Vec<BTreeSet<usize>> = Vec::new();
-        let mut phi_func = vec![BTreeSet::new(); domination_frontier.len()];
+        let mut phi_func:  Vec<BTreeSet<(Reg, isize)>> = Vec::new();
 
-        // Vector of all registers, each index contains a vector that lists all blocks in which its
-        // register was declared
         for v in var_tuple {
             def_sites[v.0.0 as usize].push(v.1);
             var_phi.push(BTreeSet::new());
+        }
+
+        for _ in 0..df_list.len() {
+            phi_func.push(BTreeSet::new());
         }
 
         let mut count = 0;
         for (i, var) in def_sites.iter().enumerate() {
             if var.len() == 0 { continue; }
             count += 1;
+            let mut temp_list = def_sites[i].clone();
 
-            // worklist of blocks
-            let mut worklist = def_sites[i].clone();
-
-            while let Some(block) = worklist.pop() {
-                for x in &domination_frontier[block] {
-                    // If the block has no phi functions for x
-                    if !var_phi[count].contains(&(*x as usize)) {
-
-                        // Insert phi functions
-                        let len = self.edges.iter().filter(|e| e.1 as usize == *x).count() as isize;
-                        phi_func[*x as usize].insert((Reg(PReg::from(i as u32), 0), len));
-                        var_phi[count].insert(*x as usize);
-
-                        // if x is not in varlist_origin, update the worklist
-                        if varlist_origin[block].iter().
-                            find(|&&e| e == Reg(PReg::from(*x as u32), 0)).is_none() {
-                            worklist.push(*x as usize);
+            while let Some(n) = temp_list.pop() {
+                for y in &df_list[n] {
+                    if !var_phi[count].contains(&(*y as usize)) {
+                        let len = self.edges.iter().filter(|x| x.1 as isize == *y).count() as isize;
+                        phi_func[*y as usize].insert((Reg(PReg::from(i as u32), 0), len));
+                        var_phi[count].insert(*y as usize);
+                        if varlist_origin[n].iter().find(|&&x| x == Reg(PReg::from(*y as u32), 0))
+                            .is_none() {
+                            temp_list.push(*y as usize);
                         }
                     }
                 }
@@ -320,17 +301,16 @@ impl CFG {
     fn rename_regs(&mut self, dom_tree: &Vec<(isize, isize)>, var_list: &Vec<Reg>,
                 var_origin: &Vec<(Reg, usize)>, phi_func: &Vec<BTreeSet<(Reg, isize)>>) {
 
-        // Count/Stack used for variable renaming
+        // This does something
         let mut var_dict: Vec<(usize, Vec<usize>)> = vec![(0, Vec::new()); 34];
 
-        let mut phi_func_mod: Vec<Vec<Vec<(Reg, isize)>>> = Vec::new();
-        let mut phi_func_temp: Vec<Vec<Vec<Reg>>>         = Vec::new();
-        let mut blocks: Vec<((usize, usize), usize)>      = Vec::new();
-
-        // Initialize the current positions for all used registers in this function to 0
         for var in var_list {
             var_dict[var.0 as usize] = (0, vec![0; 1]);
         }
+
+        let mut phi_func_mod: Vec<Vec<Vec<(Reg, isize)>>>  = Vec::new();
+        let mut phi_func_temp: Vec<Vec<Vec<Reg>>> = Vec::new();
+        let mut blocks: Vec<((usize, usize), usize)> = Vec::new();
 
         for (i, var) in phi_func.iter().enumerate() {
             if phi_func_temp.len() <= i {
