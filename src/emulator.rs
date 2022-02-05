@@ -6,7 +6,7 @@ use crate::{
     syscalls,
     error_exit,
     irgraph::{IRGraph, Flag, Reg as IRReg},
-    cfg::{CFG},
+    ssa_builder::{SSABuilder},
 };
 
 use std::sync::Arc;
@@ -233,17 +233,17 @@ impl Emulator {
                 None => {
                     let mut irgraph = self.lift_func(pc).unwrap();
 
-                    let cfg = CFG::new(&irgraph);
-                    cfg.dump_dot();
+                    let cfg = SSABuilder::new(&irgraph);
+                    //cfg.dump_dot();
 
-                    for b in &cfg.blocks {
-                        println!("[");
-                        for instr in b {
-                            println!("{}", instr);
-                        }
-                        println!("]\n");
-                    }
-                    println!("edges: {:?}", cfg.edges);
+                    //for b in &cfg.blocks {
+                    //    println!("[");
+                    //    for instr in b {
+                    //        println!("{}", instr);
+                    //    }
+                    //    println!("]\n");
+                    //}
+                    //println!("edges: {:?}", cfg.edges);
 
                     irgraph.optimize();
                     (*self.jit).compile(irgraph).unwrap()
@@ -352,7 +352,7 @@ impl Emulator {
         let mut keys: Vec<usize> = self.extract_labels(start_pc, &instrs).keys().cloned().collect();
         keys.insert(0, start_pc);
 
-        println!("keys: {:x?}", keys);
+        //println!("keys: {:x?}", keys);
 
         // Add a label b4 first instruction of this function
         //irgraph.set_label(start_pc);
@@ -603,11 +603,11 @@ mod tests {
         let mut irgraph = IRGraph::default();
         emu.lift(&mut irgraph, &instrs, &mut keys, 0x1000);
 
-        let mut cfg = CFG::new(&irgraph);
-        cfg.dump_dot();
+        let mut cfg = SSABuilder::new(&irgraph);
+        //cfg.dump_dot();
 
         cfg.instrs = irgraph.instrs;
-        cfg.convert_to_ssa();
+        cfg.build_ssa();
 
         panic!("done");
 

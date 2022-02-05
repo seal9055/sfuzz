@@ -140,8 +140,8 @@ impl fmt::Display for Instruction {
                 }
             },
             Operation::Phi => {
-                write!(f, "{:#08X}  φ ({}, {})", self.pc.unwrap_or(0), self.i_reg.0.unwrap(),
-                       self.i_reg.1.unwrap())
+                write!(f, "{:#08X} {} = φ({:?}, {:?})", self.pc.unwrap_or(0), self.o_reg.unwrap(),
+                       self.i_reg.0, self.i_reg.1)
             }
             Operation::Label(x) => {
                 write!(f, "\t\tLabel @ {:#0X?}\n", x)

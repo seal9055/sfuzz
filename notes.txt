@@ -36,26 +36,46 @@ var_list_origin:
 var_tuple:
     List of all registers alongside the block they were declared in.
 
+def_sites
+    block in which each register is defined
 
 rename:
+    rename() {
+        for var in all_vars {
+            // setup stack and count for them
+        }
+        rename_block(block)
+    }
 
-    for var in all_vars {
-        // setup stack and count for them
+    NewName(n) {
+        i = count[a]
+        count[reg_def] += 1;
+        stack.push[i];
+        return changed_instr;
     }
 
     rename_block(basic_block) {
 
+        for phi_functionin basic_block {
+            let def = phi_function.o_reg().unwrap();
+            NewName(def);
+        }
+
         for instr in basic_block {
             for reg_use in instr {
-                i = top(Stack[reg_use]);
-                // change instruction to use i for its use
+                NewName(top(Stack[reg_use]))
+            }
+            for reg_def in instr {
+                NewName(top(Stack[reg_def]))
+            }
+            for succ in basic_block {
+                rename_block(succ);
+            }
+            for instr in block {
+                if instr == phi {
+                    pop(stack[instr.o_reg])
+                }
             }
 
-            for reg_def in instr {
-                count[reg_def] += 1;
-                i = count[a]
-                stack.push[i];
-                // change instruction to use i for its definition
-            }
         }
     }
