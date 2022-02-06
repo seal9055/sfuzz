@@ -5,21 +5,24 @@ use crate::{
     jit::Jit,
     syscalls,
     error_exit,
-    irgraph::{IRGraph, Flag, Reg as IRReg},
-    ssa_builder::{SSABuilder},
+    irgraph::{IRGraph, Flag},
+    ssa_builder::SSABuilder,
 };
 
 use std::sync::Arc;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::arch::asm;
 use rustc_hash::FxHashMap;
-use array_tool::vec::{Intersect, Uniq};
 
+/// File Descriptors
 pub const STDIN:  isize = 0;
 pub const STDOUT: isize = 1;
 pub const STDERR: isize = 2;
 
-/// 33 RISCV Registers
+/// Number of registers (33 Riscv Regs + 2 temporary regs needed for ir-gen)
+pub const NUMREGS: usize = 35;
+
+/// 33 RISCV Registers + 2 Extra temporary registers that the IR needs
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Ord, PartialOrd)]
 #[repr(usize)]
 pub enum Register {
@@ -61,8 +64,9 @@ pub enum Register {
 }
 
 impl From<u32> for Register {
+    /// Convert a number to a Register enum
     fn from(val: u32) -> Self {
-        assert!(val < 33);
+        assert!(val < NUMREGS as u32);
         unsafe {
             core::ptr::read_unaligned(&(val as usize) as *const usize as *const Register)
         }
@@ -99,6 +103,7 @@ impl From<u32> for Register {
     Exit,
 }
 
+/// Describes the current state of the emulator
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct State {
@@ -113,16 +118,24 @@ impl Default for State {
     }
 }
 
+/// Emulator that runs the actual code. Each thread gets its own emulator in which everything is
+/// separate except the jit backing that all emulators share.
 #[derive(Clone)]
 pub struct Emulator {
+    /// Memory backing for the emulator, contains actual memory bytes and permissions
     pub memory: Mmu,
 
+    /// Describes the current state of the emulator
     pub state: State,
 
+    /// These are used to hook specific addresses. Can be used for debug purposes or to redirect
+    /// important functions such as malloc/free to our own custom implementations
     pub hooks: FxHashMap<usize, fn(&mut Emulator) -> Result<(), Fault>>,
 
+    /// The actual jit compiler backing
     pub jit: Arc<Jit>,
 
+    /// List of file descriptors that the process can use for syscalls
     pub fd_list: Vec<isize>,
 
     /// Mapping between function address and function size
@@ -141,6 +154,7 @@ impl Emulator {
         }
     }
 
+    /// Fork an emulator into a new one, basically creating an exact copy
     #[must_use]
     pub fn fork(&self) -> Self {
         Emulator {
@@ -153,6 +167,7 @@ impl Emulator {
         }
     }
 
+    /// Reset the entire state of this emulator (memory & registers)
     pub fn reset(&mut self, original: &Self) {
         self.memory.reset(&original.memory);
         self.state.regs = original.state.regs;
@@ -161,30 +176,35 @@ impl Emulator {
         self.fd_list.extend_from_slice(&original.fd_list);
     }
 
+    /// Set a register
     pub fn set_reg(&mut self, reg: Register, val: usize) {
-        assert!((reg as usize) < 33);
+        assert!((reg as usize) < NUMREGS);
         if reg == Register::Zero { panic!("Can't set zero-register"); }
         self.state.regs[reg as usize] = val;
     }
 
+    /// Get the value stored in a register
     pub fn get_reg(&self, reg: Register) -> usize {
-        assert!((reg as usize) < 33);
         if reg == Register::Zero { return 0; }
         self.state.regs[reg as usize]
     }
 
+    /// Load a segment from the elf binary into the emulator memory
     pub fn load_segment(&mut self, segment: elfparser::ProgramHeader, data: &[u8]) -> Option<()> {
         self.memory.load_segment(segment, data)
     }
 
+    /// Allocate a region of memory in the emulator
     pub fn allocate(&mut self, size: usize, perms: u8) -> Option<usize> {
         self.memory.allocate(size, perms)
     }
 
+    /// Free a previously allocated memory region
     pub fn free(&mut self, addr: usize) -> Result<(), Fault> {
         self.memory.free(addr)
     }
 
+    /// Debug print for registers
     pub fn dump_regs(&self) {
         println!("zero {:x?}", self.get_reg(Register::Zero));
         println!("ra   {:x?}", self.get_reg(Register::Ra));
@@ -221,6 +241,14 @@ impl Emulator {
         println!("pc   {:x?}", self.get_reg(Register::Pc));
     }
 
+    /// Runs the jit until exit/crash. It checks if the code at `pc` has already been compiled. If
+    /// not it starts by initiating the procedure to compile the code. At this point it has the
+    /// jitcache address of where `pc` is jit compiled too. Next it sets up various arguments and
+    /// calls this code. These arguments point to structures in memory that the jit-code needs to
+    /// convert original addresses to their corresponding jit addresses.
+    /// Once the jit exits it collects the reentry_pc (where to continue execution), and the exit
+    /// code. It performs an appropriate operation based on the exit code and then continues with
+    /// the loop to reenter the jit.
     pub fn run_jit(&mut self) -> Option<Fault> {
         loop {
             let pc = self.get_reg(Register::Pc);
@@ -230,23 +258,18 @@ impl Emulator {
             if pc & 3 != 0 { return Some(Fault::ExecFault(pc)); }
 
             let jit_addr = match (*self.jit).lookup(pc) {
-                None => {
-                    let mut irgraph = self.lift_func(pc).unwrap();
+                None => {   /* hardcoded for debugging TODO */
 
-                    let cfg = SSABuilder::new(&irgraph);
-                    //cfg.dump_dot();
+                    let irgraph = self.lift_func(0x100b0).unwrap();
+                    //let mut irgraph = self.lift_func(pc).unwrap();
 
-                    //for b in &cfg.blocks {
-                    //    println!("[");
-                    //    for instr in b {
-                    //        println!("{}", instr);
-                    //    }
-                    //    println!("]\n");
-                    //}
-                    //println!("edges: {:?}", cfg.edges);
+                    let mut ssa_builder = SSABuilder::new(&irgraph);
+                    ssa_builder.build_ssa();
+                    ssa_builder.dump_dot();
 
-                    irgraph.optimize();
-                    (*self.jit).compile(irgraph).unwrap()
+                    panic!("Done generating SSA-IR");
+
+                    //(*self.jit).compile(irgraph).unwrap()
                 }
                 Some(addr) => { addr }
             };
@@ -307,7 +330,7 @@ impl Emulator {
     }
 
     /// Returns a BTreeMap of pc value's at which a label should be created
-    fn extract_labels(&self, mut pc: usize, instrs: &Vec<Instr>) -> BTreeMap<usize, u8> {
+    fn extract_labels(&self, mut pc: usize, instrs: &[Instr]) -> BTreeMap<usize, u8> {
         let mut ret = BTreeMap::new();
 
         for instr in instrs {
@@ -331,14 +354,13 @@ impl Emulator {
         ret
     }
 
+    /// Lift a function into an intermediate representation using the lift helper function
     fn lift_func(&mut self, mut pc: usize) -> Result<IRGraph, ()> {
         let mut irgraph = IRGraph::default();
         let mut instrs: Vec<Instr> = Vec::new();
 
-        pc = 0x100b0;
         let start_pc = pc;
-        //let end_pc   = start_pc + self.functions.get(&pc).unwrap();
-        let end_pc = 0x1034;
+        let end_pc   = start_pc + self.functions.get(&pc).unwrap();
 
         while pc < end_pc {
             let opcodes: u32 = self.memory.read_at(pc, Perms::READ | Perms::EXECUTE).map_err(|_|
@@ -352,19 +374,15 @@ impl Emulator {
         let mut keys: Vec<usize> = self.extract_labels(start_pc, &instrs).keys().cloned().collect();
         keys.insert(0, start_pc);
 
-        //println!("keys: {:x?}", keys);
-
-        // Add a label b4 first instruction of this function
-        //irgraph.set_label(start_pc);
-
         self.lift(&mut irgraph, &instrs, &mut keys, start_pc);
 
         Ok(irgraph)
     }
 
-    /// Lift a function into an immediate representation that can be used to apply optimizations and
-    /// compile into the final jit-code
-    fn lift(&mut self, irgraph: &mut IRGraph, instrs: &Vec<Instr>, keys: &mut Vec<usize>,
+    /// This function takes a set of instructions and lifts them into the intermediate
+    /// representation. It uses the keys to insert labels where appropriate. These act as start
+    /// markers for new code blocks.
+    fn lift(&mut self, irgraph: &mut IRGraph, instrs: &[Instr], keys: &mut Vec<usize>,
             mut pc: usize) {
 
         // Lift instructions until we reach the end of the function
@@ -383,7 +401,7 @@ impl Emulator {
                 },
                 Instr::Auipc {rd, imm} => {
                     let val = (imm).wrapping_add(pc as i32);
-                    let res = irgraph.loadi(rd, val, Flag::Signed);
+                    irgraph.loadi(rd, val, Flag::Signed);
                 },
                 Instr::Jal {rd, imm} => {
                     let ret_val = pc.wrapping_add(4);
@@ -391,7 +409,7 @@ impl Emulator {
 
                     // Load return value into newly allocated register
                     if rd != Register::Zero {
-                        let res = irgraph.loadi(rd, ret_val as i32, Flag::Unsigned);
+                        irgraph.loadi(rd, ret_val as i32, Flag::Unsigned);
                         irgraph.call(jmp_target);
                     } else {
                         irgraph.jmp(jmp_target);
@@ -404,7 +422,7 @@ impl Emulator {
                     let jmp_target = irgraph.add(Register::Z2, rs1, imm_reg, Flag::DWord);
 
                     if rd != Register::Zero {
-                        let res = irgraph.loadi(rd, ret_val as i32, Flag::Unsigned);
+                        irgraph.loadi(rd, ret_val as i32, Flag::Unsigned);
                         irgraph.call_reg(jmp_target)
                     } else {
                         irgraph.ret();
@@ -457,7 +475,7 @@ impl Emulator {
                     let imm_reg  = irgraph.loadi(Register::Z1, imm, Flag::Signed);
                     let mem_addr = irgraph.add(Register::Z2, rs1, imm_reg, Flag::DWord);
 
-                    let res = match mode {
+                    match mode {
                         0b000 => irgraph.load(rd, mem_addr, Flag::Byte | Flag::Signed),    // LB
                         0b001 => irgraph.load(rd, mem_addr, Flag::Word | Flag::Signed),    // LH
                         0b010 => irgraph.load(rd, mem_addr, Flag::DWord | Flag::Signed),   // LW
@@ -497,7 +515,7 @@ impl Emulator {
                 Instr::Srliw {rd, rs1, imm } |
                 Instr::Sraiw {rd, rs1, imm } => {
                     let imm_reg = irgraph.loadi(Register::Z1, imm, Flag::Signed);
-                    let res = match instr {
+                    match instr {
                         Instr::Addi  { .. } => irgraph.add(rd, rs1, imm_reg, Flag::QWord),
                         Instr::Slti  { .. } => irgraph.slt(rd, rs1, imm_reg, Flag::Signed),
                         Instr::Sltiu { .. } => irgraph.slt(rd, rs1, imm_reg, Flag::Unsigned),
@@ -529,7 +547,7 @@ impl Emulator {
                 Instr::Sllw {rd, rs1, rs2 } |
                 Instr::Srlw {rd, rs1, rs2 } |
                 Instr::Sraw {rd, rs1, rs2 } => {
-                    let res =  match instr   {
+                    match instr   {
                         Instr::Add  { .. } => irgraph.add(rd, rs1, rs2, Flag::QWord),
                         Instr::Sub  { .. } => irgraph.sub(rd, rs1, rs2, Flag::QWord),
                         Instr::Sll  { .. } => irgraph.shl(rd, rs1, rs2, Flag::QWord),
@@ -551,14 +569,10 @@ impl Emulator {
                 Instr::Ecall {} => {
                     irgraph.syscall();
                 },
-                _ => { panic!("a problem in lift"); },
+                _ => { panic!("A problem occured while lifting to IR"); },
             }
             pc += 4;
         }
-
-        //for instr in &irgraph.instrs {
-        //    println!("{:x?}", instr);
-        //}
     }
 }
 
@@ -570,7 +584,7 @@ mod tests {
     fn temporary() {
         let mut instrs: Vec<Instr> = Vec::new();
         let jit = Arc::new(Jit::new(16 * 1024 * 1024));
-        let mut emu = Emulator::new(64 * 1024 * 1024, jit);
+        let mut _emu = Emulator::new(64 * 1024 * 1024, jit);
 
         /*0x1000*/ instrs.push(Instr::Lui { rd: Register::A0, imm: 20 });
         /*0x1004*/ instrs.push(Instr::Lui { rd: Register::A1, imm: 10 });
@@ -599,49 +613,21 @@ mod tests {
 
         // end
 
+
+        /*  Need to manually edit code in the lifting functions to make this test pass. This test
+            is just meant to test the code with a specific small set of instructions, not for actual
+            automated testing purposes.
+
         let mut keys = vec![0x1000, 0x100c, 0x1018, 0x1028, 0x1034];
         let mut irgraph = IRGraph::default();
         emu.lift(&mut irgraph, &instrs, &mut keys, 0x1000);
 
         let mut cfg = SSABuilder::new(&irgraph);
-        //cfg.dump_dot();
 
-        cfg.instrs = irgraph.instrs;
         cfg.build_ssa();
 
-        panic!("done");
+        cfg.dump_dot();
 
-        //let df_list = emu.find_domfrontier(&mut dom_tree, &cfg, &mut dom_set);
-        //let (var_list, var_origin, varlist_origin, var_tuple) =
-        //    emu.find_var_origin(&instrs, &mut leader_set);
-        //let (def_sites, var_phi, phi_func) = emu.insert_phi_func(&cfg, &instrs, &df_list,
-        //                                                            &varlist_origin, &var_tuple);
-
-        //emu.rename_regs(&cfg, &mut instrs, &mut leader_set, &dom_tree,
-        //                &var_list, &var_origin, &phi_func);
-
-        //println!("cfg: {:?}", cfg);
-        //println!("leader_set: {:?}", leader_set);
-        //println!("dom_tree: {:?}", dom_tree);
-        //println!("dom_set: {:?}", dom_set);
-        //println!("df_list: {:?}", df_list);
-        //println!("var_list: {:?}", var_list);
-        //println!("var_list_origin: {:?}", varlist_origin);
-        //println!("var_tuple: {:?}", var_tuple);
-        //println!("def_sites: {:?}\n", def_sites);
-        //println!("var_phi: {:?}\n", var_phi);
-        //println!("phi_func: {:?}\n", phi_func);
-    }
-
-    #[test]
-    fn temporary2() {
-        let jit = Arc::new(Jit::new(16 * 1024 * 1024));
-        let mut emu = Emulator::new(64 * 1024 * 1024, jit);
-
-        let irgraph = emu.lift_func(0x100b0);
-
-        //for instr in irgraph {
-            //println!("{:?}", instr);
-        //}
-    }
+        */
+        }
 }

@@ -36,6 +36,7 @@ pub fn exit() -> Option<Fault> {
     Some(Fault::Exit)
 }
 
+/// Fstat syscall
 pub fn fstat(emu: &mut Emulator) -> Option<Fault> {
     let fd = emu.get_reg(Register::A0) as usize;
     let _statbuf = emu.get_reg(Register::A1);
@@ -55,6 +56,7 @@ pub fn fstat(emu: &mut Emulator) -> Option<Fault> {
     None
 }
 
+/// Write syscall only supports stdout/stderr for now
 pub fn write(emu: &mut Emulator) -> Option<Fault> {
     let fd    = emu.get_reg(Register::A0) as usize;
     let buf   = emu.get_reg(Register::A1);
@@ -84,6 +86,8 @@ pub fn write(emu: &mut Emulator) -> Option<Fault> {
     None
 }
 
+/// brk syscall - hard to implement, if brk returns -1, chances are the application just mmap's
+/// instead which is easier to implement
 pub fn brk(emu: &mut Emulator) -> Option<Fault> {
     let base = emu.get_reg(Register::A0);
     if base != 0 {
@@ -94,6 +98,7 @@ pub fn brk(emu: &mut Emulator) -> Option<Fault> {
     panic!("brk not yet properly implemented");
 }
 
+/// close syscall
 pub fn close(emu: &mut Emulator) -> Option<Fault> {
     let fd = emu.get_reg(Register::A0) as usize;
 

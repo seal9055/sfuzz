@@ -13,7 +13,6 @@ elfparser = { git = "https://github.com/seal9055/local_crates/", branch = "main"
 rustc-hash = "1.1.0"
 petgraph = "0.6.0"
 num-traits = "0.2.14"
-array_tool = "1.0.3"
 maplit = "1.0.1"
 
 [dependencies.iced-x86]

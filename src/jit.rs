@@ -1,10 +1,10 @@
 use std::sync::Mutex;
 use std::sync::RwLock;
-use std::collections::BTreeMap;
+//use std::collections::BTreeMap;
 
-use crate::irgraph::{IRGraph, Operation, Label};
+use crate::irgraph::IRGraph;
 
-use iced_x86::code_asm::*;
+//use iced_x86::code_asm::*;
 
 #[cfg(target_os="linux")]
 pub fn alloc_rwx(size: usize) -> &'static mut [u8] {
@@ -46,6 +46,7 @@ impl Jit {
         }
     }
 
+    // Probably gonna remove this
     pub fn add_jitblock(&self, code: &[u8], pc: usize) -> usize {
         let mut jit = self.jit_backing.lock().unwrap();
 
@@ -63,6 +64,7 @@ impl Jit {
         addr
     }
 
+    /// Get the mapping of a pc from the original code to the compiled code in the jit
     pub fn lookup(&self, pc: usize) -> Option<usize> {
         let addr = self.lookup_arr.read().unwrap()[pc];
         if addr == 0 {
@@ -73,7 +75,8 @@ impl Jit {
     }
 
     /// Compile an IRGraph into x86 machine code
-    pub fn compile(&self, irgraph: IRGraph) -> Option<usize> {
+    pub fn compile(&self, _irgraph: IRGraph) -> Option<usize> {
+        /*
         let mut asm: CodeAssembler;
         let label_map: BTreeMap<usize, Label> = BTreeMap::new();
 
@@ -83,7 +86,7 @@ impl Jit {
         for instr in irgraph.instrs {
             asm = CodeAssembler::new(64).unwrap();
 
-            //println!("{:x?}", instr);
+            println!("{:x?}", instr);
 
             match instr.op {
                 Operation::Loadi(v) => {
@@ -97,6 +100,7 @@ impl Jit {
             }
 
         }
+        */
         Some(10)
     }
 }

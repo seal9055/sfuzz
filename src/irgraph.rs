@@ -1,25 +1,7 @@
-use crate::{
-    emulator::{Register as PReg},
-};
+use crate::emulator::Register as PReg;
 
-use std::fs::File;
-use std::io::Write;
 use std::fmt::{self, Formatter, UpperHex};
 use num_traits::Signed;
-
-use rustc_hash::FxHashMap;
-use petgraph::Graph;
-use petgraph::dot::{Dot, Config};
-
-/// Errors that can occur during IR Operations
-#[derive(Debug)]
-pub enum Error {
-    /// Ran out of registers for graph
-    OutOfRegs,
-
-    /// Ran out of labels for graph
-    OutOfLabels,
-}
 
 /// Small helper type that is used to print out hex value eg. -0x20 instead of 0xffffffe0
 struct ReallySigned<T: PartialOrd + Signed + UpperHex>(T);
@@ -31,7 +13,7 @@ impl<T: PartialOrd + Signed + UpperHex> UpperHex for ReallySigned<T> {
     }
 }
 
-/// Register-type used internally by the IR
+/// Register-type used internally by the IR (Register, SSA number for register)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Reg(pub PReg, pub u16);
 
@@ -75,6 +57,8 @@ impl Default for Operation {
     fn default() -> Self { Operation::Undefined }
 }
 
+/// These are used to give instructions extra information such as signed/unsigned or the type of
+/// comparison for branch instructions.
 #[derive(Debug, Clone, Copy)]
 pub struct Flag;
 #[allow(non_upper_case_globals)]
@@ -92,6 +76,8 @@ impl Flag {
     pub const QWord:    u16 = 0x200;
 }
 
+/// The instructions used in the IR. Layed out in a way that is efficient memory wise and lets us
+/// easily determine if the instruction has input/output fields.
 #[derive(Debug, Copy, Clone, Default)]
 pub struct Instruction {
     pub op:     Operation,
@@ -140,11 +126,11 @@ impl fmt::Display for Instruction {
                 }
             },
             Operation::Phi => {
-                write!(f, "{:#08X} {} = φ({:?}, {:?})", self.pc.unwrap_or(0), self.o_reg.unwrap(),
-                       self.i_reg.0, self.i_reg.1)
+                write!(f, "{:#08X}  {} = φ({}, {})", self.pc.unwrap_or(0), self.o_reg.unwrap(),
+                       self.i_reg.0.unwrap(), self.i_reg.1.unwrap())
             }
             Operation::Label(x) => {
-                write!(f, "\t\tLabel @ {:#0X?}\n", x)
+                writeln!(f, "\t\tLabel @ {:#0X?}", x)
             },
             Operation::Syscall => {
                 write!(f, "{:#08X}  Syscall", self.pc.unwrap_or(0))
@@ -204,15 +190,15 @@ impl fmt::Display for Instruction {
     }
 }
 
+/// Basic wrapper around instructions that keeps track of cur_pc.
 #[derive(Debug)]
 pub struct IRGraph {
     /// List of all instructions
     pub instrs: Vec<Instruction>,
 
-    /// This is used to map track the pc of the currently executing instruction
+    /// Since multiple IR instructions can be mapped to a single original instruction, this is used
+    /// to only assign the pc to the first IR-instruction is generated for an original instruction.
     cur_pc: Option<usize>,
-
-    // Track which functions have already been jitted, and their adresses, prob in the jit though
 }
 
 impl Default for IRGraph {
@@ -229,74 +215,7 @@ impl IRGraph {
         }
     }
 
-    /// Optimize the IRGraph
-    pub fn optimize(&mut self) -> Option<()> {
-        // Probably convert to cfg notation before starting optimizations
-        // Need to research different types of optimizations a little first, the main optimization
-        // will be to improve codegen involving immediate instructions because these currently take
-        // way too many instructions
-
-
-        // 1. lift into cfg
-        // 2. add functionality to emit a graph
-
-        Some(())
-    }
-
-    pub fn dump_instrs_dot(&self) {
-        let instrs = self.instrs.clone();
-        let mut graph = Graph::<_, i32>::new();
-        let mut map: FxHashMap<usize, usize> = FxHashMap::default();
-        let mut edges: Vec<(u32, u32)> = Vec::new();
-
-        for (i, instr) in instrs.into_iter().enumerate() {
-            match instr.op {
-                Operation::Branch(x, _) => {
-                    if map.get(&x).is_some() {
-                        let v = *map.get(&x).unwrap() as u32;
-                        edges.push( (i as u32, v) );
-                    }
-                    map.insert(x, i);
-                    edges.push( (i as u32, (i + 1) as u32) );
-                },
-                Operation::Label(x) => {
-                    if map.get(&x).is_some() {
-                        let v = *map.get(&x).unwrap() as u32;
-                        edges.push( (v, (i) as u32) );
-                    }
-                    map.insert(x, i);
-                    edges.push( (i as u32, (i + 1) as u32) );
-                },
-                Operation::Jmp(x) => {
-                    if map.get(&x).is_some() {
-                        let v = *map.get(&x).unwrap() as u32;
-                        edges.push( (i as u32, v) );
-                    }
-                    map.insert(x, i);
-                }
-                Operation::Call(x) => {
-                    if map.get(&x).is_some() {
-                        let v = *map.get(&x).unwrap() as u32;
-                        edges.push( (i as u32, v) );
-                    }
-                    map.insert(x, i);
-                    edges.push( (i as u32, (i + 1) as u32) );
-                }
-                _ => {
-                    edges.push( (i as u32, (i + 1) as u32) );
-                },
-            };
-            graph.add_node(instr);
-        }
-        for edge in edges.iter().take(edges.len() - 1) {
-            graph.extend_with_edges([edge]);
-        }
-        let mut f = File::create("graph.dot").unwrap();
-        let output = format!("{}", Dot::with_config(&graph, &[Config::EdgeNoLabel]));
-        f.write_all(output.as_bytes()).expect("could not write file");
-    }
-
-    /// Initialize the cur_pc variable which is used to set the pc value in the ir instructions
+    /// Initialize the cur_pc variable which is used to set the pc value in the IR instructions
     pub fn init_instr(&mut self, pc: usize) {
         self.cur_pc = Some(pc);
     }
@@ -306,7 +225,7 @@ impl IRGraph {
         Reg(phys_reg, 0)
     }
 
-    /// Allocate new Label for IRGraph
+    /// Insert a label into the irgraph using the current pc
     pub fn set_label(&mut self, pc: usize) {
         self.instrs.push( Instruction {
             op: Operation::Label(pc),
@@ -317,7 +236,7 @@ impl IRGraph {
         });
     }
 
-    /// Load an immediate value into a register
+    /// r1 = #imm
     pub fn loadi(&mut self, r1: PReg, imm: i32, flag: u16) -> PReg {
         let v1 = self.get_reg(r1);
         self.instrs.push( Instruction {
@@ -331,9 +250,10 @@ impl IRGraph {
         r1
     }
 
-    pub fn jmp(&mut self, target: usize) {
+    /// Jmp addr
+    pub fn jmp(&mut self, addr: usize) {
         self.instrs.push( Instruction {
-            op: Operation::Jmp(target),
+            op: Operation::Jmp(addr),
             i_reg: (None, None),
             o_reg: None,
             flags: Flag::NoFlag,
@@ -342,9 +262,10 @@ impl IRGraph {
         self.cur_pc = None;
     }
 
-    pub fn call(&mut self, target: usize) {
+    /// Call target
+    pub fn call(&mut self, addr: usize) {
         self.instrs.push( Instruction {
-            op: Operation::Call(target),
+            op: Operation::Call(addr),
             i_reg: (None, None),
             o_reg: None,
             flags: Flag::NoFlag,
@@ -353,6 +274,7 @@ impl IRGraph {
         self.cur_pc = None;
     }
 
+    /// Return
     pub fn ret(&mut self) {
         self.instrs.push( Instruction {
             op: Operation::Ret,
@@ -364,11 +286,12 @@ impl IRGraph {
         self.cur_pc = None;
     }
 
-    pub fn jmp_reg(&mut self, target: PReg) {
-        let vtarget = self.get_reg(target);
+    /// Jmp r1
+    pub fn jmp_reg(&mut self, r1: PReg) {
+        let v1 = self.get_reg(r1);
         self.instrs.push( Instruction {
             op: Operation::JmpReg,
-            i_reg: (Some(vtarget), None),
+            i_reg: (Some(v1), None),
             o_reg: None,
             flags: Flag::NoFlag,
             pc: self.cur_pc,
@@ -376,11 +299,12 @@ impl IRGraph {
         self.cur_pc = None;
     }
 
-    pub fn call_reg(&mut self, target: PReg) {
-        let vtarget = self.get_reg(target);
+    /// Call r1
+    pub fn call_reg(&mut self, r1: PReg) {
+        let v1 = self.get_reg(r1);
         self.instrs.push( Instruction {
             op: Operation::CallReg,
-            i_reg: (Some(vtarget), None),
+            i_reg: (Some(v1), None),
             o_reg: None,
             flags: Flag::NoFlag,
             pc: self.cur_pc,
@@ -388,6 +312,8 @@ impl IRGraph {
         self.cur_pc = None;
     }
 
+    /// Branch to either false_part or true_part, flags determine what kind of compare instruction
+    /// is supposed to be inserted
     pub fn branch(&mut self, r2: PReg, r3: PReg, true_part: usize, false_part: usize, flags: u16) {
         let v2 = self.get_reg(r2);
         let v3 = self.get_reg(r3);
@@ -401,6 +327,7 @@ impl IRGraph {
         self.cur_pc = None;
     }
 
+    /// r1 = [r2]
     pub fn load(&mut self, r1: PReg, r2: PReg, flags: u16) -> PReg {
         let v1 = self.get_reg(r1);
         let v2 = self.get_reg(r2);
@@ -415,6 +342,7 @@ impl IRGraph {
         r1
     }
 
+    /// [r3] = r2
     pub fn store(&mut self, r2: PReg, r3: PReg, flags: u16) {
         let v2 = self.get_reg(r2);
         let v3 = self.get_reg(r3);
@@ -444,7 +372,7 @@ impl IRGraph {
         r1
     }
 
-    /// Add 2 registers and store the result in a new register
+    /// r1 = r2 + r3
     pub fn add(&mut self, r1: PReg, r2: PReg, r3: PReg, flags: u16) -> PReg {
         let v1 = self.get_reg(r1);
         let v2 = self.get_reg(r2);
@@ -460,7 +388,7 @@ impl IRGraph {
         r1
     }
 
-    /// Subtract ret2 from reg1 and store the result in a new register
+    /// r1 = r2 - r3
     pub fn sub(&mut self, r1: PReg, r2: PReg, r3: PReg, flags: u16) -> PReg {
         let v1 = self.get_reg(r1);
         let v2 = self.get_reg(r2);
@@ -476,6 +404,7 @@ impl IRGraph {
         r1
     }
 
+    /// r1 = r2 ^ r3
     pub fn xor(&mut self, r1: PReg, r2: PReg, r3: PReg) -> PReg {
         let v1 = self.get_reg(r1);
         let v2 = self.get_reg(r2);
@@ -491,6 +420,7 @@ impl IRGraph {
         r1
     }
 
+    /// r1 = r2 | r3
     pub fn or(&mut self, r1: PReg, r2: PReg, r3: PReg) -> PReg {
         let v1 = self.get_reg(r1);
         let v2 = self.get_reg(r2);
@@ -506,6 +436,7 @@ impl IRGraph {
         r1
     }
 
+    /// r1 = r2 & r3
     pub fn and(&mut self, r1: PReg, r2: PReg, r3: PReg) -> PReg {
         let v1 = self.get_reg(r1);
         let v2 = self.get_reg(r2);
@@ -521,6 +452,7 @@ impl IRGraph {
         r1
     }
 
+    /// r1 = r2 << r3
     pub fn shl(&mut self, r1: PReg, r2: PReg, r3: PReg, flags: u16) -> PReg {
         let v1 = self.get_reg(r1);
         let v2 = self.get_reg(r2);
@@ -536,6 +468,7 @@ impl IRGraph {
         r1
     }
 
+    /// r1 = r2 >> r3 (Logical)
     pub fn shr(&mut self, r1: PReg, r2: PReg, r3: PReg, flags: u16) -> PReg {
         let v1 = self.get_reg(r1);
         let v2 = self.get_reg(r2);
@@ -551,6 +484,7 @@ impl IRGraph {
         r1
     }
 
+    /// r1 = r2 >> r3 (Arithmetic)
     pub fn sar(&mut self, r1: PReg, r2: PReg, r3: PReg, flags: u16) -> PReg {
         let v1 = self.get_reg(r1);
         let v2 = self.get_reg(r2);
@@ -566,6 +500,7 @@ impl IRGraph {
         r1
     }
 
+    /// Syscall instruction
     pub fn syscall(&mut self) {
          self.instrs.push( Instruction {
             op: Operation::Syscall,
