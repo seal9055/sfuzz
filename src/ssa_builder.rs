@@ -20,26 +20,26 @@ pub struct SSABuilder {
     /// List of all instructions in a given graph
     pub instrs: Vec<Instruction>,
 
-    /// Maps all labels to their instruction index
+    /// Set that marks the first instruction of each block
     pub leader_set: Vec<(Instruction, usize)>,
-
-    /// List of all variables alongside their index in the instruction array (potential duplicates)
-    pub var_origin: Vec<(Reg, usize)>,
 
     /// Contains the immediate dominator (idom) for a given node (node 1 has none)
     pub idom_tree: Vec<(isize, isize)>,
 
-    /// Calculated phi nodes
-    pub phi_func: Vec<BTreeSet<(Reg, isize)>>,
-
-    /// Count/Stack used for register renaming
-    pub reg_stack: Vec<(usize, Vec<usize>)>,
+    /// List of all variables alongside their index in the instruction array (potential duplicates)
+    pub var_origin: Vec<(Reg, usize)>,
 
     /// Dominance frontier of a given block
     pub dominance_frontier: Vec<BTreeSet<isize>>,
 
+    /// Calculated phi nodes
+    pub phi_func: Vec<BTreeSet<(Reg, isize)>>,
+
     /// Basic blocks in the program
     pub blocks: Vec<((usize, usize), usize)>,
+
+    /// Count/Stack used for register renaming
+    pub reg_stack: Vec<(usize, Vec<usize>)>,
 }
 
 impl SSABuilder {
@@ -53,12 +53,12 @@ impl SSABuilder {
         let mut i = 0;
 
         // Determine labels locations
-        while let Some(&instr) = iterator.next() {
+        while let Some(instr) = &iterator.next() {
             match instr.op {
                 Operation::Label(v) => { /* Handles labels */
                     index += 1;
                     map.insert(v, index);
-                    ssa_builder.leader_set.push((instr, i));
+                    ssa_builder.leader_set.push(((*instr).clone(), i));
                 },
                 Operation::Branch(x, y) => { /* End basic block with a branch to 2 other blocks */
                     edges.push((index as u32, y as u32));
@@ -70,8 +70,10 @@ impl SSABuilder {
                 Operation::Ret => {}, /* End basic block with a return */
                 _ => {
                     // Insert an edge if next instruction is a label
-                    if let Operation::Label(x) = iterator.peek().unwrap().op {
-                        edges.push((index as u32, x as u32));
+                    if iterator.peek().is_some() {
+                        if let Operation::Label(x) = iterator.peek().unwrap().op {
+                            edges.push((index as u32, x as u32));
+                        }
                     }
                 }
             }
@@ -86,6 +88,10 @@ impl SSABuilder {
 
         ssa_builder.reg_stack  = vec![(0, Vec::new()); NUMREGS];
         ssa_builder.instrs = irgraph.instrs.clone();
+
+        for instr in &ssa_builder.instrs {
+            println!("{}", instr);
+        }
 
         // Initiate blocks, these track the first and last instruction for each block
         ssa_builder.leader_set.push((Instruction::default(), ssa_builder.instrs.len()));
@@ -169,17 +175,17 @@ impl SSABuilder {
             not including j belong to the dominance frontier.
     */
     /// Find Dominance Frontiers
-    fn find_domfrontier(&mut self, dom_set: &mut Vec<BTreeSet<isize>>) -> Vec<BTreeSet<isize>> {
+    fn find_domfrontier(&mut self, dom_tree: &mut Vec<BTreeSet<isize>>) -> Vec<BTreeSet<isize>> {
 
         // Add an extra node at the beginning of the graph that dominates everything.
         // This makes the implementation a little simpler
-        dom_set.insert(0, btreeset!{0});
+        dom_tree.insert(0, btreeset!{0});
         self.idom_tree.insert(0, (-1, 0));
 
         let mut dominance_frontier: Vec<BTreeSet<isize>> = Vec::new();
 
         // Create an index in the set for every node in the graph
-        dom_set.iter().for_each(|_| dominance_frontier.push(BTreeSet::new()));
+        dom_tree.iter().for_each(|_| dominance_frontier.push(BTreeSet::new()));
 
         for v in &self.idom_tree.clone() {
             let join_point = v.1;
@@ -219,15 +225,15 @@ impl SSABuilder {
             }
         }
 
-        let mut leader_set_index: Vec<usize> = self.leader_set.iter().map(|e| e.1).collect();
-        leader_set_index.push(self.instrs.len());
+        let leader_set_index: Vec<usize> = self.leader_set.iter().map(|e| e.1).collect();
+        //leader_set_index.push(self.instrs.len());
 
         let mut varnode_origin: Vec<usize> = Vec::new();
         let mut i = 0;
 
         for x in &var_origin {
             let instr_index = x.1;
-            if instr_index >= leader_set_index[i+1] { i += 1; }
+            while instr_index >= leader_set_index[i+1] { i += 1; }
             varnode_origin.push(i);
         }
 
@@ -238,7 +244,7 @@ impl SSABuilder {
 
         let mut varlist_origin: Vec<Vec<Reg>> = Vec::new();
         for v in &varlist_temp {
-            if varlist_origin.len() <= v.1 {
+            while varlist_origin.len() <= v.1 {
                 let tmp: Vec<Reg> = Vec::new();
                 varlist_origin.push(tmp);
             }
@@ -247,6 +253,7 @@ impl SSABuilder {
 
         let var_list = var_origin.iter().map(|v| v.0).collect();
 
+        /* var_origin may be corrupted because block sizes change from phifuncs */
         (var_list, var_origin, varlist_origin, varlist_temp)
     }
 
@@ -261,6 +268,10 @@ impl SSABuilder {
     fn calculate_phi_funcs(&self, varlist_origin: &[Vec<Reg>], var_tuple: &[(Reg, usize)])
         -> Vec<BTreeSet<(Reg, isize)>> {
 
+        println!("var_tuple: {:?}", var_tuple);
+        println!("varlist_origin: {:?}", varlist_origin);
+        println!("df: {:?}", self.dominance_frontier);
+
         let mut def_sites: Vec<Vec<usize>>      = vec![Vec::new(); NUMREGS];
         let mut var_phi:   Vec<BTreeSet<usize>> = Vec::new();
         let mut phi_func = vec![BTreeSet::new(); self.dominance_frontier.len()];
@@ -271,6 +282,8 @@ impl SSABuilder {
             def_sites[v.0.0 as usize].push(v.1);
             var_phi.push(BTreeSet::new());
         }
+
+        println!("def_sites: {:?}", def_sites);
 
         let mut count = 0;
         for (i, var) in def_sites.iter().enumerate() {
@@ -298,6 +311,7 @@ impl SSABuilder {
                 }
             }
         }
+        println!("phi_func: {:?}", phi_func);
         phi_func
     }
 
@@ -308,7 +322,7 @@ impl SSABuilder {
             for input in phi_function {
                 let a = Instruction  {
                     op: Operation::Phi,
-                    i_reg: (None, None),
+                    i_reg: Vec::new(),
                     o_reg: Some(input.0),
                     flags: 0,
                     pc: None,
@@ -378,16 +392,11 @@ impl SSABuilder {
 
             if instr.op == Operation::Phi { continue; }
 
-            // Rename the 2 input registers given that the instruction makes use of them
-            if instr.i_reg.0.is_some() && instr.i_reg.0.unwrap().0 != PReg::Zero {
-                let cur_reg = instr.i_reg.0.unwrap().0;
-                instr.i_reg.0 = Some(Reg(cur_reg, *self.reg_stack[cur_reg as usize].1
-                                        .last().unwrap() as u16));
-            }
-            if instr.i_reg.1.is_some() && instr.i_reg.1.unwrap().0 != PReg::Zero {
-                let cur_reg = instr.i_reg.1.unwrap().0;
-                instr.i_reg.1 = Some(Reg(cur_reg, *self.reg_stack[cur_reg as usize].1
-                                        .last().unwrap() as u16));
+            // Rename the input registers
+            for i in 0..instr.i_reg.len() {
+                if instr.i_reg[i].0 == PReg::Zero { continue; }
+                instr.i_reg[i] = Reg(instr.i_reg[i].0, *self.reg_stack[instr.i_reg[i].0 as usize].1
+                                     .last().unwrap() as u16);
             }
 
             // Rename output register given that the instruction makes use of it
@@ -410,31 +419,38 @@ impl SSABuilder {
         // Go through the successors to fill in phi function parameters
         for s in &successors {
             let succ_block = self.blocks[*s as usize];
+
+            let pred: Vec<u32> = self.edges.iter()
+                .filter(|v| v.1 == *s as u32).map(|e| e.0).collect();
+
+            let j = pred.iter().position(|&x| x as usize == block_num).unwrap();
+
             for i in succ_block.0.0+1..succ_block.0.1 {
                 let instr = &mut self.instrs[i];
                 if instr.op != Operation::Phi { break; }
-                if instr.o_reg.is_some() {
-                    let cur_reg = instr.o_reg.unwrap().0;
-                    let len = self.reg_stack[cur_reg as usize].1.len();
 
-                    instr.i_reg.0
-                        = Some(Reg(cur_reg, self.reg_stack[cur_reg as usize].1[len-2] as u16));
-                    instr.i_reg.1
-                        = Some(Reg(cur_reg, self.reg_stack[cur_reg as usize].1[len-1] as u16));
+                let cur_reg = instr.o_reg.unwrap().0;
+
+                if instr.i_reg.len() < j+1 {
+                    instr.i_reg.resize(j+1, Reg(PReg::Zero, 0));
                 }
+
+                instr.i_reg[j] = Reg(cur_reg, *self.reg_stack[cur_reg as usize].1
+                                       .last().unwrap() as u16);
             }
         }
 
-        // Recursively call rename_block for all successor blocks of the current block
-        for s in &successors {
-            self.rename_block(*s as usize);
+        // Retrieve all successors of the current basic block, using the dominator tree instead of,
+        // cfg otherwise we will get infinite recursion
+        for s in self.idom_tree.clone() {
+            if block_num == s.0 as usize {
+                self.rename_block(s.1 as usize);
+            }
         }
 
         // Destroy the accumulated register stack at end of function
         for i in basic_block.0.0..basic_block.0.1 {
             let instr = &self.instrs[i];
-
-            if instr.op == Operation::Phi { continue; }
 
             if instr.o_reg.is_some() && instr.o_reg.unwrap().0 != PReg::Zero {
                 self.reg_stack[instr.o_reg.unwrap().0 as usize].1.pop();

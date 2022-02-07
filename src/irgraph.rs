@@ -78,10 +78,10 @@ impl Flag {
 
 /// The instructions used in the IR. Layed out in a way that is efficient memory wise and lets us
 /// easily determine if the instruction has input/output fields.
-#[derive(Debug, Copy, Clone, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct Instruction {
     pub op:     Operation,
-    pub i_reg:  (Option<Reg>, Option<Reg>),
+    pub i_reg:  Vec<Reg>,
     pub o_reg:  Option<Reg>,
     pub flags:  u16,
     pub pc:     Option<usize>,
@@ -102,32 +102,32 @@ impl fmt::Display for Instruction {
                 write!(f, "{:#08X}  Call {:#0x?}", self.pc.unwrap_or(0), x)
             },
             Operation::CallReg => {
-                write!(f, "{:#08X}  Call {}", self.pc.unwrap_or(0), self.i_reg.0.unwrap())
+                write!(f, "{:#08X}  Call {}", self.pc.unwrap_or(0), self.i_reg[0])
             },
             Operation::Branch(x, y) => {
                 match self.flags & 0b111100 {
                     0b000100 => {
                         write!(f, "{:#08X}  if {} == {} ({:#0X?}, {:#0X?})", self.pc.unwrap_or(0),
-                               self.i_reg.0.unwrap(), self.i_reg.1.unwrap(), y, x)
+                               self.i_reg[0], self.i_reg[1], y, x)
                     },
                     0b001000 => {
                         write!(f, "{:#08X}  if {} != {} ({:#0X?}, {:#0X?})", self.pc.unwrap_or(0),
-                               self.i_reg.0.unwrap(), self.i_reg.1.unwrap(), y, x)
+                               self.i_reg[0], self.i_reg[1], y, x)
                     },
                     0b010000 => {
                         write!(f, "{:#08X}  if {} < {} ({:#0X?}, {:#0X?})", self.pc.unwrap_or(0),
-                               self.i_reg.0.unwrap(), self.i_reg.1.unwrap(), y, x)
+                               self.i_reg[0], self.i_reg[1], y, x)
                     },
                     0b100000 => {
                         write!(f, "{:#08X}  if {} > {} ({:#0X?}, {:#0X?})", self.pc.unwrap_or(0),
-                               self.i_reg.0.unwrap(), self.i_reg.1.unwrap(), y, x)
+                               self.i_reg[0], self.i_reg[1], y, x)
                     },
                     _ => { unreachable!() },
                 }
             },
             Operation::Phi => {
                 write!(f, "{:#08X}  {} = φ({}, {})", self.pc.unwrap_or(0), self.o_reg.unwrap(),
-                       self.i_reg.0.unwrap(), self.i_reg.1.unwrap())
+                       self.i_reg[0], self.i_reg[1])
             }
             Operation::Label(x) => {
                 writeln!(f, "\t\tLabel @ {:#0X?}", x)
@@ -136,54 +136,53 @@ impl fmt::Display for Instruction {
                 write!(f, "{:#08X}  Syscall", self.pc.unwrap_or(0))
             },
             Operation::JmpReg => {
-                write!(f, "{:#08X}  Jmp {}", self.pc.unwrap_or(0), self.i_reg.0.unwrap())
+                write!(f, "{:#08X}  Jmp {}", self.pc.unwrap_or(0), self.i_reg[0])
             },
             Operation::Ret => {
                 write!(f, "{:#08X}  Ret", self.pc.unwrap_or(0))
             },
             Operation::Store => {
-                write!(f, "{:#08X}  [{}] = {}", self.pc.unwrap_or(0), self.i_reg.1.unwrap(),
-                    self.i_reg.0.unwrap())
+                write!(f, "{:#08X}  [{}] = {}", self.pc.unwrap_or(0), self.i_reg[1], self.i_reg[0])
             },
             Operation::Load => {
                 write!(f, "{:#08X}  {} = [{}]", self.pc.unwrap_or(0), self.o_reg.unwrap(),
-                    self.i_reg.0.unwrap())
+                    self.i_reg[0])
             },
             Operation::Add => {
-                write!(f, "{:#08X}  {} = {} + {}", self.pc.unwrap_or(0),
-                       self.o_reg.unwrap(), self.i_reg.0.unwrap(), self.i_reg.1.unwrap())
+                write!(f, "{:#08X}  {} = {} + {}", self.pc.unwrap_or(0), self.o_reg.unwrap(),
+                       self.i_reg[0], self.i_reg[1])
             },
             Operation::Sub => {
-                write!(f, "{:#08X}  {} = {} - {}", self.pc.unwrap_or(0),
-                       self.o_reg.unwrap(), self.i_reg.0.unwrap(), self.i_reg.1.unwrap())
+                write!(f, "{:#08X}  {} = {} - {}", self.pc.unwrap_or(0), self.o_reg.unwrap(),
+                       self.i_reg[0], self.i_reg[1])
             },
             Operation::And => {
-                write!(f, "{:#08X}  {} = {} & {}", self.pc.unwrap_or(0),
-                       self.o_reg.unwrap(), self.i_reg.0.unwrap(), self.i_reg.1.unwrap())
+                write!(f, "{:#08X}  {} = {} & {}", self.pc.unwrap_or(0), self.o_reg.unwrap(),
+                       self.i_reg[0], self.i_reg[1])
             },
             Operation::Or => {
-                write!(f, "{:#08X}  {} = {} | {}", self.pc.unwrap_or(0),
-                       self.o_reg.unwrap(), self.i_reg.0.unwrap(), self.i_reg.1.unwrap())
+                write!(f, "{:#08X}  {} = {} | {}", self.pc.unwrap_or(0), self.o_reg.unwrap(),
+                       self.i_reg[0], self.i_reg[1])
             },
             Operation::Xor => {
-                write!(f, "{:#08X}  {} = {} ^ {}", self.pc.unwrap_or(0),
-                       self.o_reg.unwrap(), self.i_reg.0.unwrap(), self.i_reg.1.unwrap())
+                write!(f, "{:#08X}  {} = {} ^ {}", self.pc.unwrap_or(0), self.o_reg.unwrap(),
+                       self.i_reg[0], self.i_reg[1])
             },
             Operation::Shl => {
-                write!(f, "{:#08X}  {} = {} << {}", self.pc.unwrap_or(0),
-                       self.o_reg.unwrap(), self.i_reg.0.unwrap(), self.i_reg.1.unwrap())
+                write!(f, "{:#08X}  {} = {} << {}", self.pc.unwrap_or(0), self.o_reg.unwrap(),
+                       self.i_reg[0], self.i_reg[1])
             },
             Operation::Shr => {
-                write!(f, "{:#08X}  {} = {} >> {}", self.pc.unwrap_or(0),
-                       self.o_reg.unwrap(), self.i_reg.0.unwrap(), self.i_reg.1.unwrap())
+                write!(f, "{:#08X}  {} = {} >> {}", self.pc.unwrap_or(0), self.o_reg.unwrap(),
+                       self.i_reg[0], self.i_reg[1])
             },
             Operation::Sar => {
-                write!(f, "{:#08X}  {} = {} >> {} [A]", self.pc.unwrap_or(0),
-                       self.o_reg.unwrap(), self.i_reg.0.unwrap(), self.i_reg.1.unwrap())
+                write!(f, "{:#08X}  {} = {} >> {} [A]", self.pc.unwrap_or(0), self.o_reg.unwrap(),
+                       self.i_reg[0], self.i_reg[1])
             },
             Operation::Slt => {
                 write!(f, "{:#08X}  {} = {} < {} ? 1 : 0", self.pc.unwrap_or(0),
-                       self.o_reg.unwrap(), self.i_reg.0.unwrap(), self.i_reg.1.unwrap())
+                       self.o_reg.unwrap(), self.i_reg[0], self.i_reg[1])
             },
             _ => { unreachable!() },
         }
@@ -229,7 +228,7 @@ impl IRGraph {
     pub fn set_label(&mut self, pc: usize) {
         self.instrs.push( Instruction {
             op: Operation::Label(pc),
-            i_reg: (None, None),
+            i_reg: Vec::new(),
             o_reg: None,
             flags: Flag::NoFlag,
             pc: None,
@@ -241,7 +240,7 @@ impl IRGraph {
         let v1 = self.get_reg(r1);
         self.instrs.push( Instruction {
             op: Operation::Loadi(imm),
-            i_reg: (None, None),
+            i_reg: Vec::new(),
             o_reg: Some(v1),
             flags: flag,
             pc: self.cur_pc,
@@ -254,7 +253,7 @@ impl IRGraph {
     pub fn jmp(&mut self, addr: usize) {
         self.instrs.push( Instruction {
             op: Operation::Jmp(addr),
-            i_reg: (None, None),
+            i_reg: Vec::new(),
             o_reg: None,
             flags: Flag::NoFlag,
             pc: self.cur_pc,
@@ -266,7 +265,7 @@ impl IRGraph {
     pub fn call(&mut self, addr: usize) {
         self.instrs.push( Instruction {
             op: Operation::Call(addr),
-            i_reg: (None, None),
+            i_reg: Vec::new(),
             o_reg: None,
             flags: Flag::NoFlag,
             pc: self.cur_pc,
@@ -278,7 +277,7 @@ impl IRGraph {
     pub fn ret(&mut self) {
         self.instrs.push( Instruction {
             op: Operation::Ret,
-            i_reg: (None, None),
+            i_reg: Vec::new(),
             o_reg: None,
             flags: Flag::NoFlag,
             pc: self.cur_pc,
@@ -291,7 +290,7 @@ impl IRGraph {
         let v1 = self.get_reg(r1);
         self.instrs.push( Instruction {
             op: Operation::JmpReg,
-            i_reg: (Some(v1), None),
+            i_reg: vec![v1],
             o_reg: None,
             flags: Flag::NoFlag,
             pc: self.cur_pc,
@@ -304,7 +303,7 @@ impl IRGraph {
         let v1 = self.get_reg(r1);
         self.instrs.push( Instruction {
             op: Operation::CallReg,
-            i_reg: (Some(v1), None),
+            i_reg: vec![v1],
             o_reg: None,
             flags: Flag::NoFlag,
             pc: self.cur_pc,
@@ -319,7 +318,7 @@ impl IRGraph {
         let v3 = self.get_reg(r3);
         self.instrs.push( Instruction {
             op: Operation::Branch(true_part, false_part),
-            i_reg: (Some(v2), Some(v3)),
+            i_reg: vec![v2, v3],
             o_reg: None,
             flags,
             pc: self.cur_pc,
@@ -333,7 +332,7 @@ impl IRGraph {
         let v2 = self.get_reg(r2);
         self.instrs.push( Instruction {
             op: Operation::Load,
-            i_reg: (Some(v2), None),
+            i_reg: vec![v2],
             o_reg: Some(v1),
             flags,
             pc: self.cur_pc,
@@ -348,7 +347,7 @@ impl IRGraph {
         let v3 = self.get_reg(r3);
         self.instrs.push( Instruction {
             op: Operation::Store,
-            i_reg: (Some(v2), Some(v3)),
+            i_reg: vec![v2, v3],
             o_reg: None,
             flags,
             pc: self.cur_pc,
@@ -363,7 +362,7 @@ impl IRGraph {
         let v3 = self.get_reg(r3);
         self.instrs.push( Instruction {
             op: Operation::Slt,
-            i_reg: (Some(v2), Some(v3)),
+            i_reg: vec![v2, v3],
             o_reg: Some(v1),
             flags,
             pc: self.cur_pc,
@@ -379,7 +378,7 @@ impl IRGraph {
         let v3 = self.get_reg(r3);
         self.instrs.push( Instruction {
             op: Operation::Add,
-            i_reg: (Some(v2), Some(v3)),
+            i_reg: vec![v2, v3],
             o_reg: Some(v1),
             flags,
             pc: self.cur_pc,
@@ -395,7 +394,7 @@ impl IRGraph {
         let v3 = self.get_reg(r3);
         self.instrs.push( Instruction {
             op: Operation::Sub,
-            i_reg: (Some(v2), Some(v3)),
+            i_reg: vec![v2, v3],
             o_reg: Some(v1),
             flags,
             pc: self.cur_pc,
@@ -411,7 +410,7 @@ impl IRGraph {
         let v3 = self.get_reg(r3);
         self.instrs.push( Instruction {
             op: Operation::Xor,
-            i_reg: (Some(v2), Some(v3)),
+            i_reg: vec![v2, v3],
             o_reg: Some(v1),
             flags: Flag::NoFlag,
             pc: self.cur_pc,
@@ -427,7 +426,7 @@ impl IRGraph {
         let v3 = self.get_reg(r3);
         self.instrs.push( Instruction {
             op: Operation::Or,
-            i_reg: (Some(v2), Some(v3)),
+            i_reg: vec![v2, v3],
             o_reg: Some(v1),
             flags: Flag::NoFlag,
             pc: self.cur_pc,
@@ -443,7 +442,7 @@ impl IRGraph {
         let v3 = self.get_reg(r3);
         self.instrs.push( Instruction {
             op: Operation::And,
-            i_reg: (Some(v2), Some(v3)),
+            i_reg: vec![v2, v3],
             o_reg: Some(v1),
             flags: Flag::NoFlag,
             pc: self.cur_pc,
@@ -459,7 +458,7 @@ impl IRGraph {
         let v3 = self.get_reg(r3);
         self.instrs.push( Instruction {
             op: Operation::Shl,
-            i_reg: (Some(v2), Some(v3)),
+            i_reg: vec![v2, v3],
             o_reg: Some(v1),
             flags,
             pc: self.cur_pc,
@@ -475,7 +474,7 @@ impl IRGraph {
         let v3 = self.get_reg(r3);
         self.instrs.push( Instruction {
             op: Operation::Shr,
-            i_reg: (Some(v2), Some(v3)),
+            i_reg: vec![v2, v3],
             o_reg: Some(v1),
             flags,
             pc: self.cur_pc,
@@ -491,7 +490,7 @@ impl IRGraph {
         let v3 = self.get_reg(r3);
         self.instrs.push( Instruction {
             op: Operation::Sar,
-            i_reg: (Some(v2), Some(v3)),
+            i_reg: vec![v2, v3],
             o_reg: Some(v1),
             flags,
             pc: self.cur_pc,
@@ -504,7 +503,7 @@ impl IRGraph {
     pub fn syscall(&mut self) {
          self.instrs.push( Instruction {
             op: Operation::Syscall,
-            i_reg: (None, None),
+            i_reg: Vec::new(),
             o_reg: None,
             flags: Flag::NoFlag,
             pc: self.cur_pc,
