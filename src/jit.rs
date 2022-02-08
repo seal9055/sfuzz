@@ -1,9 +1,9 @@
 use std::sync::Mutex;
 use std::sync::RwLock;
-//use std::collections::BTreeMap;
 
-use crate::irgraph::IRGraph;
+//use crate::irgraph::IRGraph;
 
+use crate::ssa_builder::SSABuilder;
 //use iced_x86::code_asm::*;
 
 #[cfg(target_os="linux")]
@@ -75,7 +75,7 @@ impl Jit {
     }
 
     /// Compile an IRGraph into x86 machine code
-    pub fn compile(&self, _irgraph: IRGraph) -> Option<usize> {
+    pub fn compile(&self, ssa_graph: &mut SSABuilder) -> Option<usize> {
         /*
         let mut asm: CodeAssembler;
         let label_map: BTreeMap<usize, Label> = BTreeMap::new();

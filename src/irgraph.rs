@@ -87,6 +87,12 @@ pub struct Instruction {
     pub pc:     Option<usize>,
 }
 
+impl Instruction {
+    pub fn is_phi_function(&self) -> bool {
+        self.op == Operation::Phi
+    }
+}
+
 /// Pretty printing for the instructions
 impl fmt::Display for Instruction {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {

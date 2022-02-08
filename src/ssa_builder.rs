@@ -11,6 +11,11 @@ use petgraph::Graph;
 use petgraph::dot::{Dot, Config};
 use rustc_hash::FxHashMap;
 
+/// Struct used to represent blocks of code in the program according to the CFG representation
+/// (start_index, end_index), id)
+#[derive(Debug, Default, Copy, Clone)]
+pub struct Block(pub (usize, usize), pub usize);
+
 /// Struct that has a lot of helper fields that are used during ssa construction
 #[derive(Debug, Default)]
 pub struct SSABuilder {
@@ -36,7 +41,7 @@ pub struct SSABuilder {
     pub phi_func: Vec<BTreeSet<(Reg, isize)>>,
 
     /// Basic blocks in the program
-    pub blocks: Vec<((usize, usize), usize)>,
+    pub blocks: Vec<Block>,
 
     /// Count/Stack used for register renaming
     pub reg_stack: Vec<(usize, Vec<usize>)>,
@@ -89,14 +94,10 @@ impl SSABuilder {
         ssa_builder.reg_stack  = vec![(0, Vec::new()); NUMREGS];
         ssa_builder.instrs = irgraph.instrs.clone();
 
-        for instr in &ssa_builder.instrs {
-            println!("{}", instr);
-        }
-
         // Initiate blocks, these track the first and last instruction for each block
         ssa_builder.leader_set.push((Instruction::default(), ssa_builder.instrs.len()));
         for (i, v) in ssa_builder.leader_set.iter().enumerate() {
-            ssa_builder.blocks.push(((v.1, ssa_builder.leader_set[i+1].1), i));
+            ssa_builder.blocks.push(Block((v.1, ssa_builder.leader_set[i+1].1), i));
             if i == ssa_builder.leader_set.len()-2 { break; }
         }
         ssa_builder
@@ -268,9 +269,9 @@ impl SSABuilder {
     fn calculate_phi_funcs(&self, varlist_origin: &[Vec<Reg>], var_tuple: &[(Reg, usize)])
         -> Vec<BTreeSet<(Reg, isize)>> {
 
-        println!("var_tuple: {:?}", var_tuple);
-        println!("varlist_origin: {:?}", varlist_origin);
-        println!("df: {:?}", self.dominance_frontier);
+        //println!("var_tuple: {:?}", var_tuple);
+        //println!("varlist_origin: {:?}", varlist_origin);
+        //println!("df: {:?}", self.dominance_frontier);
 
         let mut def_sites: Vec<Vec<usize>>      = vec![Vec::new(); NUMREGS];
         let mut var_phi:   Vec<BTreeSet<usize>> = Vec::new();
@@ -283,7 +284,7 @@ impl SSABuilder {
             var_phi.push(BTreeSet::new());
         }
 
-        println!("def_sites: {:?}", def_sites);
+        //println!("def_sites: {:?}", def_sites);
 
         let mut count = 0;
         for (i, var) in def_sites.iter().enumerate() {
@@ -311,7 +312,7 @@ impl SSABuilder {
                 }
             }
         }
-        println!("phi_func: {:?}", phi_func);
+        //println!("phi_func: {:?}", phi_func);
         phi_func
     }
 

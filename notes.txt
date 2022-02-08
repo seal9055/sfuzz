@@ -39,43 +39,8 @@ var_tuple:
 def_sites
     block in which each register is defined
 
-rename:
-    rename() {
-        for var in all_vars {
-            // setup stack and count for them
-        }
-        rename_block(block)
-    }
+live-in
+    register is alive before/during the block
 
-    NewName(n) {
-        i = count[a]
-        count[reg_def] += 1;
-        stack.push[i];
-        return changed_instr;
-    }
-
-    rename_block(basic_block) {
-
-        for phi_functionin basic_block {
-            let def = phi_function.o_reg().unwrap();
-            NewName(def);
-        }
-
-        for instr in basic_block {
-            for reg_use in instr {
-                NewName(top(Stack[reg_use]))
-            }
-            for reg_def in instr {
-                NewName(top(Stack[reg_def]))
-            }
-            for succ in basic_block {
-                rename_block(succ);
-            }
-            for instr in block {
-                if instr == phi {
-                    pop(stack[instr.o_reg])
-                }
-            }
-
-        }
-    }
+live-out
+    register is alive after the block

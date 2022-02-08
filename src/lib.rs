@@ -5,6 +5,7 @@ pub mod jit;
 pub mod syscalls;
 pub mod irgraph;
 pub mod ssa_builder;
+pub mod regalloc;
 
 #[macro_use] extern crate maplit;
 extern crate iced_x86;

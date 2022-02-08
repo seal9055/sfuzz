@@ -7,6 +7,7 @@ use crate::{
     error_exit,
     irgraph::{IRGraph, Flag},
     ssa_builder::SSABuilder,
+    regalloc::Regalloc,
 };
 
 use std::sync::Arc;
@@ -267,9 +268,13 @@ impl Emulator {
                     ssa_builder.build_ssa();
                     ssa_builder.dump_dot();
 
+                    let mut reg_allocator = Regalloc::new(&ssa_builder);
+                    reg_allocator.execute();
+
+                    //(*self.jit).compile(&mut ssa_builder).unwrap();
+
                     panic!("Done generating SSA-IR");
 
-                    //(*self.jit).compile(irgraph).unwrap()
                 }
                 Some(addr) => { addr }
             };
@@ -621,11 +626,13 @@ mod tests {
         let mut irgraph = IRGraph::default();
         emu.lift(&mut irgraph, &instrs, &mut keys, 0x1000);
 
-        let mut cfg = SSABuilder::new(&irgraph);
+        let mut ssa_builder = SSABuilder::new(&irgraph);
 
-        cfg.build_ssa();
+        ssa_builder.build_ssa();
+        ssa_builder.dump_dot();
 
-        cfg.dump_dot();
+        let mut reg_allocator = Regalloc::new(&ssa_builder);
+        reg_allocator.execute();
     }
 
     /*
