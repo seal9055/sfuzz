@@ -16,6 +16,12 @@ use rustc_hash::FxHashMap;
 #[derive(Debug, Default, Copy, Clone)]
 pub struct Block(pub (usize, usize), pub usize);
 
+impl Block {
+    pub fn instrs(&self, instrs: &[Instruction]) -> Vec<Instruction> {
+        instrs[self.0.0..self.0.1].to_vec()
+    }
+}
+
 /// Struct that has a lot of helper fields that are used during ssa construction
 #[derive(Debug, Default)]
 pub struct SSABuilder {
