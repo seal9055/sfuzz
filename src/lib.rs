@@ -1,3 +1,5 @@
+#![feature(map_first_last)]
+
 pub mod emulator;
 pub mod mmu;
 pub mod riscv;

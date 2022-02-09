@@ -67,11 +67,43 @@ impl Regalloc {
         for block in succ_blocks {
             let irs = &self.instrs[block.0.0..block.0.1];
 
+            let pred: Vec<u32> = self.edges.iter()
+                .filter(|v| v.1 == block.1 as u32).map(|e| e.0).collect();
+            let j = pred.iter().position(|&x| x as usize == block_index).unwrap();
+
             for i in irs.iter().filter(|e| e.is_phi_function()) {
-                i.i_reg.iter().for_each(|e| { phi_uses.insert(*e); });
+                phi_uses.insert(i.i_reg[j]);
             }
         }
         phi_uses
+    }
+
+    /// The set of registers used in a given block
+    fn regs_used_in_block(&self, block_index: usize) -> Vec<Reg> {
+        let cur_block = self.blocks[block_index];
+        self.instrs[cur_block.0.0..cur_block.0.1]
+            .iter()
+            .map(|e| &e.i_reg)
+            .flatten()
+            .map(|e| *e)
+            .collect::<Vec<Reg>>()
+    }
+
+    /// The set of registers used in a given block
+    fn get_useblocks_for_reg(&self, reg: Reg) -> Vec<usize> {
+        let mut use_blocks: Vec<usize> = Vec::new();
+        for block in &self.blocks {
+            if self.instrs[block.0.0..block.0.1]
+                .iter()
+                .map(|e| &e.i_reg)
+                .flatten()
+                .filter(|e| **e == reg)
+                .collect::<Vec<&Reg>>()
+                .len() >= 1 {
+                    use_blocks.push(block.1);
+                }
+        }
+        use_blocks
     }
 
     /// Start register allocation procedure. Involves liveness analysis, lifetime intervals,
@@ -115,8 +147,8 @@ impl Regalloc {
             self.live_in.push(BTreeSet::new());
         }
 
-        let blocks = self.blocks.clone();
-        for block in &blocks {
+        for block in &self.blocks.clone() {
+            //println!("phi_uses: {:?} in block {}", self.phi_uses(block.1), block.1);
             for v in self.phi_uses(block.1) {
                 self.live_out[block.1].insert(v);
                 self.up_and_mark(block.1, v);
@@ -125,7 +157,6 @@ impl Regalloc {
             for instr in self.instrs.clone()[block.0.0..block.0.1]
                     .iter()
                     .filter(|e| !e.is_phi_function()) {
-                        // TODO for v in ins.reads()
                 instr.i_reg.iter().for_each(|e| { self.up_and_mark(block.1, *e); });
             }
         }
@@ -135,8 +166,6 @@ impl Regalloc {
         let cur_block = self.blocks[block_index];
         let cur_block_instrs = &self.instrs.clone()[cur_block.0.0..cur_block.0.1];
 
-        // TODO may be an issue with ssa form
-
         // Killed in the block
         let block_defs = cur_block_instrs
             .iter()
@@ -144,21 +173,23 @@ impl Regalloc {
             .filter(|e| e.o_reg.is_some())
             .map(|e| e.o_reg.unwrap())
             .collect::<BTreeSet<Reg>>();
-        if block_defs.contains(&v) { println!("hit 1"); return false; }
+        if block_defs.contains(&v) { return false; }
 
         // Propagation already completed, kill
-        if self.live_in[block_index].contains(&v) { println!("hit 2"); return false; }
+        if self.live_in[block_index].contains(&v) { return false; }
 
         self.live_in[block_index].insert(v);
 
         // Do not propagate phi-definitions
-        if self.phi_defs(block_index).contains(&v) { println!("hit 3"); return false; }
+        if self.phi_defs(block_index).contains(&v) { return false; }
 
         // Propagate backwards
         let pred: Vec<u32> = self.edges.iter()
                 .filter(|v| v.1 == block_index as u32).map(|e| e.0).collect();
+
+        //println!("{} has preds: {:?}", block_index, pred); // TODO, this is wrong
         for p in pred {
-            self.live_out[block_index].insert(v);
+            self.live_out[p as usize].insert(v);
             if !self.up_and_mark(p as usize, v) { return false; }
         }
         return true;

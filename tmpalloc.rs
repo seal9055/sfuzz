@@ -1,7 +1,6 @@
 use crate::{
-    irgraph::{Operation, IRGraph, Instruction, Reg},
-    emulator::{Register as PReg, NUMREGS},
-    ssa_builder::SSABuilder,
+    irgraph::{Instruction, Reg},
+    ssa_builder::{SSABuilder, Block},
 };
 
 use std::collections::BTreeSet;
@@ -18,28 +17,100 @@ pub struct Regalloc {
     pub idom_tree: Vec<(isize, isize)>,
 
     /// Basic blocks in the program
-    pub blocks: Vec<((usize, usize), usize)>,
+    pub blocks: Vec<Block>,
 
     /// Calculated phi nodes
     pub phi_func: Vec<BTreeSet<(Reg, isize)>>,
+
+    /// Registers that are alive coming into a block corresponding to the vector index
+    pub live_in: Vec<BTreeSet<Reg>>,
+
+    /// Registers that are alive coming out of a block corresponding to the vector index
+    pub live_out: Vec<BTreeSet<Reg>>,
 }
 
 impl Regalloc {
-    // TODO might be able to move in object and del clones
     pub fn new(ssa: &SSABuilder) -> Self {
-        println!("idom: {:?}", &ssa.idom_tree);
-        println!("blocks: {:?}", &ssa.blocks);
         Regalloc {
             instrs: ssa.instrs.clone(),
             idom_tree: ssa.idom_tree.clone(),
             blocks: ssa.blocks.clone(),
             phi_func: ssa.phi_func.clone(),
             edges: ssa.edges.clone(),
+            live_in: Vec::new(),
+            live_out: Vec::new(),
         }
     }
 
+    /// The registers defined by φ-operations at entry of the block B
+    fn phi_defs(&self, block_index: usize) -> BTreeSet<Reg> {
+        let cur_block = self.blocks[block_index];
+        let cur_block_instrs = &self.instrs.clone()[cur_block.0.0..cur_block.0.1];
+        cur_block_instrs
+            .iter()
+            .filter(|e| e.is_phi_function())
+            .map(|e| e.o_reg.unwrap())
+            .collect::<BTreeSet<Reg>>()
+    }
+
+    /// The set of registers used in a φ-operation at entry of a block successor of the block B.
+    fn phi_uses(&self, block_index: usize) -> BTreeSet<Reg> {
+
+        let mut phi_uses = BTreeSet::new();
+
+        let succ_blocks: Vec<Block> = self.edges
+            .iter()
+            .filter(|v| v.0 == block_index as u32)
+            .map(|e| self.blocks[e.1 as usize])
+            .collect();
+
+        for block in succ_blocks {
+            let irs = &self.instrs[block.0.0..block.0.1];
+
+            let pred: Vec<u32> = self.edges.iter()
+                .filter(|v| v.1 == block.1 as u32).map(|e| e.0).collect();
+            let j = pred.iter().position(|&x| x as usize == block_index).unwrap();
+
+            for i in irs.iter().filter(|e| e.is_phi_function()) {
+                phi_uses.insert(i.i_reg[j]);
+            }
+        }
+        phi_uses
+    }
+
+    /// The set of registers used in a given block
+    fn regs_used_in_block(&self, block_index: usize) -> Vec<Reg> {
+        let cur_block = self.blocks[block_index];
+        self.instrs[cur_block.0.0..cur_block.0.1]
+            .iter()
+            .map(|e| &e.i_reg)
+            .flatten()
+            .map(|e| *e)
+            .collect::<Vec<Reg>>()
+    }
+
+    /// The set of registers used in a given block
+    fn get_useblocks_for_reg(&self, reg: Reg) -> Vec<usize> {
+        let mut use_blocks: Vec<usize> = Vec::new();
+        for block in &self.blocks {
+            if self.instrs[block.0.0..block.0.1]
+                .iter()
+                .map(|e| &e.i_reg)
+                .flatten()
+                .filter(|e| **e == reg)
+                .collect::<Vec<&Reg>>()
+                .len() >= 1 {
+                    use_blocks.push(block.1);
+                }
+        }
+        use_blocks
+    }
+
+    /// Start register allocation procedure. Involves liveness analysis, lifetime intervals,
+    /// and ...
     pub fn execute(&mut self) {
 
+        // 1. Compute liveness and global next uses
         self.build_intervals();
 
         panic!("panic hit in regalloc");
@@ -53,37 +124,138 @@ impl Regalloc {
     */
     /// Constructs lifetime intervals for blocks
     fn build_intervals(&mut self) {
-        let mut rev_blocks = self.blocks.clone();
-        rev_blocks.reverse();
 
-        for block in &rev_blocks {
-            let cur_block = block.1;
+        // Calculate correct live_in and live_out values for every block
+        self.liveness_analysis();
 
-            // 1. Setup a vector `live` of livein regs for each successor of b
-                // union of all registers live at the beginning of the successors of b
-
-            // 2. For each phi_func in b's successors `live.push(phi_input(b))`
-            let successors: Vec<u32> = self.edges.iter()
-                .filter(|v| v.0 == cur_block as u32).map(|e| e.1).collect();
-
-            for s in &successors {
-                let succ_block = self.blocks[*s as usize];
-
-                // loop through phi-functions
-                for i in succ_block.0.0+1..succ_block.0.1 {
-                    let instr = &mut self.instrs[i];
-                    if instr.op != Operation::Phi { break; }
-                    // live.push(phi.inputOf(b))
-                }
-            }
-
-            // 3. For each def in live, add a live-range from block_start to block_end for def-reg
-
-            // 4. For instr in b, set intervals for both defs and uses
-
-            // 5. For each phi_func of b, remove phi.o_reg from live
-
-            // 6. Handle loops
+        println!("\n{{");
+        for v in &self.live_out {
+            println!("live_out: {:?}", v);
         }
+        for v in &self.live_in {
+            println!("live_in: {:?}", v);
+        }
+        println!("}}\n");
+
+        panic!("Done with liveness analysis");
+    }
+
+    //fn liveness_analysis(&mut self) {
+    //    // Initialize empty live_out & live_in sets for all registers
+    //    for _ in 0..self.blocks.len()-1 {
+    //        self.live_out.push(BTreeSet::new());
+    //        self.live_in.push(BTreeSet::new());
+    //    }
+
+    //    for block in &self.blocks.clone() {
+    //        //println!("phi_uses: {:?} in block {}", self.phi_uses(block.1), block.1);
+    //        for v in self.phi_uses(block.1) {
+    //            self.live_out[block.1].insert(v);
+    //            self.up_and_mark(block.1, v);
+    //        }
+
+    //        // TODO for v in ins.reads()
+    //        for instr in self.instrs.clone()[block.0.0..block.0.1]
+    //                .iter()
+    //                .filter(|e| !e.is_phi_function()) {
+    //            instr.i_reg.iter().for_each(|e| { self.up_and_mark(block.1, *e); });
+    //        }
+    //    }
+    //}
+
+    fn liveness_analysis(&mut self) {
+        // Initialize empty live_out & live_in sets for all registers
+        for _ in 0..self.blocks.len()-1 {
+            self.live_out.push(BTreeSet::new());
+            self.live_in.push(BTreeSet::new());
+        }
+
+        let mut var_list: BTreeSet<Reg> = BTreeSet::new();
+        for block in &self.blocks {
+            self.instrs[block.0.0..block.0.1]
+                .iter()
+                .map(|e| &e.i_reg)
+                .flatten()
+                .map(|e| *e)
+                .for_each(|e| { var_list.insert(e); });
+        }
+
+        for var in var_list {
+            println!("HIT2");
+            for block_index in self.get_useblocks_for_reg(var) {
+                if self.phi_uses(block_index).contains(&var) {
+                    println!("#1 Inserting into live_out[{}]: {}", block_index, var);
+                    self.live_out[block_index].insert(var);
+                }
+                self.up_and_mark(block_index, var);
+            }
+        }
+    }
+
+    //fn up_and_mark(&mut self, block_index: usize, v: Reg) -> bool {
+    //    let cur_block = self.blocks[block_index];
+    //    let cur_block_instrs = &self.instrs.clone()[cur_block.0.0..cur_block.0.1];
+
+    //    // Killed in the block
+    //    let block_defs = cur_block_instrs
+    //        .iter()
+    //        .filter(|e| !e.is_phi_function())
+    //        .filter(|e| e.o_reg.is_some())
+    //        .map(|e| e.o_reg.unwrap())
+    //        .collect::<BTreeSet<Reg>>();
+    //    if block_defs.contains(&v) { return false; }
+
+    //    // Propagation already completed, kill
+    //    if self.live_in[block_index].last() == Some(&v) { return false; }
+
+    //    self.live_in[block_index].insert(v);
+
+    //    // Do not propagate phi-definitions
+    //    if self.phi_defs(block_index).contains(&v) { return false; }
+
+    //    // Propagate backwards
+    //    let pred: Vec<u32> = self.edges.iter()
+    //            .filter(|v| v.1 == block_index as u32).map(|e| e.0).collect();
+
+    //    for p in pred {
+    //        if self.live_out[p as usize].last() != Some(&v) {
+    //            self.live_out[p as usize].insert(v);
+    //        }
+    //        if !self.up_and_mark(p as usize, v) { return false; }
+    //    }
+    //    return true;
+    //}
+    fn up_and_mark(&mut self, block_index: usize, v: Reg) -> bool {
+        let cur_block = self.blocks[block_index];
+        let cur_block_instrs = &self.instrs.clone()[cur_block.0.0..cur_block.0.1];
+
+        // Killed in the block
+        let block_defs = cur_block_instrs
+            .iter()
+            .filter(|e| !e.is_phi_function())
+            .filter(|e| e.o_reg.is_some())
+            .map(|e| e.o_reg.unwrap())
+            .collect::<BTreeSet<Reg>>();
+        if block_defs.contains(&v) { return false; }
+
+        // Propagation already completed, kill
+        if self.live_in[block_index].contains(&v) { return false; }
+
+        self.live_in[block_index].insert(v);
+
+        // Do not propagate phi-definitions
+        if self.phi_defs(block_index).contains(&v) { return false; }
+
+        // Propagate backwards
+        let pred: Vec<u32> = self.edges.iter()
+                .filter(|v| v.1 == block_index as u32).map(|e| e.0).collect();
+
+        //println!("{} has preds: {:?}", block_index, pred); // TODO, this is wrong
+        for p in pred {
+            self.live_out[p as usize].insert(v);
+            println!("#2 ({})Inserting into live_out[{}]: {}", block_index, p, v);
+            if !self.up_and_mark(p as usize, v) { return false; }
+        }
+        return true;
     }
 }
