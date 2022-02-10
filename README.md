@@ -95,7 +95,7 @@ field of each register is now filled to make sure each register is only defined 
 final block in the function now has phi-functions at its beginning for each register that it may be
 required for.
 
-[SSA-Form](https://github.com/seal9055/sfuzz/tree/main/resources/graph.png =500x)
+![SSA-Form](https://github.com/seal9055/sfuzz/tree/main/resources/graph.png =500x)
 
 <i>F2</i>
 
@@ -126,6 +126,8 @@ In my implementation, the steps to generate this ssa form are divided up into 4 
 
     [Dominator Tree](https://github.com/seal9055/sfuzz/tree/main/resources/domtree.png =500x)
     <i>F3</i>
+
+    <img src="resources/domtree.png" alt="Dominator Tree" width="200"/>
 
 * Find the dominance frontier
 
