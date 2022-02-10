@@ -17,8 +17,18 @@ use rustc_hash::FxHashMap;
 pub struct Block(pub (usize, usize), pub usize);
 
 impl Block {
+    /// The instructions used in a block
     pub fn instrs(&self, instrs: &[Instruction]) -> Vec<Instruction> {
         instrs[self.0.0..self.0.1].to_vec()
+    }
+
+    /// The set of registers used in a given block
+    pub fn regs_uses(&self, instrs: &[Instruction]) -> Vec<Reg> {
+        self.instrs(instrs)
+            .iter()
+            .flat_map(|e| &e.i_reg)
+            .copied()
+            .collect::<Vec<Reg>>()
     }
 }
 
@@ -260,7 +270,7 @@ impl SSABuilder {
 
         let var_list = var_origin.iter().map(|v| v.0).collect();
 
-        /* var_origin may be corrupted because block sizes change from phifuncs */
+        /* var_origin may be incorrect because block sizes change from phifuncs */
         (var_list, var_origin, varlist_origin, varlist_temp)
     }
 
@@ -275,10 +285,6 @@ impl SSABuilder {
     fn calculate_phi_funcs(&self, varlist_origin: &[Vec<Reg>], var_tuple: &[(Reg, usize)])
         -> Vec<BTreeSet<(Reg, isize)>> {
 
-        //println!("var_tuple: {:?}", var_tuple);
-        //println!("varlist_origin: {:?}", varlist_origin);
-        //println!("df: {:?}", self.dominance_frontier);
-
         let mut def_sites: Vec<Vec<usize>>      = vec![Vec::new(); NUMREGS];
         let mut var_phi:   Vec<BTreeSet<usize>> = Vec::new();
         let mut phi_func = vec![BTreeSet::new(); self.dominance_frontier.len()];
@@ -290,8 +296,6 @@ impl SSABuilder {
             var_phi.push(BTreeSet::new());
         }
 
-        //println!("def_sites: {:?}", def_sites);
-
         let mut count = 0;
         for (i, var) in def_sites.iter().enumerate() {
             if var.is_empty() { continue; }
@@ -302,9 +306,9 @@ impl SSABuilder {
 
             while let Some(block) = worklist.pop() {
                 for x in &self.dominance_frontier[block] {
-                    // If the block has no phi functions for x
+
                     if !var_phi[count].contains(&(*x as usize)) {
-                        // Insert phi functions
+                        // If the block has no phi functions for x, insert phi functions
                         let len = self.edges.iter().filter(|e| e.1 as isize == *x).count() as isize;
                         phi_func[*x as usize].insert((Reg(PReg::from(i as u32), 0), len));
                         var_phi[count].insert(*x as usize);
@@ -318,7 +322,6 @@ impl SSABuilder {
                 }
             }
         }
-        //println!("phi_func: {:?}", phi_func);
         phi_func
     }
 

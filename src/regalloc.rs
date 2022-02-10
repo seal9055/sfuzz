@@ -74,29 +74,6 @@ impl Regalloc {
         phi_uses
     }
 
-    /// The set of registers used in a given block
-    fn regs_used_in_block(&self, block_index: usize) -> Vec<Reg> {
-        self.blocks[block_index].instrs(&self.instrs)
-            .iter()
-            .flat_map(|e| &e.i_reg)
-            .copied()
-            .collect::<Vec<Reg>>()
-    }
-
-    /// The set of blocks that a certain register uses
-    fn get_useblocks_for_reg(&self, reg: Reg) -> Vec<usize> {
-        let mut use_blocks: Vec<usize> = Vec::new();
-        for block in &self.blocks {
-            if block.instrs(&self.instrs)
-                .iter()
-                .flat_map(|e| &e.i_reg)
-                .any(|e| *e == reg) {
-                    use_blocks.push(block.1);
-                }
-        }
-        use_blocks
-    }
-
     /// Start register allocation procedure. Involves liveness analysis, lifetime intervals,
     /// and ...
     pub fn execute(&mut self) {

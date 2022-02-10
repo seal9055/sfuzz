@@ -75,7 +75,7 @@ impl Jit {
     }
 
     /// Compile an IRGraph into x86 machine code
-    pub fn compile(&self, ssa_graph: &mut SSABuilder) -> Option<usize> {
+    pub fn compile(&self, _ssa_graph: &mut SSABuilder) -> Option<usize> {
         /*
         let mut asm: CodeAssembler;
         let label_map: BTreeMap<usize, Label> = BTreeMap::new();

@@ -1,4 +1,7 @@
-use crate::emulator::Register as PReg;
+use crate::{
+    emulator::Register as PReg,
+    ssa_builder::Block,
+};
 
 use std::fmt::{self, Formatter, UpperHex};
 use num_traits::Signed;
@@ -16,6 +19,22 @@ impl<T: PartialOrd + Signed + UpperHex> UpperHex for ReallySigned<T> {
 /// Register-type used internally by the IR (Register, SSA number for register)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Reg(pub PReg, pub u16);
+
+impl Reg {
+    /// Retrivers the set of blocks that a certain register uses
+    pub fn get_blocks(self, blocks: &[Block], instrs: &[Instruction]) -> Vec<usize> {
+        let mut use_blocks: Vec<usize> = Vec::new();
+        for block in blocks {
+            if block.instrs(instrs)
+                .iter()
+                .flat_map(|e| &e.i_reg)
+                .any(|e| *e == self) {
+                    use_blocks.push(block.1);
+                }
+        }
+        use_blocks
+    }
+}
 
 impl fmt::Display for Reg {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
