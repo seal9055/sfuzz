@@ -76,7 +76,7 @@ special registers such as the Zero register or distinguish between callee-saved/
 registers later. Finally all registers have a '(0)' appended to them. This does not yet serve a
 purpose, but will be necessary to hold additional information during the next step.
 
-`2. Generate single-static-assignment form for the IR` (Completed)
+`2. Generate single-static-assignment form for the IR`(Completed)
 
 The next step is to lift the previously generated code into single static assignment form. In this
 form each variable is assigned exactly once. This is where the second field of each register comes
@@ -96,6 +96,7 @@ final block in the function now has phi-functions at its beginning for each regi
 required for.
 
 ![SSA-Form](./resources/graph.png =600x)
+
 <i>F2</i>
 
 In this project ssa form is generated using the techniques proposed in
@@ -124,6 +125,7 @@ In my implementation, the steps to generate this ssa form are divided up into 4 
     it.
 
     ![Dominator Tree](./resources/domtree.png =500x)
+
     <i>F3</i>
 
 * Find the dominance frontier
