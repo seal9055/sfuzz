@@ -144,13 +144,15 @@ impl Regalloc {
     /// Perform the path exploration initialized by liveness_analysis()
     fn up_and_mark(&mut self, block_index: usize, v: Reg) -> bool {
         // Killed in the block
-        let block_defs = self.blocks[block_index]
+        if self.blocks[block_index]
             .instrs(&self.instrs)
             .iter()
             .filter(|e| !e.is_phi_function())
             .filter_map(|e| e.o_reg)
-            .collect::<BTreeSet<Reg>>();
-        if block_defs.contains(&v) { return false; }
+            .collect::<BTreeSet<Reg>>()
+            .contains(&v) { 
+                return false; 
+            }
 
         // Propagation already completed, kill
         if self.live_in[block_index].contains(&v) { return false; }
