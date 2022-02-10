@@ -95,7 +95,7 @@ field of each register is now filled to make sure each register is only defined 
 final block in the function now has phi-functions at its beginning for each register that it may be
 required for.
 
-![SSA-Form](/resources/graph.png =600x)
+[SSA-Form](https://github.com/seal9055/sfuzz/tree/main/resources/graph.png =500x)
 
 <i>F2</i>
 
@@ -124,7 +124,7 @@ In my implementation, the steps to generate this ssa form are divided up into 4 
     from the first block to the join block because it is the earliest block that strictly dominates
     it.
 
-    ![Dominator Tree](/resources/domtree.png =500x)
+    [Dominator Tree](https://github.com/seal9055/sfuzz/tree/main/resources/domtree.png =500x)
     <i>F3</i>
 
 * Find the dominance frontier
