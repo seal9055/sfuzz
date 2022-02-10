@@ -1,0 +1,11 @@
+digraph {
+    0 [ label = "Label @ 0x1000\l " ]
+    1 [ label = "Label @ 0x100C\l " ]
+    2 [ label = "Label @ 0x1018\l " ]
+    3 [ label = "Label @ 0x1028\l " ]
+    4 [ label = "Label @ 0x1034\l " ]
+    0 -> 1 [ ]
+    0 -> 3 [ ]
+    0 -> 2 [ ]
+    2 -> 4 [ ]
+}

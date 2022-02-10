@@ -137,7 +137,7 @@ impl SSABuilder {
     /*
         Algorithm:
             For every block in the graph call the dom closure. This function loops through all
-            previous blocks that lead to the current block and add them to the idom and dom tree's
+            previous blocks that lead to the current block and adds them to the idom and dom tree's
             as appropriate.
     */
     /// Generate dominator tree, this tracks both an entire list of dominators for a given node, and
@@ -180,7 +180,6 @@ impl SSABuilder {
             let max_val = dom_tempset.into_iter().max().unwrap();
             idom_tree.push((max_val as isize, i as isize));
         }
-
         (idom_tree, dom_tree)
     }
 
@@ -199,12 +198,10 @@ impl SSABuilder {
         dom_tree.insert(0, btreeset!{0});
         self.idom_tree.insert(0, (-1, 0));
 
-        let mut dominance_frontier: Vec<BTreeSet<isize>> = Vec::new();
+        // Create an index in the dominance frontier set for every node in the graph
+        let mut dominance_frontier: Vec<BTreeSet<isize>> = vec![BTreeSet::new(); dom_tree.len()];
 
-        // Create an index in the set for every node in the graph
-        dom_tree.iter().for_each(|_| dominance_frontier.push(BTreeSet::new()));
-
-        for v in &self.idom_tree.clone() {
+        for v in &self.idom_tree {
             let join_point = v.1;
 
             // Collect all predecessor nodes for the current join point from the cfg
@@ -217,17 +214,19 @@ impl SSABuilder {
                 let mut runner: isize = p as isize;
 
                 while runner != self.idom_tree[join_point as usize].0 {
-                    dominance_frontier[runner as usize] = btreeset!{join_point as isize};
+                    dominance_frontier[runner as usize].insert(join_point as isize);
                     runner = self.idom_tree[runner as usize].0;
                 }
             }
         }
+        println!("df: {:?}", dominance_frontier);
         dominance_frontier
     }
 
     /*
        Returns a couple of structures describing def/use relationships between registers and their
-       corresponding blocks. These are useful to simplify the algorithms in future functions.
+       corresponding blocks. These are useful to simplify the algorithms in future functions, 
+       although a lot of this can most likely be removed during a future refactor.
     */
     /// Returns a couple different register mappings that will be useful later
     fn find_var_origin(&self)
@@ -359,7 +358,6 @@ impl SSABuilder {
     */
     /// Initiate procedure to start naming registers
     fn rename(&mut self, var_list: &[Reg]) {
-        // List of basic blocks in this program ((block_start, block_end), block_number)
         // Initialize the current positions for all used registers in this function to 0
         for var in var_list {
             self.reg_stack[var.0 as usize] = (0, vec![0; 1]);

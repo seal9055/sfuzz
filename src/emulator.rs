@@ -626,6 +626,8 @@ mod tests {
         let mut irgraph = IRGraph::default();
         emu.lift(&mut irgraph, &instrs, &mut keys, 0x1000);
 
+        irgraph.instrs.iter().for_each(|e| println!("{}", e));
+
         let mut ssa_builder = SSABuilder::new(&irgraph);
 
         ssa_builder.build_ssa();
