@@ -95,7 +95,7 @@ field of each register is now filled to make sure each register is only defined 
 final block in the function now has phi-functions at its beginning for each register that it may be
 required for.
 
-![SSA-Form](./resources/graph.png =600x)
+![SSA-Form](/resources/graph.png =600x)
 
 <i>F2</i>
 
@@ -124,8 +124,7 @@ In my implementation, the steps to generate this ssa form are divided up into 4 
     from the first block to the join block because it is the earliest block that strictly dominates
     it.
 
-    ![Dominator Tree](./resources/domtree.png =500x)
-
+    ![Dominator Tree](/resources/domtree.png =500x)
     <i>F3</i>
 
 * Find the dominance frontier
@@ -154,7 +153,7 @@ In my implementation, the steps to generate this ssa form are divided up into 4 
     Now that we know where we want to place phi functions, they need to actually be placed for
     registers that require them. Since we have the dominance frontiers we can determine this fairly
     well without accidentally placing many unnecessary phi-functions. For every definition x in
-    block b, a phi-function needs to be inserted at every node in the dominance frontier of
+     block b, a phi-function needs to be inserted at every node in the dominance frontier of
     b. Since
     the insertion of a phi-function alters the instruction state, it may force the insertion of
     additional phi-functions. This process needs to restart after every phi-function insertion.
