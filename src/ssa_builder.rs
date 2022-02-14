@@ -12,22 +12,81 @@ use petgraph::dot::{Dot, Config};
 use rustc_hash::FxHashMap;
 
 /// Struct used to represent blocks of code in the program according to the CFG representation
-/// (start_index, end_index), id)
-#[derive(Debug, Default, Copy, Clone)]
-pub struct Block(pub (usize, usize), pub usize);
+#[derive(Debug, Default, Clone)]
+pub struct Block {
+    /// Index of the block in CFG
+    pub index:     usize,
+
+    /// First instruction in the block
+    pub start:     usize,
+
+    /// Final instruction in the block
+    pub end:       usize,
+
+    /// Label of the current block (indicates start pc)
+    pub label:     usize,
+
+    /// CFG successor of this block
+    pub succ:      Vec<usize>,
+
+    /// CFG predecessors of this block
+    pub pred:      Vec<usize>,
+
+    /// Phi functions added to the block
+    pub phi_funcs: Vec<Instruction>,
+
+    /// Registers alive at start of block (used for regalloc)
+    pub live_in:   BTreeSet<Reg>,
+
+    /// Registers alive at end of block (used for regalloc)
+    pub live_out:  BTreeSet<Reg>,
+}
 
 impl Block {
+    /// Return new block with given start, end & index
+    pub fn new(start: usize, end: usize, index: usize) -> Self {
+        Self {
+            index,
+            start,
+            end,
+            label:     99999,
+            succ:      Vec::new(),
+            pred:      Vec::new(),
+            phi_funcs: Vec::new(),
+            live_in:   BTreeSet::new(),
+            live_out:  BTreeSet::new(),
+        }
+    }
+
     /// The instructions used in a block
     pub fn instrs(&self, instrs: &[Instruction]) -> Vec<Instruction> {
-        instrs[self.0.0..self.0.1].to_vec()
+        instrs[self.start..self.end].to_vec()
+    }
+
+    /// The instructions used in a block in reverse (used by regalloc)
+    pub fn rev_instrs(&self, instrs: &[Instruction]) -> Vec<Instruction> {
+        let mut rev = Vec::new();
+        for i in (self.start..self.end).rev() {
+            rev.push(instrs[i].clone());
+        }
+        rev.reverse();
+        rev
     }
 
     /// The set of registers used in a given block
-    pub fn regs_uses(&self, instrs: &[Instruction]) -> Vec<Reg> {
+    pub fn regs_used(&self, instrs: &[Instruction]) -> Vec<Reg> {
         self.instrs(instrs)
             .iter()
             .flat_map(|e| &e.i_reg)
             .copied()
+            .collect::<Vec<Reg>>()
+    }
+
+    /// The set of registers defined in a given block
+    pub fn regs_def(&self, instrs: &[Instruction]) -> Vec<Reg> {
+        self.instrs(instrs)
+            .iter()
+            .filter_map(|e| e.o_reg)
             .collect::<Vec<Reg>>()
     }
 }
@@ -53,9 +112,6 @@ pub struct SSABuilder {
     /// Dominance frontier of a given block
     pub dominance_frontier: Vec<BTreeSet<isize>>,
 
-    /// Calculated phi nodes
-    pub phi_func: Vec<BTreeSet<(Reg, isize)>>,
-
     /// Basic blocks in the program
     pub blocks: Vec<Block>,
 
@@ -71,16 +127,19 @@ impl SSABuilder {
         let mut iterator = irgraph.instrs.iter().peekable();
         let mut map: FxHashMap<usize, isize> = FxHashMap::default();
         let mut edges = Vec::new();
+        let mut tmp_labels = FxHashMap::default();
         let mut i = 0;
 
         // Determine labels locations
         while let Some(instr) = &iterator.next() {
+            // Label indicates new block start
+            if instr.pc.is_some() && irgraph.labels.get(&instr.pc.unwrap()).is_some() {
+                index += 1;
+                map.insert(instr.pc.unwrap(), index);
+                tmp_labels.insert(index, instr.pc.unwrap());
+                ssa_builder.leader_set.push(((*instr).clone(), i));
+            }
             match instr.op {
-                Operation::Label(v) => { /* Handles labels */
-                    index += 1;
-                    map.insert(v, index);
-                    ssa_builder.leader_set.push(((*instr).clone(), i));
-                },
                 Operation::Branch(x, y) => { /* End basic block with a branch to 2 other blocks */
                     edges.push((index as u32, y as u32));
                     edges.push((index as u32, x as u32));
@@ -88,15 +147,7 @@ impl SSABuilder {
                 Operation::Jmp(x) => { /* End basic block with a non-returning jmp */
                     edges.push((index as u32, x as u32));
                 },
-                Operation::Ret => {}, /* End basic block with a return */
-                _ => {
-                    // Insert an edge if next instruction is a label
-                    if iterator.peek().is_some() {
-                        if let Operation::Label(x) = iterator.peek().unwrap().op {
-                            edges.push((index as u32, x as u32));
-                        }
-                    }
-                }
+                _ => { }
             }
             i+=1;
         }
@@ -113,9 +164,26 @@ impl SSABuilder {
         // Initiate blocks, these track the first and last instruction for each block
         ssa_builder.leader_set.push((Instruction::default(), ssa_builder.instrs.len()));
         for (i, v) in ssa_builder.leader_set.iter().enumerate() {
-            ssa_builder.blocks.push(Block((v.1, ssa_builder.leader_set[i+1].1), i));
+            ssa_builder.blocks.push(Block::new(v.1, ssa_builder.leader_set[i+1].1, i));
             if i == ssa_builder.leader_set.len()-2 { break; }
         }
+
+        // Initialize labels
+        for block in &mut ssa_builder.blocks {
+            block.label = *tmp_labels.get(&(block.index as isize)).unwrap();
+        }
+
+        // Initialize predecessors and successors for each block
+        for block in &mut ssa_builder.blocks {
+            (block.pred, block.succ) = ssa_builder.edges
+                .iter()
+                .fold((Vec::new(), Vec::new()), |mut acc, e| {
+                    if e.1 == block.index as u32 { acc.0.push(e.0 as usize); }
+                    if e.0 == block.index as u32 { acc.1.push(e.1 as usize); }
+                    acc
+                });
+        }
+
         ssa_builder
     }
 
@@ -129,8 +197,7 @@ impl SSABuilder {
         (self.idom_tree, dom_tree) = self.generate_domtree();
         self.dominance_frontier = self.find_domfrontier(&mut dom_tree);
         (var_list, self.var_origin, varlist_origin, var_tuple) = self.find_var_origin();
-        self.phi_func = self.calculate_phi_funcs(&varlist_origin, &var_tuple);
-        self.insert_phi_funcs();
+        self.add_phi_funcs(&varlist_origin, &var_tuple);
         self.rename(&var_list);
     }
 
@@ -154,10 +221,11 @@ impl SSABuilder {
 
         let mut dom = move |n: usize| {
             let mut dom_set = dom_temp[n].clone();
-            let pred: Vec<u32> = self.edges.iter().filter(|e| e.1 == n as u32)
-                .map(|e| e.0).collect();
             let mut dom_check: Vec<BTreeSet<isize>> = Vec::new();
-            pred.iter().for_each(|e| { dom_check.push(dom_temp[*e as usize].clone()); });
+
+            self.blocks[n].pred
+                .iter()
+                .for_each(|e| { dom_check.push(dom_temp[*e as usize].clone()); });
 
             let dom_inter = &dom_check[0];
             let dom_inter = dom_check.iter().fold(BTreeSet::new(), |_, e| {
@@ -202,16 +270,12 @@ impl SSABuilder {
         let mut dominance_frontier: Vec<BTreeSet<isize>> = vec![BTreeSet::new(); dom_tree.len()];
 
         for v in &self.idom_tree {
-            let join_point = v.1;
-
-            // Collect all predecessor nodes for the current join point from the cfg
-            let predecessors: Vec<u32> = self.edges.iter().filter(|e| e.1 == join_point as u32)
-                .map(|e| e.0).collect();
+            let join_point: usize = v.1 as usize;
 
             // Loop through all predecessors of the join point. If a predecessor is not an idom,
             // insert it into the dominance frontier set
-            for p in predecessors {
-                let mut runner: isize = p as isize;
+            for p in &self.blocks[join_point].pred {
+                let mut runner: isize = *p as isize;
 
                 while runner != self.idom_tree[join_point as usize].0 {
                     dominance_frontier[runner as usize].insert(join_point as isize);
@@ -219,13 +283,12 @@ impl SSABuilder {
                 }
             }
         }
-        println!("df: {:?}", dominance_frontier);
         dominance_frontier
     }
 
     /*
        Returns a couple of structures describing def/use relationships between registers and their
-       corresponding blocks. These are useful to simplify the algorithms in future functions, 
+       corresponding blocks. These are useful to simplify the algorithms in future functions,
        although a lot of this can most likely be removed during a future refactor.
     */
     /// Returns a couple different register mappings that will be useful later
@@ -281,12 +344,10 @@ impl SSABuilder {
             definitions after every insertion.
     */
     /// Determine which nodes require phi functions and for which registers
-    fn calculate_phi_funcs(&self, varlist_origin: &[Vec<Reg>], var_tuple: &[(Reg, usize)])
-        -> Vec<BTreeSet<(Reg, isize)>> {
+    fn add_phi_funcs(&mut self, varlist_origin: &[Vec<Reg>], var_tuple: &[(Reg, usize)]) {
 
         let mut def_sites: Vec<Vec<usize>>      = vec![Vec::new(); NUMREGS];
         let mut var_phi:   Vec<BTreeSet<usize>> = Vec::new();
-        let mut phi_func = vec![BTreeSet::new(); self.dominance_frontier.len()];
 
         // Vector of all registers, each index contains a vector that lists all blocks in which its
         // register was declared
@@ -308,8 +369,14 @@ impl SSABuilder {
 
                     if !var_phi[count].contains(&(*x as usize)) {
                         // If the block has no phi functions for x, insert phi functions
-                        let len = self.edges.iter().filter(|e| e.1 as isize == *x).count() as isize;
-                        phi_func[*x as usize].insert((Reg(PReg::from(i as u32), 0), len));
+                        self.blocks[*x as usize].phi_funcs.push( Instruction { 
+                            op: Operation::Phi,
+                            i_reg: Vec::new(),
+                            o_reg: Some(Reg(PReg::from(i as u32), 0)),
+                            flags: 0,
+                            pc: None,
+                        });
+
                         var_phi[count].insert(*x as usize);
 
                         // if x is not in varlist_origin, update the worklist
@@ -318,32 +385,6 @@ impl SSABuilder {
                             worklist.push(*x as usize);
                         }
                     }
-                }
-            }
-        }
-        phi_func
-    }
-
-    /// Actually insert the phi functions previously calculated into the instruction array
-    fn insert_phi_funcs(&mut self) {
-        for (i, phi_function) in self.phi_func.iter().enumerate() {
-            let start_index = self.blocks[i].0.0+1;
-            for input in phi_function {
-                let a = Instruction  {
-                    op: Operation::Phi,
-                    i_reg: Vec::new(),
-                    o_reg: Some(input.0),
-                    flags: 0,
-                    pc: None,
-                };
-                self.instrs.insert(start_index, a);
-
-                // Since we are inserting instructions, the blocks vector needs to be updated to
-                // reflect this
-                self.blocks[i].0.1 += 1;
-                for j in i+1..self.blocks.len() {
-                    self.blocks[j].0.0 += 1;
-                    self.blocks[j].0.1 += 1;
                 }
             }
         }
@@ -375,14 +416,8 @@ impl SSABuilder {
     */
     /// Used as as a part of the rename procedure to be recursively called
     fn rename_block(&mut self, block_num: usize) {
-        let basic_block = self.blocks[block_num];
-
         // Rename any existing phi functions at the start of the function
-        for i in basic_block.0.0+1..basic_block.0.1 {
-            let mut instr = &mut self.instrs[i];
-            if instr.op != Operation::Phi { break; }
-
-            if instr.o_reg.is_some() && instr.o_reg.unwrap().0 != PReg::Zero {
+        for instr in &mut self.blocks[block_num].phi_funcs {
                 // Increase count and push new count onto the stack
                 self.reg_stack[instr.o_reg.unwrap().0 as usize].0 += 1;
                 let count = self.reg_stack[instr.o_reg.unwrap().0 as usize].0;
@@ -391,14 +426,11 @@ impl SSABuilder {
                 let cur_reg = instr.o_reg.unwrap().0;
                 instr.o_reg = Some(Reg(cur_reg, *self.reg_stack[cur_reg as usize].1
                                        .last().unwrap() as u16));
-            }
         }
 
         // Rename inputs and outputs
-        for i in basic_block.0.0..basic_block.0.1 {
-            let mut instr = &mut self.instrs[i];
-
-            if instr.op == Operation::Phi { continue; }
+        for i in self.blocks[block_num].start..self.blocks[block_num].end {
+            let instr = &mut self.instrs[i];
 
             // Rename the input registers
             for i in 0..instr.i_reg.len() {
@@ -420,22 +452,15 @@ impl SSABuilder {
             }
         }
 
-        // Retrieve all successors of the current basic block
-        let successors: Vec<u32> = self.edges.iter()
-            .filter(|v| v.0 == block_num as u32).map(|e| e.1).collect();
-
         // Go through the successors to fill in phi function parameters
-        for s in &successors {
-            let succ_block = self.blocks[*s as usize];
+        for succ in self.blocks[block_num].succ.clone() {
 
-            let pred: Vec<u32> = self.edges.iter()
-                .filter(|v| v.1 == *s as u32).map(|e| e.0).collect();
+            let j = &self.blocks[succ].pred
+                .iter()
+                .position(|&x| x as usize == block_num)
+                .unwrap();
 
-            let j = pred.iter().position(|&x| x as usize == block_num).unwrap();
-
-            for i in succ_block.0.0+1..succ_block.0.1 {
-                let instr = &mut self.instrs[i];
-                if instr.op != Operation::Phi { break; }
+            for instr in &mut self.blocks[succ].phi_funcs {
 
                 let cur_reg = instr.o_reg.unwrap().0;
 
@@ -443,10 +468,13 @@ impl SSABuilder {
                     instr.i_reg.resize(j+1, Reg(PReg::Zero, 0));
                 }
 
-                instr.i_reg[j] = Reg(cur_reg, *self.reg_stack[cur_reg as usize].1
+                instr.i_reg[*j] = Reg(cur_reg, *self.reg_stack[cur_reg as usize].1
                                        .last().unwrap() as u16);
             }
         }
+
+        // Set before recursive call becase the recursive call's mutable borrow causes issues
+        let cur_block_instrs = self.blocks[block_num].instrs(&self.instrs);
 
         // Retrieve all successors of the current basic block, using the dominator tree instead of,
         // cfg otherwise we will get infinite recursion
@@ -456,14 +484,10 @@ impl SSABuilder {
             }
         }
 
-        // Destroy the accumulated register stack at end of function
-        for i in basic_block.0.0..basic_block.0.1 {
-            let instr = &self.instrs[i];
-
-            if instr.o_reg.is_some() && instr.o_reg.unwrap().0 != PReg::Zero {
-                self.reg_stack[instr.o_reg.unwrap().0 as usize].1.pop();
-            }
-        }
+        //// Destroy the accumulated register stack at end of function
+        cur_block_instrs.iter()
+            .filter_map(|e| e.o_reg)
+            .for_each(|e| { self.reg_stack[e.0 as usize].1.pop(); } );
     }
 
     /// Dump a dot graph for visualization purposes
@@ -471,17 +495,13 @@ impl SSABuilder {
         let mut graph = Graph::<_, i32>::new();
 
         let mut s = String::new();
-        let mut count = 0;
-        for (i, instr) in self.instrs.iter().enumerate() {
-            s.push_str(&format!("{}\n", instr));
 
-            if i == self.blocks[count].0.1-1 { /* End of block reached */
-                s.push_str("\n ");
-                graph.add_node(s.clone());
-                count += 1;
-                s.clear();
-                s.push('\n');
-            }
+        for block in &self.blocks {
+            s.push_str(&format!("\tLabel(0x{:x})\n\n", block.label));
+            block.phi_funcs.iter().for_each(|e| { s.push_str(&format!("{}\n", e)); });
+            block.instrs(&self.instrs).iter().for_each(|e| { s.push_str(&format!("{}\n", e)); });
+            graph.add_node(s.clone());
+            s.clear();
         }
 
         graph.extend_with_edges(&self.edges);

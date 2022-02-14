@@ -5,6 +5,7 @@ use crate::{
 
 use std::fmt::{self, Formatter, UpperHex};
 use num_traits::Signed;
+use rustc_hash::FxHashMap;
 
 /// Small helper type that is used to print out hex value eg. -0x20 instead of 0xffffffe0
 struct ReallySigned<T: PartialOrd + Signed + UpperHex>(T);
@@ -29,7 +30,7 @@ impl Reg {
                 .iter()
                 .flat_map(|e| &e.i_reg)
                 .any(|e| *e == self) {
-                    use_blocks.push(block.1);
+                    use_blocks.push(block.index);
                 }
         }
         use_blocks
@@ -42,10 +43,6 @@ impl fmt::Display for Reg {
     }
 }
 
-/// A label used for control flow in the graph
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Label(pub u16);
-
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum Operation {
     Undefined,
@@ -53,7 +50,6 @@ pub enum Operation {
     Jmp(usize),
     Call(usize),
     Branch(usize, usize),
-    Label(usize),
     Syscall,
     JmpReg,
     Ret,
@@ -154,9 +150,6 @@ impl fmt::Display for Instruction {
                 write!(f, "{:#08X}  {} = φ({}, {})", self.pc.unwrap_or(0), self.o_reg.unwrap(),
                        self.i_reg[0], self.i_reg[1])
             }
-            Operation::Label(x) => {
-                writeln!(f, "\t\tLabel @ {:#0X?}", x)
-            },
             Operation::Syscall => {
                 write!(f, "{:#08X}  Syscall", self.pc.unwrap_or(0))
             },
@@ -220,6 +213,9 @@ pub struct IRGraph {
     /// List of all instructions
     pub instrs: Vec<Instruction>,
 
+    /// Labels indicating controlflow (instrs_index, pc)
+    pub labels: FxHashMap<usize, usize>,
+
     /// Since multiple IR instructions can be mapped to a single original instruction, this is used
     /// to only assign the pc to the first IR-instruction is generated for an original instruction.
     cur_pc: Option<usize>,
@@ -234,8 +230,9 @@ impl Default for IRGraph {
 impl IRGraph {
     pub fn new() -> Self {
         IRGraph {
-            instrs:     Vec::new(),
-            cur_pc:     None,
+            instrs: Vec::new(),
+            labels: FxHashMap::default(),
+            cur_pc: None,
         }
     }
 
@@ -251,13 +248,7 @@ impl IRGraph {
 
     /// Insert a label into the irgraph using the current pc
     pub fn set_label(&mut self, pc: usize) {
-        self.instrs.push( Instruction {
-            op: Operation::Label(pc),
-            i_reg: Vec::new(),
-            o_reg: None,
-            flags: Flag::NoFlag,
-            pc: None,
-        });
+        self.labels.insert(pc, self.instrs.len());
     }
 
     /// r1 = #imm
