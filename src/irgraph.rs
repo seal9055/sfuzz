@@ -95,11 +95,12 @@ impl Flag {
 /// easily determine if the instruction has input/output fields.
 #[derive(Debug, Clone, Default)]
 pub struct Instruction {
-    pub op:     Operation,
-    pub i_reg:  Vec<Reg>,
-    pub o_reg:  Option<Reg>,
-    pub flags:  u16,
-    pub pc:     Option<usize>,
+    pub op:    Operation,
+    pub i_reg: Vec<Reg>,
+    pub o_reg: Option<Reg>,
+    pub flags: u16,
+    pub pc:    Option<usize>,
+    pub id:    usize,
 }
 
 impl Instruction {
@@ -219,6 +220,9 @@ pub struct IRGraph {
     /// Since multiple IR instructions can be mapped to a single original instruction, this is used
     /// to only assign the pc to the first IR-instruction is generated for an original instruction.
     cur_pc: Option<usize>,
+
+    /// Count used to assign instruction id's
+    count: usize,
 }
 
 impl Default for IRGraph {
@@ -233,6 +237,7 @@ impl IRGraph {
             instrs: Vec::new(),
             labels: FxHashMap::default(),
             cur_pc: None,
+            count:  0,
         }
     }
 
@@ -246,6 +251,13 @@ impl IRGraph {
         Reg(phys_reg, 0)
     }
 
+    /// Get an IRReg for a physical register
+    pub fn get_id(&mut self) -> usize {
+        let count = self.count;
+        self.count += 1;
+        count
+    }
+
     /// Insert a label into the irgraph using the current pc
     pub fn set_label(&mut self, pc: usize) {
         self.labels.insert(pc, self.instrs.len());
@@ -253,6 +265,7 @@ impl IRGraph {
 
     /// r1 = #imm
     pub fn loadi(&mut self, r1: PReg, imm: i32, flag: u16) -> PReg {
+        let id = self.get_id();
         let v1 = self.get_reg(r1);
         self.instrs.push( Instruction {
             op: Operation::Loadi(imm),
@@ -260,6 +273,7 @@ impl IRGraph {
             o_reg: Some(v1),
             flags: flag,
             pc: self.cur_pc,
+            id,
         });
         self.cur_pc = None;
         r1
@@ -267,42 +281,49 @@ impl IRGraph {
 
     /// Jmp addr
     pub fn jmp(&mut self, addr: usize) {
+        let id = self.get_id();
         self.instrs.push( Instruction {
             op: Operation::Jmp(addr),
             i_reg: Vec::new(),
             o_reg: None,
             flags: Flag::NoFlag,
             pc: self.cur_pc,
+            id,
         });
         self.cur_pc = None;
     }
 
     /// Call target
     pub fn call(&mut self, addr: usize) {
+        let id = self.get_id();
         self.instrs.push( Instruction {
             op: Operation::Call(addr),
             i_reg: Vec::new(),
             o_reg: None,
             flags: Flag::NoFlag,
             pc: self.cur_pc,
+            id,
         });
         self.cur_pc = None;
     }
 
     /// Return
     pub fn ret(&mut self) {
+        let id = self.get_id();
         self.instrs.push( Instruction {
             op: Operation::Ret,
             i_reg: Vec::new(),
             o_reg: None,
             flags: Flag::NoFlag,
             pc: self.cur_pc,
+            id,
         });
         self.cur_pc = None;
     }
 
     /// Jmp r1
     pub fn jmp_reg(&mut self, r1: PReg) {
+        let id = self.get_id();
         let v1 = self.get_reg(r1);
         self.instrs.push( Instruction {
             op: Operation::JmpReg,
@@ -310,12 +331,14 @@ impl IRGraph {
             o_reg: None,
             flags: Flag::NoFlag,
             pc: self.cur_pc,
+            id,
         });
         self.cur_pc = None;
     }
 
     /// Call r1
     pub fn call_reg(&mut self, r1: PReg) {
+        let id = self.get_id();
         let v1 = self.get_reg(r1);
         self.instrs.push( Instruction {
             op: Operation::CallReg,
@@ -323,6 +346,7 @@ impl IRGraph {
             o_reg: None,
             flags: Flag::NoFlag,
             pc: self.cur_pc,
+            id,
         });
         self.cur_pc = None;
     }
@@ -330,6 +354,7 @@ impl IRGraph {
     /// Branch to either false_part or true_part, flags determine what kind of compare instruction
     /// is supposed to be inserted
     pub fn branch(&mut self, r2: PReg, r3: PReg, true_part: usize, false_part: usize, flags: u16) {
+        let id = self.get_id();
         let v2 = self.get_reg(r2);
         let v3 = self.get_reg(r3);
         self.instrs.push( Instruction {
@@ -338,12 +363,14 @@ impl IRGraph {
             o_reg: None,
             flags,
             pc: self.cur_pc,
+            id,
         });
         self.cur_pc = None;
     }
 
     /// r1 = [r2]
     pub fn load(&mut self, r1: PReg, r2: PReg, flags: u16) -> PReg {
+        let id = self.get_id();
         let v1 = self.get_reg(r1);
         let v2 = self.get_reg(r2);
         self.instrs.push( Instruction {
@@ -352,6 +379,7 @@ impl IRGraph {
             o_reg: Some(v1),
             flags,
             pc: self.cur_pc,
+            id,
         });
         self.cur_pc = None;
         r1
@@ -359,6 +387,7 @@ impl IRGraph {
 
     /// [r3] = r2
     pub fn store(&mut self, r2: PReg, r3: PReg, flags: u16) {
+        let id = self.get_id();
         let v2 = self.get_reg(r2);
         let v3 = self.get_reg(r3);
         self.instrs.push( Instruction {
@@ -367,12 +396,14 @@ impl IRGraph {
             o_reg: None,
             flags,
             pc: self.cur_pc,
+            id,
         });
         self.cur_pc = None;
     }
 
     /// Set res_reg if rs1_reg is less than imm_reg
     pub fn slt(&mut self, r1: PReg, r2: PReg, r3: PReg, flags: u16) -> PReg {
+        let id = self.get_id();
         let v1 = self.get_reg(r1);
         let v2 = self.get_reg(r2);
         let v3 = self.get_reg(r3);
@@ -382,6 +413,7 @@ impl IRGraph {
             o_reg: Some(v1),
             flags,
             pc: self.cur_pc,
+            id,
         });
         self.cur_pc = None;
         r1
@@ -389,6 +421,7 @@ impl IRGraph {
 
     /// r1 = r2 + r3
     pub fn add(&mut self, r1: PReg, r2: PReg, r3: PReg, flags: u16) -> PReg {
+        let id = self.get_id();
         let v1 = self.get_reg(r1);
         let v2 = self.get_reg(r2);
         let v3 = self.get_reg(r3);
@@ -398,6 +431,7 @@ impl IRGraph {
             o_reg: Some(v1),
             flags,
             pc: self.cur_pc,
+            id,
         });
         self.cur_pc = None;
         r1
@@ -405,6 +439,7 @@ impl IRGraph {
 
     /// r1 = r2 - r3
     pub fn sub(&mut self, r1: PReg, r2: PReg, r3: PReg, flags: u16) -> PReg {
+        let id = self.get_id();
         let v1 = self.get_reg(r1);
         let v2 = self.get_reg(r2);
         let v3 = self.get_reg(r3);
@@ -414,6 +449,7 @@ impl IRGraph {
             o_reg: Some(v1),
             flags,
             pc: self.cur_pc,
+            id,
         });
         self.cur_pc = None;
         r1
@@ -421,6 +457,7 @@ impl IRGraph {
 
     /// r1 = r2 ^ r3
     pub fn xor(&mut self, r1: PReg, r2: PReg, r3: PReg) -> PReg {
+        let id = self.get_id();
         let v1 = self.get_reg(r1);
         let v2 = self.get_reg(r2);
         let v3 = self.get_reg(r3);
@@ -430,6 +467,7 @@ impl IRGraph {
             o_reg: Some(v1),
             flags: Flag::NoFlag,
             pc: self.cur_pc,
+            id,
         });
         self.cur_pc = None;
         r1
@@ -437,6 +475,7 @@ impl IRGraph {
 
     /// r1 = r2 | r3
     pub fn or(&mut self, r1: PReg, r2: PReg, r3: PReg) -> PReg {
+        let id = self.get_id();
         let v1 = self.get_reg(r1);
         let v2 = self.get_reg(r2);
         let v3 = self.get_reg(r3);
@@ -446,6 +485,7 @@ impl IRGraph {
             o_reg: Some(v1),
             flags: Flag::NoFlag,
             pc: self.cur_pc,
+            id,
         });
         self.cur_pc = None;
         r1
@@ -453,6 +493,7 @@ impl IRGraph {
 
     /// r1 = r2 & r3
     pub fn and(&mut self, r1: PReg, r2: PReg, r3: PReg) -> PReg {
+        let id = self.get_id();
         let v1 = self.get_reg(r1);
         let v2 = self.get_reg(r2);
         let v3 = self.get_reg(r3);
@@ -462,6 +503,7 @@ impl IRGraph {
             o_reg: Some(v1),
             flags: Flag::NoFlag,
             pc: self.cur_pc,
+            id,
         });
         self.cur_pc = None;
         r1
@@ -469,6 +511,7 @@ impl IRGraph {
 
     /// r1 = r2 << r3
     pub fn shl(&mut self, r1: PReg, r2: PReg, r3: PReg, flags: u16) -> PReg {
+        let id = self.get_id();
         let v1 = self.get_reg(r1);
         let v2 = self.get_reg(r2);
         let v3 = self.get_reg(r3);
@@ -478,6 +521,7 @@ impl IRGraph {
             o_reg: Some(v1),
             flags,
             pc: self.cur_pc,
+            id,
         });
         self.cur_pc = None;
         r1
@@ -485,6 +529,7 @@ impl IRGraph {
 
     /// r1 = r2 >> r3 (Logical)
     pub fn shr(&mut self, r1: PReg, r2: PReg, r3: PReg, flags: u16) -> PReg {
+        let id = self.get_id();
         let v1 = self.get_reg(r1);
         let v2 = self.get_reg(r2);
         let v3 = self.get_reg(r3);
@@ -494,6 +539,7 @@ impl IRGraph {
             o_reg: Some(v1),
             flags,
             pc: self.cur_pc,
+            id,
         });
         self.cur_pc = None;
         r1
@@ -501,6 +547,7 @@ impl IRGraph {
 
     /// r1 = r2 >> r3 (Arithmetic)
     pub fn sar(&mut self, r1: PReg, r2: PReg, r3: PReg, flags: u16) -> PReg {
+        let id = self.get_id();
         let v1 = self.get_reg(r1);
         let v2 = self.get_reg(r2);
         let v3 = self.get_reg(r3);
@@ -510,6 +557,7 @@ impl IRGraph {
             o_reg: Some(v1),
             flags,
             pc: self.cur_pc,
+            id,
         });
         self.cur_pc = None;
         r1
@@ -517,12 +565,14 @@ impl IRGraph {
 
     /// Syscall instruction
     pub fn syscall(&mut self) {
+        let id = self.get_id();
          self.instrs.push( Instruction {
             op: Operation::Syscall,
             i_reg: Vec::new(),
             o_reg: None,
             flags: Flag::NoFlag,
             pc: self.cur_pc,
+            id,
         });
         self.cur_pc = None;
     }

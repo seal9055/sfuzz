@@ -26,12 +26,6 @@ pub struct Block {
     /// Label of the current block (indicates start pc)
     pub label:     usize,
 
-    /// CFG successor of this block
-    pub succ:      Vec<usize>,
-
-    /// CFG predecessors of this block
-    pub pred:      Vec<usize>,
-
     /// Phi functions added to the block
     pub phi_funcs: Vec<Instruction>,
 
@@ -40,6 +34,12 @@ pub struct Block {
 
     /// Registers alive at end of block (used for regalloc)
     pub live_out:  BTreeSet<Reg>,
+
+    /// CFG successor of this block
+    pub succ:      Vec<usize>,
+
+    /// CFG predecessors of this block
+    pub pred:      Vec<usize>,
 }
 
 impl Block {
@@ -49,12 +49,12 @@ impl Block {
             index,
             start,
             end,
-            label:     99999,
-            succ:      Vec::new(),
-            pred:      Vec::new(),
+            label:     0,
             phi_funcs: Vec::new(),
             live_in:   BTreeSet::new(),
             live_out:  BTreeSet::new(),
+            succ:      Vec::new(),
+            pred:      Vec::new(),
         }
     }
 
@@ -369,12 +369,13 @@ impl SSABuilder {
 
                     if !var_phi[count].contains(&(*x as usize)) {
                         // If the block has no phi functions for x, insert phi functions
-                        self.blocks[*x as usize].phi_funcs.push( Instruction { 
+                        self.blocks[*x as usize].phi_funcs.push( Instruction {
                             op: Operation::Phi,
                             i_reg: Vec::new(),
                             o_reg: Some(Reg(PReg::from(i as u32), 0)),
                             flags: 0,
                             pc: None,
+                            id: 0,
                         });
 
                         var_phi[count].insert(*x as usize);

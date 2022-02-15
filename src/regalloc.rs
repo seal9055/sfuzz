@@ -86,35 +86,33 @@ impl Regalloc {
 
         //self.blocks.iter().for_each(|e| { println!("{:#?}", e); });
 
-        // TODO: Assign each instruction an index according with dominance
+        let mut intervals: Vec<(usize, usize)> = Vec::new();
+        let rev_blocks = self.blocks.iter().rev();
 
-        /*
-        let intervals: Vec<(start: usize, end: usize)> = Vec::new();
-        let rev_blocks = self.blocks.rev();
         for block in rev_blocks {
             // Live-in of Block successors need to be alive in Block
             let live: Vec<Reg> = Vec::new();
-            block.succ.iter().for_each(|e| live.push(e.live_in);
+            block.succ.iter().for_each(|e| live.push(self.blocks[*e].live_in));
 
             // phi-function inputs of succeeding functions pertaining to Block also need to be live
-            for phi_func in block.succ {
+            for phi_func in self.blocks[block.succ].phi_funcs {
                 live.push(phi_func.i_regs[block]);
             }
 
             // Update live interval for each register in live
             for reg in live {
-                intervals[reg] = (block_start, block_end);
+                intervals[reg] = (block.start, block.end);
             }
 
             // remove def's from live and add inputs to live
             // Also update intervals
             for instr in block.rev_instrs(&self.instrs) {
                 intervals[instr.o_reg].0 = cur_instr_index;
-                live.remove[instr.o_reg]
+                live.remove[instr.o_reg];
 
                 for input in instr.i_reg {
                     intervals[input] = (block_start, cur_instr_index);
-                    live.add(input)
+                    live.add(input);
                 }
             }
 
@@ -123,6 +121,7 @@ impl Regalloc {
                 live.remove(phi_func.o_reg);
             }
 
+            /*
             // TODO later
             if block.is_loop_header() {
                 loop_end = // last block of loop
@@ -130,6 +129,7 @@ impl Regalloc {
                     intervals[reg] = (block_start, loopEnd)
                 }
             }
+            */
 
             // May be unnecessary
             block.livein = live;
@@ -137,7 +137,6 @@ impl Regalloc {
 
         return intervals;
 
-        */
 
         panic!("Done with liveness analysis");
     }
