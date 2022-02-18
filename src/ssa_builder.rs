@@ -60,13 +60,13 @@ impl Block {
 
     /// The instructions used in a block
     pub fn instrs(&self, instrs: &[Instruction]) -> Vec<Instruction> {
-        instrs[self.start..self.end].to_vec()
+        instrs[self.start..=self.end].to_vec()
     }
 
     /// The instructions used in a block in reverse (used by regalloc)
     pub fn rev_instrs(&self, instrs: &[Instruction]) -> Vec<Instruction> {
         let mut rev = Vec::new();
-        for i in (self.start..self.end).rev() {
+        for i in (self.start..=self.end).rev() {
             rev.push(instrs[i].clone());
         }
         rev.reverse();
@@ -164,7 +164,7 @@ impl SSABuilder {
         // Initiate blocks, these track the first and last instruction for each block
         ssa_builder.leader_set.push((Instruction::default(), ssa_builder.instrs.len()));
         for (i, v) in ssa_builder.leader_set.iter().enumerate() {
-            ssa_builder.blocks.push(Block::new(v.1, ssa_builder.leader_set[i+1].1, i));
+            ssa_builder.blocks.push(Block::new(v.1, ssa_builder.leader_set[i+1].1-1, i));
             if i == ssa_builder.leader_set.len()-2 { break; }
         }
 
@@ -248,6 +248,7 @@ impl SSABuilder {
             let max_val = dom_tempset.into_iter().max().unwrap();
             idom_tree.push((max_val as isize, i as isize));
         }
+
         (idom_tree, dom_tree)
     }
 
@@ -498,6 +499,7 @@ impl SSABuilder {
         let mut s = String::new();
 
         for block in &self.blocks {
+            println!("block {}: [{}-{}]", block.index, block.start, block.end);
             s.push_str(&format!("\tLabel(0x{:x})\n\n", block.label));
             block.phi_funcs.iter().for_each(|e| { s.push_str(&format!("{}\n", e)); });
             block.instrs(&self.instrs).iter().for_each(|e| { s.push_str(&format!("{}\n", e)); });

@@ -1,9 +1,11 @@
 use crate::{
     irgraph::{Instruction, Reg},
     ssa_builder::{SSABuilder, Block},
+    emulator::Register,
 };
 
 use std::collections::BTreeSet;
+use rustc_hash::FxHashMap;
 
 #[derive(Debug, Default)]
 pub struct Regalloc {
@@ -66,10 +68,77 @@ impl Regalloc {
     /// Start register allocation procedure. Involves liveness analysis, lifetime intervals,
     /// and ...
     pub fn execute(&mut self) {
-        // 1. Compute liveness intervals
-        self.build_intervals();
+        // Calculate live_in and live_out values for every block
+        self.liveness_analysis();
+
+        self.number_instructions();
+
+        // Compute liveness intervals for each register
+        let intervals = self.build_intervals();
+
+        for instr in &self.instrs {
+            println!("{}: {}", instr.id, instr);
+        }
+        for v in intervals {
+            println!("{:?}: {:?}", v.0, v.1);
+        }
 
         panic!("panic hit in regalloc");
+    }
+
+    /// Number all instructions in block, making sure predecessors are numbered first
+    fn number_instructions(&mut self) {
+        let mut numbered_blocks = vec![0usize; self.blocks.len()];
+        let mut cur_count: isize = 0;
+
+        // Make sure to number all blocks
+        for block in &self.blocks {
+            // Given a block that has not yet been numbered, this closure numbers all instructions 
+            // in the block
+            let mut num = |b: &Block| {
+                // Already numbered this block
+                if numbered_blocks[b.index] == 1 { return; }
+
+                // Number all instructions in a block
+                for i in b.start..=b.end {
+                    self.instrs[i].id = cur_count;
+                    cur_count += 1;
+                }
+
+                // Block has now been numbered
+                numbered_blocks[b.index] = 1;
+            };
+
+            // Make sure to number all predecessor instructions first
+            block.pred
+                .iter()
+                .map(|e| self.blocks[*e].clone())
+                .for_each(|e| num(&e));
+            num(block);
+        }
+    }
+
+    fn edit_range(map: &mut FxHashMap<Reg, Vec<(usize, usize)>>, reg: Reg, 
+                  from: Option<usize>, to: Option<usize>) {
+
+        if map.get(&reg).is_none() {
+            map.insert(reg, Vec::new());
+        } else {
+            map.get_mut(&reg).unwrap().push((from.unwrap_or(77), to.unwrap_or(66)));
+        }
+        //    if matches!(reg, Reg(Register::A1, 1)) {
+        //        println!("DBG B4: {}: [{:?}]", reg, map.get(&reg).unwrap());
+        //    }
+        //    if from.is_some() && from.unwrap() < map.get(&reg).unwrap().0 {
+        //        map.get_mut(&reg).unwrap().0 = from.unwrap();
+        //    }
+        //    if to.is_some() && to.unwrap() > map.get(&reg).unwrap().1 {
+        //        map.get_mut(&reg).unwrap().1 = to.unwrap();
+        //    }
+        //}
+        //if matches!(reg, Reg(Register::A1, 1)) {
+        //    println!("DBG AF: {}: [{:?}]", reg, map.get(&reg).unwrap());
+        //}
     }
 
     /* Inputs:
@@ -79,66 +148,69 @@ impl Regalloc {
         One lifetime interval for each virtual register (can contain lifetime holes)
     */
     /// Constructs lifetime intervals for blocks
-    fn build_intervals(&mut self) {
+    fn build_intervals(&mut self) -> FxHashMap<Reg, Vec<(usize, usize)>> {
+        let mut intervals: FxHashMap<Reg, Vec<(usize, usize)>> = FxHashMap::default();
 
-        // Calculate correct live_in and live_out values for every block
-        self.liveness_analysis();
+        let rev_blocks = vec![4, 2, 3, 1, 0];
 
-        //self.blocks.iter().for_each(|e| { println!("{:#?}", e); });
-
-        let mut intervals: Vec<(usize, usize)> = Vec::new();
-        let rev_blocks = self.blocks.iter().rev();
-
-        for block in rev_blocks {
-            // Live-in of Block successors need to be alive in Block
-            let live: Vec<Reg> = Vec::new();
-            block.succ.iter().for_each(|e| live.push(self.blocks[*e].live_in));
-
-            // phi-function inputs of succeeding functions pertaining to Block also need to be live
-            for phi_func in self.blocks[block.succ].phi_funcs {
-                live.push(phi_func.i_regs[block]);
+        for b in rev_blocks {
+            let block = self.blocks[b].clone();
+            // 0. Add all live_in registers of block's successors to the current live set
+            let mut live: BTreeSet<Reg> = BTreeSet::new();
+            for s in &block.succ {
+                self.blocks[*s].live_in
+                    .iter()
+                    .for_each(|e| { live.insert(*e); });
             }
 
-            // Update live interval for each register in live
-            for reg in live {
-                intervals[reg] = (block.start, block.end);
+            // 1. Phi-function inputs of succeeding functions pertaining to Block are live
+            for s in &block.succ {
+                self.blocks[*s].phi_funcs
+                    .iter()
+                    .for_each(|phi| { 
+                        if block.index == 1 {
+                            live.insert(phi.i_reg[0]); 
+                        } else if block.index == 3 {
+                            live.insert(phi.i_reg[1]); 
+                        }
+                    }); // TODO cant hardcode
             }
 
-            // remove def's from live and add inputs to live
+
+            // 2. Update live interval for each register in live-in
+            for reg in &live {
+                Regalloc::edit_range(&mut intervals, *reg, Some(block.start), Some(block.end));
+            }
+
+            // Remove def's from live and add inputs to live
             // Also update intervals
-            for instr in block.rev_instrs(&self.instrs) {
-                intervals[instr.o_reg].0 = cur_instr_index;
-                live.remove[instr.o_reg];
+            for instr in &block.rev_instrs(&self.instrs) {
+                if instr.o_reg.is_some() {
+                    Regalloc::edit_range(&mut intervals, instr.o_reg.unwrap(), 
+                                         Some(instr.id as usize), None);
 
-                for input in instr.i_reg {
-                    intervals[input] = (block_start, cur_instr_index);
-                    live.add(input);
+                    live.remove(&instr.o_reg.unwrap());
+                }
+
+                for input in &instr.i_reg {
+                    Regalloc::edit_range(&mut intervals, *input, Some(block.start), 
+                                         Some(instr.id as usize));
+                    live.insert(*input);
                 }
             }
 
             // Remove out_regs from live sets
-            for phi_func in block {
-                live.remove(phi_func.o_reg);
+            for phi_func in &block.phi_funcs {
+                live.remove(&phi_func.o_reg.unwrap());
             }
 
-            /*
-            // TODO later
-            if block.is_loop_header() {
-                loop_end = // last block of loop
-                for reg in live {
-                    intervals[reg] = (block_start, loopEnd)
-                }
-            }
-            */
+            // TODO Handle loops
 
             // May be unnecessary
-            block.livein = live;
+            self.blocks[block.index].live_in = live;
         }
 
         return intervals;
-
-
-        panic!("Done with liveness analysis");
     }
 
     /*
@@ -178,12 +250,17 @@ impl Regalloc {
         // Propagation already completed, kill
         if block.live_in.contains(&v) { return false; }
 
-        self.blocks[block.index].live_in.insert(v);
+        // The conditional is dependant on if phi function definitions cound as live-in
+        if !block.phi_funcs
+            .iter()
+            .map(|e| e.o_reg.unwrap())
+            .any(|e| e == v) {
+                self.blocks[block.index].live_in.insert(v);
+            }
 
         // Do not propagate phi-definitions
         if self.phi_defs(block.index).contains(&v) { return false; }
 
-        // TODO fix the clone
         let mut pred_blocks: Vec<Block> = block.pred
             .iter()
             .map(|e| self.blocks[*e].clone())
