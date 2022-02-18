@@ -1,11 +1,40 @@
 use crate::{
     irgraph::{Instruction, Reg},
     ssa_builder::{SSABuilder, Block},
-    emulator::Register,
+    regalloc::X86Reg::*,
 };
 
 use std::collections::BTreeSet;
 use rustc_hash::FxHashMap;
+
+// 16 regs total, but only 10 useable
+    // rsp = saved
+    // r12 = Jit address lookup table
+    // r13 = regs in memory
+    // r14 = emulator memory
+    // r15 = emulator memory permissions
+//const PHYSREGSNUM: usize = 11;
+
+#[derive(Copy, Clone, Hash, Eq, PartialEq, Debug)]
+enum X86Reg {
+    Rax,
+    Rbx,
+    Rcx,
+    Rdx,
+    Rsi,
+    Rdi,
+    Rbp,
+    //Rsp,
+    R8,
+    R9,
+    R10,
+    R11,
+    //R12,
+    //R13,
+    //R14,
+    //R15,
+    Spill,
+}
 
 #[derive(Debug, Default)]
 pub struct Regalloc {
@@ -74,13 +103,20 @@ impl Regalloc {
         self.number_instructions();
 
         // Compute liveness intervals for each register
-        let intervals = self.build_intervals();
+        let mut intervals = self.build_intervals();
 
-        for instr in &self.instrs {
-            println!("{}: {}", instr.id, instr);
+        for block in &self.blocks {
+            block.phi_funcs.iter().for_each(|e| { println!("{}: {}", e.id, e); });
+            block.instrs(&self.instrs).iter().for_each(|e| { println!("{}: {}", e.id, e); });
         }
-        for v in intervals {
+        for v in &intervals {
             println!("{:?}: {:?}", v.0, v.1);
+        }
+
+        let reg_mappings = self.linear_scan(&mut intervals);
+
+        for m in reg_mappings {
+            println!("{:?}", m);
         }
 
         panic!("panic hit in regalloc");
@@ -92,7 +128,7 @@ impl Regalloc {
         let mut cur_count: isize = 0;
 
         // Make sure to number all blocks
-        for block in &self.blocks {
+        for block in self.blocks.clone() {
             // Given a block that has not yet been numbered, this closure numbers all instructions 
             // in the block
             let mut num = |b: &Block| {
@@ -114,103 +150,98 @@ impl Regalloc {
                 .iter()
                 .map(|e| self.blocks[*e].clone())
                 .for_each(|e| num(&e));
-            num(block);
+            num(&block);
+
+            for i in 0..block.phi_funcs.len() {
+                self.blocks[block.index].phi_funcs[i].id = block.instrs(&self.instrs)[0].id;
+            }
         }
     }
 
-    fn edit_range(map: &mut FxHashMap<Reg, Vec<(usize, usize)>>, reg: Reg, 
-                  from: Option<usize>, to: Option<usize>) {
-
-        if map.get(&reg).is_none() {
-            map.insert(reg, Vec::new());
-        } else {
-            map.get_mut(&reg).unwrap().push((from.unwrap_or(77), to.unwrap_or(66)));
-        }
-        //    if matches!(reg, Reg(Register::A1, 1)) {
-        //        println!("DBG B4: {}: [{:?}]", reg, map.get(&reg).unwrap());
-        //    }
-        //    if from.is_some() && from.unwrap() < map.get(&reg).unwrap().0 {
-        //        map.get_mut(&reg).unwrap().0 = from.unwrap();
-        //    }
-        //    if to.is_some() && to.unwrap() > map.get(&reg).unwrap().1 {
-        //        map.get_mut(&reg).unwrap().1 = to.unwrap();
-        //    }
-        //}
-        //if matches!(reg, Reg(Register::A1, 1)) {
-        //    println!("DBG AF: {}: [{:?}]", reg, map.get(&reg).unwrap());
-        //}
-    }
-
-    /* Inputs:
-        1. Instructions in ssa form
-        2. Linear block order with all of a block's dominators being located before the block
-       Output:
-        One lifetime interval for each virtual register (can contain lifetime holes)
-    */
-    /// Constructs lifetime intervals for blocks
-    fn build_intervals(&mut self) -> FxHashMap<Reg, Vec<(usize, usize)>> {
-        let mut intervals: FxHashMap<Reg, Vec<(usize, usize)>> = FxHashMap::default();
+    fn build_intervals(&mut self) -> FxHashMap<Reg, (isize, isize)> {
+        let mut intervals: FxHashMap<Reg, (isize, isize)> = FxHashMap::default();
 
         let rev_blocks = vec![4, 2, 3, 1, 0];
 
         for b in rev_blocks {
             let block = self.blocks[b].clone();
-            // 0. Add all live_in registers of block's successors to the current live set
-            let mut live: BTreeSet<Reg> = BTreeSet::new();
-            for s in &block.succ {
-                self.blocks[*s].live_in
-                    .iter()
-                    .for_each(|e| { live.insert(*e); });
+
+            for phi in &block.phi_funcs {
+                intervals.insert(phi.o_reg.unwrap(), (phi.id, phi.id));
             }
 
-            // 1. Phi-function inputs of succeeding functions pertaining to Block are live
-            for s in &block.succ {
-                self.blocks[*s].phi_funcs
-                    .iter()
-                    .for_each(|phi| { 
-                        if block.index == 1 {
-                            live.insert(phi.i_reg[0]); 
-                        } else if block.index == 3 {
-                            live.insert(phi.i_reg[1]); 
-                        }
-                    }); // TODO cant hardcode
-            }
-
-
-            // 2. Update live interval for each register in live-in
-            for reg in &live {
-                Regalloc::edit_range(&mut intervals, *reg, Some(block.start), Some(block.end));
-            }
-
-            // Remove def's from live and add inputs to live
-            // Also update intervals
-            for instr in &block.rev_instrs(&self.instrs) {
+            for instr in block.instrs(&self.instrs) {
                 if instr.o_reg.is_some() {
-                    Regalloc::edit_range(&mut intervals, instr.o_reg.unwrap(), 
-                                         Some(instr.id as usize), None);
-
-                    live.remove(&instr.o_reg.unwrap());
+                    if intervals.get(&instr.o_reg.unwrap()).is_none() {
+                        intervals.insert(instr.o_reg.unwrap(), (instr.id, instr.id));
+                    } else {
+                        intervals.get_mut(&instr.o_reg.unwrap()).unwrap().0 = instr.id;
+                    }
                 }
 
-                for input in &instr.i_reg {
-                    Regalloc::edit_range(&mut intervals, *input, Some(block.start), 
-                                         Some(instr.id as usize));
-                    live.insert(*input);
+                for input in instr.i_reg {
+                    if intervals.get(&input).is_none() {
+                        intervals.insert(input, (33, instr.id));
+                    } else if instr.id > intervals.get(&input).unwrap().1 {
+                        intervals.get_mut(&input).unwrap().1 = instr.id;
+                    }
                 }
             }
 
-            // Remove out_regs from live sets
-            for phi_func in &block.phi_funcs {
-                live.remove(&phi_func.o_reg.unwrap());
+            for phi in &block.phi_funcs {
+                for input in &phi.i_reg {
+                    if intervals.get(&input).is_none() {
+                        intervals.insert(*input, (33, phi.id));
+                    } else if phi.id > intervals.get(&input).unwrap().1 {
+                        intervals.get_mut(&input).unwrap().1 = phi.id;
+                    }
+                }
             }
-
-            // TODO Handle loops
-
-            // May be unnecessary
-            self.blocks[block.index].live_in = live;
         }
 
-        return intervals;
+        intervals
+    }
+
+    fn linear_scan(&mut self, tmp: &mut FxHashMap<Reg, (isize, isize)>) -> FxHashMap<Reg, X86Reg> {
+        let mut intervals: Vec<(Reg, (isize, isize))> = Vec::new();
+        let mut count = 0;
+
+        let mut mapping: FxHashMap<Reg, X86Reg> = FxHashMap::default();
+
+        // Very hacky way of sorting this, fix it later
+        while count <= self.instrs.len() {
+            for v in tmp.iter() {
+                if v.1.0 == count as isize {
+                    intervals.push((*v.0, *v.1));
+                }
+            }
+            count += 1;
+        }
+
+        let mut free_regs = vec![Rax, Rbx, Rcx, Rdx, Rsi, Rdi, Rbp, R8, R9, R10, R11];
+        let mut active: FxHashMap<X86Reg, (isize, isize)> = FxHashMap::default();
+
+        for i in intervals {
+            let reg   = i.0;
+            let inter = i.1;
+
+            /* expire old */
+            for v in active.clone().iter() {
+                if v.1.1 >= inter.0 { continue; }
+                active.remove(&v.0);
+                free_regs.push(*v.0);
+            }
+
+            if free_regs.len() == 0 {
+                // Spill a register to memory
+                mapping.insert(reg, Spill);
+            } else {
+                let preg = free_regs.pop().unwrap();
+                active.insert(preg, inter);
+                mapping.insert(reg, preg);
+            }
+        }
+        mapping
     }
 
     /*

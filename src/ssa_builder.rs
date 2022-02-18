@@ -431,7 +431,7 @@ impl SSABuilder {
         }
 
         // Rename inputs and outputs
-        for i in self.blocks[block_num].start..self.blocks[block_num].end {
+        for i in self.blocks[block_num].start..=self.blocks[block_num].end {
             let instr = &mut self.instrs[i];
 
             // Rename the input registers
@@ -499,7 +499,6 @@ impl SSABuilder {
         let mut s = String::new();
 
         for block in &self.blocks {
-            println!("block {}: [{}-{}]", block.index, block.start, block.end);
             s.push_str(&format!("\tLabel(0x{:x})\n\n", block.label));
             block.phi_funcs.iter().for_each(|e| { s.push_str(&format!("{}\n", e)); });
             block.instrs(&self.instrs).iter().for_each(|e| { s.push_str(&format!("{}\n", e)); });
