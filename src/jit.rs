@@ -278,10 +278,11 @@ impl Jit {
         }
 
         // Function prologue {{{
+
             // Restore stack pointer
         let sp_off = self.get_reg_offset(RVReg::Sp);
-        asm.mov(rsp, ptr(r15)+sp_off).unwrap();
-
+        asm.mov(rbp, ptr(r15)).unwrap();
+        asm.mov(rbp, ptr(rbp+sp_off)).unwrap();
 
         // }}}
 
@@ -292,14 +293,25 @@ impl Jit {
             }
         }
 
-        macro_rules! function_epilogue {
+        macro_rules! function_epilogue1 {
             ($code: expr, $reentry: expr, $asm: expr) => {
-                set_reg!(RVReg::Sp, rsp, asm);
+                set_reg!(RVReg::Sp, rbp, asm);
                 asm.mov(rax, $code as u64).unwrap();
                 asm.mov(rcx, $reentry as u64).unwrap();
                 asm.ret().unwrap();
             }
         }
+
+        macro_rules! function_epilogue2 {
+            ($code: expr, $reentry: expr, $asm: expr) => {
+                set_reg!(RVReg::Sp, rbp, asm);
+                asm.mov(rax, $code as u64).unwrap();
+                asm.mov(rcx, $reentry).unwrap();
+                asm.ret().unwrap();
+            }
+        }
+
+        println!("label_map: {:#x?}", label_map);
 
         for instr in &ssa.instrs {
 
@@ -387,8 +399,8 @@ impl Jit {
                                                         .unwrap(), 64).into();
 
                     // Use lookup table to get actual memory address
-                    asm.mov(rbx, ptr(r15+0x8)).unwrap();
-                    asm.add(r2, rbx).unwrap();
+                    asm.mov(rcx, ptr(r15+0x8u64)).unwrap();
+                    asm.add(r2, rcx).unwrap();
 
                     match instr.flags {
                         Flag::Byte => {
@@ -413,8 +425,8 @@ impl Jit {
                                                         .unwrap(), 64).into();
 
                     // Use lookup table to get actual memory address
-                    asm.mov(rbx, ptr(r15+0x8)).unwrap();
-                    asm.add(r2, rbx).unwrap();
+                    asm.mov(rcx, ptr(r15+0x8u64)).unwrap();
+                    asm.add(r2, rcx).unwrap();
 
                     if instr.flags & (Flag::Signed | Flag::Byte) 
                         == Flag::Signed | Flag::Byte {
@@ -508,11 +520,101 @@ impl Jit {
                         _ => panic!("Unsupported flag provided for Sub Instruction")
                     }
                 },
+                Operation::Shl => {
+                    match instr.flags {
+                        Flag::DWord => {
+                            let r1: AsmRegister32 = convert_reg(*reg_mapping.get(&instr.i_reg[0])
+                                                                .unwrap(), 32).into();
+                            let r2: AsmRegister32 = convert_reg(*reg_mapping.get(&instr.i_reg[1])
+                                                                .unwrap(), 32).into();
+                            let r3: AsmRegister32 = convert_reg(*reg_mapping
+                                                                .get(&instr.o_reg.unwrap())
+                                                                .unwrap(), 32).into();
+                            asm.mov(ecx, r2).unwrap();
+                            asm.shl(r1, cl).unwrap();
+
+                            if instr.i_reg[0] != instr.o_reg.unwrap() {
+                                asm.mov(r3, r1).unwrap();
+                            }
+                        },
+                        Flag::QWord => {
+                            let r1: AsmRegister64 = convert_reg(*reg_mapping.get(&instr.i_reg[0])
+                                                                .unwrap(), 64).into();
+                            let r2: AsmRegister32 = convert_reg(*reg_mapping.get(&instr.i_reg[1])
+                                                                .unwrap(), 32).into();
+                            let r3: AsmRegister64 = convert_reg(*reg_mapping
+                                                                .get(&instr.o_reg.unwrap())
+                                                                .unwrap(), 64).into();
+                            asm.mov(ecx, r2).unwrap();
+                            asm.shl(r1, cl).unwrap();
+
+                            if instr.i_reg[0] != instr.o_reg.unwrap() {
+                                asm.mov(r3, r1).unwrap();
+                            }
+                        },
+                        _ => panic!("Unsupported flag provided for Sub Instruction")
+                    }
+                },
+                Operation::And => {
+                    let r1: AsmRegister64 = convert_reg(*reg_mapping.get(&instr.i_reg[0])
+                                                        .unwrap(), 64).into();
+                    let r2: AsmRegister64 = convert_reg(*reg_mapping.get(&instr.i_reg[1])
+                                                        .unwrap(), 64).into();
+                    let r3: AsmRegister64 = convert_reg(*reg_mapping
+                                                        .get(&instr.o_reg.unwrap())
+                                                        .unwrap(), 64).into();
+                    asm.and(r1, r2).unwrap();
+
+                    if instr.i_reg[0] != instr.o_reg.unwrap() {
+                        asm.mov(r3, r1).unwrap();
+                    }
+                },
+                Operation::Xor => {
+                    let r1: AsmRegister64 = convert_reg(*reg_mapping.get(&instr.i_reg[0])
+                                                        .unwrap(), 64).into();
+                    let r2: AsmRegister64 = convert_reg(*reg_mapping.get(&instr.i_reg[1])
+                                                        .unwrap(), 64).into();
+                    let r3: AsmRegister64 = convert_reg(*reg_mapping
+                                                        .get(&instr.o_reg.unwrap())
+                                                        .unwrap(), 64).into();
+                    asm.xor(r1, r2).unwrap();
+
+                    if instr.i_reg[0] != instr.o_reg.unwrap() {
+                        asm.mov(r3, r1).unwrap();
+                    }
+                },
+                Operation::Or => {
+                    let r1: AsmRegister64 = convert_reg(*reg_mapping.get(&instr.i_reg[0])
+                                                        .unwrap(), 64).into();
+                    let r2: AsmRegister64 = convert_reg(*reg_mapping.get(&instr.i_reg[1])
+                                                        .unwrap(), 64).into();
+                    let r3: AsmRegister64 = convert_reg(*reg_mapping
+                                                        .get(&instr.o_reg.unwrap())
+                                                        .unwrap(), 64).into();
+                    asm.or(r1, r2).unwrap();
+
+                    if instr.i_reg[0] != instr.o_reg.unwrap() {
+                        asm.mov(r3, r1).unwrap();
+                    }
+                },
                 Operation::Jmp(addr) => {
+                    if let Some(label) = label_map.get(&addr) {
+                        asm.jmp(*label).unwrap();
+                    } else {
+                        if let Some(jit_addr) = self.lookup(addr) {
+                            asm.jmp(jit_addr as u64).unwrap();
+                        } else {
+                            let mut jit_exit = asm.create_label();
+                            asm.mov(rcx, ptr(r15+24u64)).unwrap();
+                            asm.mov(rcx, ptr(rcx+addr)).unwrap();
+                            asm.test(rcx, rcx).unwrap();
+                            asm.jz(jit_exit).unwrap();
+                            asm.jmp(rcx).unwrap();
 
-                    let label = label_map.get(&addr).unwrap();
-
-                    asm.jmp(*label).unwrap();
+                            asm.set_label(&mut jit_exit).unwrap();
+                            function_epilogue1!(1, addr, asm);
+                        }
+                    }
                 },
                 Operation::Ret => {
                     asm.ret().unwrap();
@@ -523,18 +625,39 @@ impl Jit {
                     } else {
                         let mut jit_exit = asm.create_label();
                         let mut reentry  = asm.create_label();
-                        asm.mov(rbx, ptr(r15 + (addr * 8))).unwrap();
-                        asm.test(rbx, rbx).unwrap();
+                        asm.mov(rcx, ptr(r15 + 24u64)).unwrap();
+                        asm.mov(rcx, ptr(rcx+addr)).unwrap();
+                        asm.test(rcx, rcx).unwrap();
                         asm.jz(jit_exit).unwrap();
-                        asm.call(rbx).unwrap();
+                        asm.call(rcx).unwrap();
                         asm.jmp(reentry).unwrap();
 
                         // TODO proper cleanup on jit-exit
                         asm.set_label(&mut jit_exit).unwrap();
-                        function_epilogue!(1, addr, asm);
+                        function_epilogue1!(1, addr, asm);
 
                         asm.set_label(&mut reentry).unwrap();
                     }
+                },
+                Operation::CallReg => {
+                    let r1: AsmRegister64 = convert_reg(*reg_mapping.get(&instr.i_reg[0])
+                                                        .unwrap(), 64).into();
+
+                    let mut jit_exit = asm.create_label();
+                    let mut reentry  = asm.create_label();
+                    asm.mov(rcx, ptr(r15 + 24u64)).unwrap();
+                    asm.mov(rcx, ptr(rcx+r1)).unwrap();
+
+                    asm.test(rcx, rcx).unwrap();
+                    asm.jz(jit_exit).unwrap();
+                    asm.call(rcx).unwrap();
+                    asm.jmp(reentry).unwrap();
+
+                    // TODO proper cleanup on jit-exit
+                    asm.set_label(&mut jit_exit).unwrap();
+                    function_epilogue2!(1, r1, asm);
+
+                    asm.set_label(&mut reentry).unwrap();
                 },
                 Operation::Mov => {
                     let r1: AsmRegister64 = convert_reg(*reg_mapping.get(&instr.o_reg.unwrap())

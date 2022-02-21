@@ -164,7 +164,18 @@ impl SSABuilder {
             ssa_builder.edges.push((edge.0, v));
         }
 
+        // Setup register stack and initialize sp and function arguments 
         ssa_builder.reg_stack  = vec![(0, Vec::new()); NUMREGS];
+        ssa_builder.reg_stack[PReg::Sp as usize].1.push(0);
+        ssa_builder.reg_stack[PReg::A0 as usize].1.push(0);
+        ssa_builder.reg_stack[PReg::A1 as usize].1.push(0);
+        ssa_builder.reg_stack[PReg::A2 as usize].1.push(0);
+        ssa_builder.reg_stack[PReg::A3 as usize].1.push(0);
+        ssa_builder.reg_stack[PReg::A4 as usize].1.push(0);
+        ssa_builder.reg_stack[PReg::A5 as usize].1.push(0);
+        ssa_builder.reg_stack[PReg::A6 as usize].1.push(0);
+        ssa_builder.reg_stack[PReg::A7 as usize].1.push(0);
+
         ssa_builder.instrs = irgraph.instrs.clone();
 
         // Initiate blocks, these track the first and last instruction for each block
@@ -442,7 +453,7 @@ impl SSABuilder {
             // Rename the input registers
             for i in 0..instr.i_reg.len() {
                 if instr.i_reg[i].0 == PReg::Zero { continue; }
-                println!("AAA: {}", instr);
+                println!("{}-{:?}: {}, {:?}", i, instr.i_reg[i].0, instr, self.reg_stack[instr.i_reg[i].0 as usize]);
                 instr.i_reg[i] = Reg(instr.i_reg[i].0, *self.reg_stack[instr.i_reg[i].0 as usize].1
                                      .last().unwrap() as u16);
             }

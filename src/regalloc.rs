@@ -10,12 +10,13 @@ use iced_x86::Register::*;
 use iced_x86::Register;
 
 // 16 regs total, but only 10 useable
-    // rbx = used as temporary scratch register
+    // rcx = used as temporary scratch register
     // rsp = saved
-    // r12 = Jit address lookup table
-    // r13 = regs in memory
-    // r14 = emulator memory
-    // r15 = emulator memory permissions
+    // r15 = Pointer to runtime-relevant pointers
+        // r15 + 0x0  = memory-mapped registers
+        // r15 + 0x8  = emulator memory
+        // r15 + 0x10 = emulator permissions
+        // r15 + 0x18 = emulator jit code-block lookup
 //const PHYSREGSNUM: usize = 11;
 
 #[derive(Debug, Default)]
@@ -194,7 +195,7 @@ impl Regalloc {
 
         let mut mapping: FxHashMap<Reg, Register> = FxHashMap::default();
         let mut free_regs: Vec<Register> 
-            = vec![RAX, RCX, RDX, RSI, RDI, RBP, R8, R9, R10, R11, R12, R13, R14];
+            = vec![RAX, RBX, RDX, RSI, RDI, R8, R9, R10, R11, R12, R13, R14];
         let mut active: FxHashMap<Register, (isize, isize)> = FxHashMap::default();
 
         for i in intervals {
@@ -208,9 +209,9 @@ impl Regalloc {
                 free_regs.push(*v.0);
             }
 
-            // Hardcode stack pointer to rsp
+            // Hardcode stack pointer to rbp
             if reg.0 == PReg::Sp {
-                mapping.insert(reg, RSP);
+                mapping.insert(reg, RBP);
                 continue;
             }
 

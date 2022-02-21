@@ -329,7 +329,7 @@ impl Emulator {
                         error_exit("Attempted to hook invalid function");
                     }
                 },
-                _ => { unreachable!(); }
+                _ => panic!("Invalid JIT return code: {:x}", exit_code),
             }
         }
     }

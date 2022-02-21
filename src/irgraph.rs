@@ -154,7 +154,15 @@ impl fmt::Display for Instruction {
                         write!(f, "{:#08X}  if {} > {} ({:#0X?}, {:#0X?})", self.pc.unwrap_or(0),
                                self.i_reg[0], self.i_reg[1], y, x)
                     },
-                    _ => { unreachable!() },
+                    0b100100 => {
+                        write!(f, "{:#08X}  if {} >= {} ({:#0X?}, {:#0X?})", self.pc.unwrap_or(0),
+                               self.i_reg[0], self.i_reg[1], y, x)
+                    },
+                    0b010100 => {
+                        write!(f, "{:#08X}  if {} <= {} ({:#0X?}, {:#0X?})", self.pc.unwrap_or(0),
+                               self.i_reg[0], self.i_reg[1], y, x)
+                    },
+                    _ => { panic!("branch with flag: {}", self.flags & 0b111100); },
                 }
             },
             Operation::Phi => {
