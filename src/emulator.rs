@@ -108,7 +108,7 @@ impl From<u32> for Register {
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct State {
-    regs: [usize; 33],
+    pub regs: [usize; 33],
 }
 
 impl Default for State {
@@ -250,31 +250,33 @@ impl Emulator {
     /// Once the jit exits it collects the reentry_pc (where to continue execution), and the exit
     /// code. It performs an appropriate operation based on the exit code and then continues with
     /// the loop to reenter the jit.
-    pub fn run_jit(&mut self) -> Option<Fault> {
+    pub fn run_jit(&mut self, pointers: &[u64]) -> Option<Fault> {
         loop {
-            let pc = self.get_reg(Register::Pc);
+            let pc     = self.get_reg(Register::Pc);
+            let end_pc = pc + self.functions.get(&pc).unwrap();
+
+            println!("pc is: 0x{:x}", pc);
 
             // Error out if code was unaligned.
             // since Riscv instructions are always 4-byte aligned this is a bug
             if pc & 3 != 0 { return Some(Fault::ExecFault(pc)); }
 
             let jit_addr = match (*self.jit).lookup(pc) {
-                None => {   /* hardcoded for debugging TODO */
+                None => {
 
-                    let irgraph = self.lift_func(0x100b0).unwrap();
-                    //let mut irgraph = self.lift_func(pc).unwrap();
+                    let irgraph = self.lift_func(pc).unwrap();
 
-                    let mut ssa_builder = SSABuilder::new(&irgraph);
-                    ssa_builder.build_ssa();
-                    ssa_builder.dump_dot();
+                    let mut ssa = SSABuilder::new(&irgraph, end_pc);
+                    ssa.build_ssa();
 
-                    let mut reg_allocator = Regalloc::new(&ssa_builder);
-                    reg_allocator.execute();
+                    ssa.destruct();
+                    ssa.dump_dot();
 
-                    //(*self.jit).compile(&mut ssa_builder).unwrap();
+                    let mut reg_allocator = Regalloc::new(&ssa);
+                    let reg_mapping = reg_allocator.get_reg_mapping();
 
-                    panic!("Done generating SSA-IR");
-
+                    let labels: Vec<usize> = irgraph.labels.iter().map(|e| *e.0).collect();
+                    self.jit.compile(&ssa, &reg_mapping, labels).unwrap()
                 }
                 Some(addr) => { addr }
             };
@@ -291,9 +293,7 @@ impl Emulator {
                 out("rax") exit_code,
                 out("rcx") reentry_pc,
                 out("rdx") _,
-                in("r13") self.state.regs.as_ptr() as u64,
-                in("r14") self.memory.memory.as_ptr() as u64,
-                in("r15") self.jit.lookup_arr.read().unwrap().as_ptr() as u64,
+                in("r15") pointers.as_ptr() as u64,
                 );
             }
 
@@ -365,8 +365,7 @@ impl Emulator {
         let mut instrs: Vec<Instr> = Vec::new();
 
         let start_pc = pc;
-        //let end_pc   = start_pc + self.functions.get(&pc).unwrap();
-        let end_pc = 0x101c;
+        let end_pc   = start_pc + self.functions.get(&pc).unwrap();
 
         while pc < end_pc {
             let opcodes: u32 = self.memory.read_at(pc, Perms::READ | Perms::EXECUTE).map_err(|_|
@@ -377,8 +376,8 @@ impl Emulator {
         }
 
         // These are used to determine jump locations ahead of time
-        let mut keys: Vec<usize> = self.extract_labels(start_pc, &instrs).keys().cloned().collect();
-        keys.insert(0, start_pc);
+        let mut keys = self.extract_labels(start_pc, &instrs);
+        keys.insert(start_pc, 0);
 
         self.lift(&mut irgraph, &instrs, &mut keys, start_pc);
 
@@ -388,7 +387,7 @@ impl Emulator {
     /// This function takes a set of instructions and lifts them into the intermediate
     /// representation. It uses the keys to insert labels where appropriate. These act as start
     /// markers for new code blocks.
-    fn lift(&mut self, irgraph: &mut IRGraph, instrs: &[Instr], keys: &mut Vec<usize>,
+    fn lift(&mut self, irgraph: &mut IRGraph, instrs: &[Instr], keys: &mut BTreeMap<usize, u8>,
             mut pc: usize) {
 
         // Lift instructions until we reach the end of the function
@@ -396,8 +395,7 @@ impl Emulator {
 
             irgraph.init_instr(pc);
 
-            if !keys.is_empty() && pc == keys[0] {
-                keys.remove(0);
+            if keys.get(&pc).is_some() {
                 irgraph.set_label(pc);
             }
 
@@ -422,12 +420,11 @@ impl Emulator {
                     }
                 },
                 Instr::Jalr {rd, imm, rs1} => {
-                    let ret_val = pc.wrapping_add(4);
-
-                    let imm_reg = irgraph.loadi(Register::Z1, imm, Flag::Signed);
-                    let jmp_target = irgraph.add(Register::Z2, rs1, imm_reg, Flag::DWord);
-
                     if rd != Register::Zero {
+                        let ret_val = pc.wrapping_add(4);
+                        let imm_reg = irgraph.loadi(Register::Z1, imm, Flag::Signed);
+                        let jmp_target = irgraph.add(Register::Z2, rs1, imm_reg, Flag::DWord);
+
                         irgraph.loadi(rd, ret_val as i32, Flag::Unsigned);
                         irgraph.call_reg(jmp_target)
                     } else {
@@ -458,15 +455,15 @@ impl Emulator {
                         },
                         0b101 => { /* BGE */
                             irgraph.branch(rs1, rs2, true_part, false_part,
-                                           Flag::Greater | Flag::Signed)
+                                           Flag::Greater | Flag::Signed | Flag::Equal)
                         },
                         0b110 => { /* BLTU */
                             irgraph.branch(rs1, rs2, true_part, false_part,
-                                           Flag::Less | Flag::Signed)
+                                           Flag::Less | Flag::Unsigned)
                         },
                         0b111 => { /* BGEU */
                             irgraph.branch(rs1, rs2, true_part, false_part,
-                                           Flag::Greater | Flag::Signed)
+                                           Flag::Greater | Flag::Unsigned | Flag::Equal)
                         },
                         _ => { unreachable!(); },
                     }
@@ -616,6 +613,7 @@ mod tests {
         /*0x1030*/ instrs.push(Instr::Jal { rd: Register::Zero, imm: -0x18 }); //goto b2
 
         /*0x1034*/ instrs.push(Instr::Lui { rd: Register::Zero, imm: 0 });
+        /*0x101c*/ instrs.push(Instr::Jalr { rd: Register::Zero, imm: 0, rs1: Register::A0 });
 
         // end
 
@@ -626,18 +624,22 @@ mod tests {
         let mut irgraph = IRGraph::default();
         emu.lift(&mut irgraph, &instrs, &mut keys, 0x1000);
 
-        //irgraph.instrs.iter().for_each(|e| println!("{}", e));
+        let mut ssa = SSABuilder::new(&irgraph);
+        ssa.build_ssa();
 
-        let mut ssa_builder = SSABuilder::new(&irgraph);
+        ssa.destruct();
+        ssa.dump_dot();
 
-        ssa_builder.build_ssa();
-        ssa_builder.dump_dot();
+        let mut reg_allocator = Regalloc::new(&ssa);
+        let reg_mapping = reg_allocator.get_reg_mapping();
 
-        let mut reg_allocator = Regalloc::new(&ssa_builder);
-        reg_allocator.execute();
+        let labels: Vec<usize> = irgraph.labels.iter().map(|e| *e.0).collect();
+        emu.jit.compile(&ssa, &reg_mapping, labels);
+
+        emu.set_reg(Register::Pc, 0x1000);
+        emu.run_jit();
     }
 
-    /*
     #[test]
     fn loop_test() {
         let mut instrs: Vec<Instr> = Vec::new();
@@ -667,11 +669,10 @@ mod tests {
         let mut irgraph = IRGraph::default();
         emu.lift(&mut irgraph, &instrs, &mut keys, 0x1000);
 
+        println!("GRAPH: {:?}", irgraph);
 
-        let mut cfg = SSABuilder::new(&irgraph);
-
-        cfg.build_ssa();
-        cfg.dump_dot();
+        let mut ssa_builder = SSABuilder::new(&irgraph);
+        ssa_builder.build_ssa();
+        ssa_builder.dump_dot();
     }
-    */
 }

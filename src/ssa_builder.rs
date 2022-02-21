@@ -121,21 +121,25 @@ pub struct SSABuilder {
 
 impl SSABuilder {
     /// Loop through the instructions of a given function and generate the control flow graph for it
-    pub fn new(irgraph: &IRGraph) -> SSABuilder {
+    pub fn new(irgraph: &IRGraph, func_end: usize) -> SSABuilder {
         let mut ssa_builder   = SSABuilder::default();
         let mut index: isize = -1;
         let mut iterator = irgraph.instrs.iter().peekable();
-        let mut map: FxHashMap<usize, isize> = FxHashMap::default();
+        let mut label_map: FxHashMap<usize, isize> = FxHashMap::default();
         let mut edges = Vec::new();
         let mut tmp_labels = FxHashMap::default();
         let mut i = 0;
+
+        for instr in &irgraph.instrs {
+            println!("{}", instr);
+        }
 
         // Determine labels locations
         while let Some(instr) = &iterator.next() {
             // Label indicates new block start
             if instr.pc.is_some() && irgraph.labels.get(&instr.pc.unwrap()).is_some() {
                 index += 1;
-                map.insert(instr.pc.unwrap(), index);
+                label_map.insert(instr.pc.unwrap(), index);
                 tmp_labels.insert(index, instr.pc.unwrap());
                 ssa_builder.leader_set.push(((*instr).clone(), i));
             }
@@ -145,7 +149,9 @@ impl SSABuilder {
                     edges.push((index as u32, x as u32));
                 }
                 Operation::Jmp(x) => { /* End basic block with a non-returning jmp */
-                    edges.push((index as u32, x as u32));
+                    if x < func_end {
+                        edges.push((index as u32, x as u32));
+                    }
                 },
                 _ => { }
             }
@@ -154,7 +160,7 @@ impl SSABuilder {
 
         // Set appropriate edges for control flow graph
         for edge in edges {
-            let v = *(map.get(&(edge.1 as usize)).unwrap()) as u32;
+            let v = *(label_map.get(&(edge.1 as usize)).unwrap()) as u32;
             ssa_builder.edges.push((edge.0, v));
         }
 
@@ -183,7 +189,6 @@ impl SSABuilder {
                     acc
                 });
         }
-
         ssa_builder
     }
 
@@ -393,7 +398,7 @@ impl SSABuilder {
     }
 
     /*
-        Algotihm:
+        Algorithm:
             Start by setting up a count and a stack for each individual register.
                 The count is used to track the newest ssa variant of the register
                 The stack is used to track the ssa index that is currently in use for each register
@@ -409,7 +414,7 @@ impl SSABuilder {
     }
 
     /*
-        Algotihm:
+        Algorithm:
             1. Rename the output register of all phi functions of the current block.
             2. Loop through all instructions of the current block and rename inputs and outputs
             3. Go through all successors of the current block and set their phi function input regs
@@ -437,6 +442,7 @@ impl SSABuilder {
             // Rename the input registers
             for i in 0..instr.i_reg.len() {
                 if instr.i_reg[i].0 == PReg::Zero { continue; }
+                println!("AAA: {}", instr);
                 instr.i_reg[i] = Reg(instr.i_reg[i].0, *self.reg_stack[instr.i_reg[i].0 as usize].1
                                      .last().unwrap() as u16);
             }
@@ -490,6 +496,38 @@ impl SSABuilder {
         cur_block_instrs.iter()
             .filter_map(|e| e.o_reg)
             .for_each(|e| { self.reg_stack[e.0 as usize].1.pop(); } );
+    }
+
+    /// Eliminate phi functions prior to register allocation since standard assembly does not have
+    /// phi functions
+    pub fn destruct(&mut self) {
+        for block in self.blocks.clone() {
+            for phi in block.phi_funcs {
+                let mut count = 0;
+                for p in &block.pred {
+                    let i = Instruction {
+                        op: Operation::Mov, 
+                        i_reg: vec![phi.i_reg[count]], 
+                        o_reg: phi.o_reg, 
+                        flags: 0, 
+                        pc: None, 
+                        id: 0,
+                    };
+                    count += 1;
+                    if self.instrs[self.blocks[*p].end].is_jump() {
+                        self.instrs.insert(self.blocks[*p].end, i);
+                    } else {
+                        self.instrs.insert(self.blocks[*p].end+1, i);
+                    }
+                    self.blocks[*p].end += 1;
+                    for b in *p+1..self.blocks.len() {
+                        self.blocks[b].start += 1;
+                        self.blocks[b].end   += 1;
+                    }
+                }
+            }
+            self.blocks[block.index].phi_funcs.clear();
+        }
     }
 
     /// Dump a dot graph for visualization purposes

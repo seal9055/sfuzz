@@ -72,8 +72,8 @@ pub enum Instr {
 
 /// Trait that allows bit extractions from usizes by calling num.get_u32()
 pub trait ExtractBits{
-    fn get_u32(self, but_offset: u32, length: u32) -> u32;
-    fn get_i32(self, but_offset: u32, length: u32) -> i32;
+    fn get_u32(self, bit_offset: u32, length: u32) -> u32;
+    fn get_i32(self, bit_offset: u32, length: u32) -> i32;
 }
 
 impl ExtractBits for u32 {

@@ -108,6 +108,15 @@ impl Instruction {
     pub fn is_phi_function(&self) -> bool {
         self.op == Operation::Phi
     }
+
+    pub fn is_jump(&self) -> bool {
+        match self.op {
+            Operation::Jmp(_) => true,
+            Operation::Call(_) => true,
+            Operation::Branch(..) => true,
+            _ => false,
+        }
+    }
 }
 
 /// Pretty printing for the instructions
@@ -203,6 +212,10 @@ impl fmt::Display for Instruction {
             Operation::Slt => {
                 write!(f, "{:#08X}  {} = {} < {} ? 1 : 0", self.pc.unwrap_or(0),
                        self.o_reg.unwrap(), self.i_reg[0], self.i_reg[1])
+            },
+            Operation::Mov => {
+                write!(f, "{:#08X}  {} = {}", self.pc.unwrap_or(0), 
+                       self.o_reg.unwrap(), self.i_reg[0])
             },
             _ => { unreachable!() },
         }

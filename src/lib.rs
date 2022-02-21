@@ -1,3 +1,5 @@
+#![feature(map_try_insert)]
+
 pub mod emulator;
 pub mod mmu;
 pub mod riscv;
@@ -115,6 +117,7 @@ pub fn load_elf_segments(filename: &str, emu_inst: &mut Emulator)
     Some(symbol_map)
 }
 
+
 /// Wrapper function for each emulator, takes care of running the emulator, memory resets, etc
 pub fn worker(_thr_id: usize, mut emu: Emulator) {
     let original = emu.clone();
@@ -122,7 +125,18 @@ pub fn worker(_thr_id: usize, mut emu: Emulator) {
     let mut count = 0;
     loop {
         emu.reset(&original); //= original.fork();
-        emu.run_jit().unwrap();
+
+        // Array used to store pointers to addresses in memory that need to be accessed during 
+        // JIT execution
+        // [memory-mapped registers, memory, permissions, lookup_arr]
+        let pointers =  [  
+            emu.state.regs.as_ptr() as u64, 
+            emu.memory.memory.as_ptr() as u64, 
+            emu.memory.permissions.as_ptr() as u64,
+            emu.jit.lookup_arr.read().unwrap().as_ptr() as u64
+        ];
+
+        emu.run_jit(&pointers).unwrap();
         count +=1;
         if count == BATCH_SIZE {
             count = 0;

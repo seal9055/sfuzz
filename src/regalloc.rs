@@ -1,40 +1,22 @@
 use crate::{
     irgraph::{Instruction, Reg},
     ssa_builder::{SSABuilder, Block},
-    regalloc::X86Reg::*,
+    emulator::Register as PReg,
 };
 
 use std::collections::BTreeSet;
 use rustc_hash::FxHashMap;
+use iced_x86::Register::*;
+use iced_x86::Register;
 
 // 16 regs total, but only 10 useable
+    // rbx = used as temporary scratch register
     // rsp = saved
     // r12 = Jit address lookup table
     // r13 = regs in memory
     // r14 = emulator memory
     // r15 = emulator memory permissions
 //const PHYSREGSNUM: usize = 11;
-
-#[derive(Copy, Clone, Hash, Eq, PartialEq, Debug)]
-enum X86Reg {
-    Rax,
-    Rbx,
-    Rcx,
-    Rdx,
-    Rsi,
-    Rdi,
-    Rbp,
-    //Rsp,
-    R8,
-    R9,
-    R10,
-    R11,
-    //R12,
-    //R13,
-    //R14,
-    //R15,
-    Spill,
-}
 
 #[derive(Debug, Default)]
 pub struct Regalloc {
@@ -69,36 +51,36 @@ impl Regalloc {
         }
     }
 
-    /// The registers defined by φ-operations at entry of the block B
-    fn phi_defs(&self, block_index: usize) -> BTreeSet<Reg> {
-        self.blocks[block_index].phi_funcs
-            .iter()
-            .map(|e| e.o_reg.unwrap())
-            .collect::<BTreeSet<Reg>>()
-    }
+    ///// The registers defined by φ-operations at entry of the block B
+    //fn phi_defs(&self, block_index: usize) -> BTreeSet<Reg> {
+    //    self.blocks[block_index].phi_funcs
+    //        .iter()
+    //        .map(|e| e.o_reg.unwrap())
+    //        .collect::<BTreeSet<Reg>>()
+    //}
 
-    /// The set of registers used in a φ-operation at entry of a block successor of the block B.
-    fn phi_uses(&self, block: &Block) -> BTreeSet<Reg> {
-        let mut phi_uses = BTreeSet::new();
+    ///// The set of registers used in a φ-operation at entry of a block successor of the block B.
+    //fn phi_uses(&self, block: &Block) -> BTreeSet<Reg> {
+    //    let mut phi_uses = BTreeSet::new();
 
-        for s in &block.succ {
-            let j = self.blocks[*s].pred
-                .iter()
-                .position(|&x| x as usize == block.index)
-                .unwrap();
+    //    for s in &block.succ {
+    //        let j = self.blocks[*s].pred
+    //            .iter()
+    //            .position(|&x| x as usize == block.index)
+    //            .unwrap();
 
-            for i in &self.blocks[*s].phi_funcs {
-                phi_uses.insert(i.i_reg[j]);
-            }
-        }
-        phi_uses
-    }
+    //        for i in &self.blocks[*s].phi_funcs {
+    //            phi_uses.insert(i.i_reg[j]);
+    //        }
+    //    }
+    //    phi_uses
+    //}
 
     /// Start register allocation procedure. Involves liveness analysis, lifetime intervals,
     /// and ...
-    pub fn execute(&mut self) {
+    pub fn get_reg_mapping(&mut self) -> FxHashMap<Reg, Register> {
         // Calculate live_in and live_out values for every block
-        self.liveness_analysis();
+        //self.liveness_analysis();
 
         self.number_instructions();
 
@@ -109,17 +91,10 @@ impl Regalloc {
             block.phi_funcs.iter().for_each(|e| { println!("{}: {}", e.id, e); });
             block.instrs(&self.instrs).iter().for_each(|e| { println!("{}: {}", e.id, e); });
         }
-        for v in &intervals {
-            println!("{:?}: {:?}", v.0, v.1);
-        }
 
         let reg_mappings = self.linear_scan(&mut intervals);
 
-        for m in reg_mappings {
-            println!("{:?}", m);
-        }
-
-        panic!("panic hit in regalloc");
+        reg_mappings
     }
 
     /// Number all instructions in block, making sure predecessors are numbered first
@@ -158,13 +133,12 @@ impl Regalloc {
         }
     }
 
+    /// Determines how long each register is alive
     fn build_intervals(&mut self) -> FxHashMap<Reg, (isize, isize)> {
         let mut intervals: FxHashMap<Reg, (isize, isize)> = FxHashMap::default();
 
-        let rev_blocks = vec![4, 2, 3, 1, 0];
-
-        for b in rev_blocks {
-            let block = self.blocks[b].clone();
+        // TODO May want to get reverse blocks here for better regalloc
+        for block in &self.blocks {
 
             for phi in &block.phi_funcs {
                 intervals.insert(phi.o_reg.unwrap(), (phi.id, phi.id));
@@ -202,11 +176,11 @@ impl Regalloc {
         intervals
     }
 
-    fn linear_scan(&mut self, tmp: &mut FxHashMap<Reg, (isize, isize)>) -> FxHashMap<Reg, X86Reg> {
+    /// Simple Linear scan register allocation algorithm
+    fn linear_scan(&mut self, tmp: &mut FxHashMap<Reg, (isize, isize)>) 
+        -> FxHashMap<Reg, Register> {
         let mut intervals: Vec<(Reg, (isize, isize))> = Vec::new();
         let mut count = 0;
-
-        let mut mapping: FxHashMap<Reg, X86Reg> = FxHashMap::default();
 
         // Very hacky way of sorting this, fix it later
         while count <= self.instrs.len() {
@@ -218,8 +192,10 @@ impl Regalloc {
             count += 1;
         }
 
-        let mut free_regs = vec![Rax, Rbx, Rcx, Rdx, Rsi, Rdi, Rbp, R8, R9, R10, R11];
-        let mut active: FxHashMap<X86Reg, (isize, isize)> = FxHashMap::default();
+        let mut mapping: FxHashMap<Reg, Register> = FxHashMap::default();
+        let mut free_regs: Vec<Register> 
+            = vec![RAX, RCX, RDX, RSI, RDI, RBP, R8, R9, R10, R11, R12, R13, R14];
+        let mut active: FxHashMap<Register, (isize, isize)> = FxHashMap::default();
 
         for i in intervals {
             let reg   = i.0;
@@ -232,9 +208,15 @@ impl Regalloc {
                 free_regs.push(*v.0);
             }
 
+            // Hardcode stack pointer to rsp
+            if reg.0 == PReg::Sp {
+                mapping.insert(reg, RSP);
+                continue;
+            }
+
             if free_regs.len() == 0 {
                 // Spill a register to memory
-                mapping.insert(reg, Spill);
+                mapping.insert(reg, None);
             } else {
                 let preg = free_regs.pop().unwrap();
                 active.insert(preg, inter);
@@ -252,55 +234,55 @@ impl Regalloc {
 
             Computing Liveness Sets for SSA-Form Programs - Brandner et al.
     */
-    /// Traverse blocks and determine live_in and live_out registers for each block
-    fn liveness_analysis(&mut self) {
-        for block in &mut self.blocks.clone() {
-            for v in self.phi_uses(block) {
-                self.blocks[block.index].live_out.insert(v);
-                self.up_and_mark(block, v);
-            }
+    ///// Traverse blocks and determine live_in and live_out registers for each block
+    //fn liveness_analysis(&mut self) {
+    //    for block in &mut self.blocks.clone() {
+    //        for v in self.phi_uses(block) {
+    //            self.blocks[block.index].live_out.insert(v);
+    //            self.up_and_mark(block, v);
+    //        }
 
-            for instr in block.instrs(&self.instrs) {
-                instr.i_reg.iter().for_each(|e| { self.up_and_mark(block, *e); });
-            }
-        }
-    }
+    //        for instr in block.instrs(&self.instrs) {
+    //            instr.i_reg.iter().for_each(|e| { self.up_and_mark(block, *e); });
+    //        }
+    //    }
+    //}
 
-    /// Perform the path exploration initialized by liveness_analysis()
-    fn up_and_mark(&mut self, block: &mut Block, v: Reg) -> bool {
-        // Killed in the block
-        if block
-            .instrs(&self.instrs)
-            .iter()
-            .filter_map(|e| e.o_reg)
-            .collect::<BTreeSet<Reg>>()
-            .contains(&v) {
-                return false;
-            }
+    ///// Perform the path exploration initialized by liveness_analysis()
+    //fn up_and_mark(&mut self, block: &mut Block, v: Reg) -> bool {
+    //    // Killed in the block
+    //    if block
+    //        .instrs(&self.instrs)
+    //        .iter()
+    //        .filter_map(|e| e.o_reg)
+    //        .collect::<BTreeSet<Reg>>()
+    //        .contains(&v) {
+    //            return false;
+    //        }
 
-        // Propagation already completed, kill
-        if block.live_in.contains(&v) { return false; }
+    //    // Propagation already completed, kill
+    //    if block.live_in.contains(&v) { return false; }
 
-        // The conditional is dependant on if phi function definitions cound as live-in
-        if !block.phi_funcs
-            .iter()
-            .map(|e| e.o_reg.unwrap())
-            .any(|e| e == v) {
-                self.blocks[block.index].live_in.insert(v);
-            }
+    //    // The conditional is dependant on if phi function definitions cound as live-in
+    //    if !block.phi_funcs
+    //        .iter()
+    //        .map(|e| e.o_reg.unwrap())
+    //        .any(|e| e == v) {
+    //            self.blocks[block.index].live_in.insert(v);
+    //        }
 
-        // Do not propagate phi-definitions
-        if self.phi_defs(block.index).contains(&v) { return false; }
+    //    // Do not propagate phi-definitions
+    //    if self.phi_defs(block.index).contains(&v) { return false; }
 
-        let mut pred_blocks: Vec<Block> = block.pred
-            .iter()
-            .map(|e| self.blocks[*e].clone())
-            .collect();
+    //    let mut pred_blocks: Vec<Block> = block.pred
+    //        .iter()
+    //        .map(|e| self.blocks[*e].clone())
+    //        .collect();
 
-        for pred in &mut pred_blocks {
-            self.blocks[pred.index].live_out.insert(v);
-            if !self.up_and_mark(pred, v) { return false; }
-        }
-        true
-    }
+    //    for pred in &mut pred_blocks {
+    //        self.blocks[pred.index].live_out.insert(v);
+    //        if !self.up_and_mark(pred, v) { return false; }
+    //    }
+    //    true
+    //}
 }
