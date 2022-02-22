@@ -319,5 +319,6 @@ et al
 * Engineerining a compiler Keith D. Cooper & Londa Torczon
 * Computing Liveness Sets for SSA-Form Programs - Brandner et al
 * Linear Scan Register Allocation on SSA Form - Christian Wimmer & Michael Franz
+* http://web.cs.ucla.edu/~palsberg/course/cs132/linearscan.pdf
 * Basic-Block Graphs: Living Dinosaurs? - Jens Knoop et al
 * RISCV User ISA specification

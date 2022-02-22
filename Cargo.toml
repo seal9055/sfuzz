@@ -8,8 +8,10 @@ lto = true
 codegen-units = 1
 panic = 'abort'
 
+# The local_crates libraries can be found at https://github.com/seal9055/local_crates
 [dependencies]
 elfparser = { git = "https://github.com/seal9055/local_crates/", branch = "main" }
+my_libs = { path = "../local_crates/my_libs" }
 rustc-hash = "1.1.0"
 petgraph = "0.6.0"
 num-traits = "0.2.14"

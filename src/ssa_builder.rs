@@ -130,10 +130,6 @@ impl SSABuilder {
         let mut tmp_labels = FxHashMap::default();
         let mut i = 0;
 
-        for instr in &irgraph.instrs {
-            println!("{}", instr);
-        }
-
         // Determine labels locations
         while let Some(instr) = &iterator.next() {
             // Label indicates new block start
@@ -453,7 +449,6 @@ impl SSABuilder {
             // Rename the input registers
             for i in 0..instr.i_reg.len() {
                 if instr.i_reg[i].0 == PReg::Zero { continue; }
-                println!("{}-{:?}: {}, {:?}", i, instr.i_reg[i].0, instr, self.reg_stack[instr.i_reg[i].0 as usize]);
                 instr.i_reg[i] = Reg(instr.i_reg[i].0, *self.reg_stack[instr.i_reg[i].0 as usize].1
                                      .last().unwrap() as u16);
             }

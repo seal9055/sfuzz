@@ -5,6 +5,8 @@ use crate::{
 };
 
 use std::collections::BTreeSet;
+
+use my_libs::sorted_vec::SortedVec;
 use rustc_hash::FxHashMap;
 use iced_x86::Register::*;
 use iced_x86::Register;
@@ -78,8 +80,8 @@ impl Regalloc {
     //}
 
     /// Start register allocation procedure. Involves liveness analysis, lifetime intervals,
-    /// and ...
-    pub fn get_reg_mapping(&mut self) -> FxHashMap<Reg, Register> {
+    /// instruction numbering and a simple linear scan register allocator.
+    pub fn get_reg_mapping(&mut self) -> FxHashMap<Reg, Result<Register, usize>> {
         // Calculate live_in and live_out values for every block
         //self.liveness_analysis();
 
@@ -87,11 +89,6 @@ impl Regalloc {
 
         // Compute liveness intervals for each register
         let mut intervals = self.build_intervals();
-
-        for block in &self.blocks {
-            block.phi_funcs.iter().for_each(|e| { println!("{}: {}", e.id, e); });
-            block.instrs(&self.instrs).iter().for_each(|e| { println!("{}: {}", e.id, e); });
-        }
 
         let reg_mappings = self.linear_scan(&mut intervals);
 
@@ -105,7 +102,7 @@ impl Regalloc {
 
         // Make sure to number all blocks
         for block in self.blocks.clone() {
-            // Given a block that has not yet been numbered, this closure numbers all instructions 
+            // Given a block that has not yet been numbered, this closure numbers all instructions
             // in the block
             let mut num = |b: &Block| {
                 // Already numbered this block
@@ -134,6 +131,11 @@ impl Regalloc {
         }
     }
 
+    /*
+        This algorithm is currently too simple and produces a suboptimal interval graph without
+        holes. In the future I would like to replace this with a more mature algorithm that can
+        better determine lifetime intervals for registers.
+    */
     /// Determines how long each register is alive
     fn build_intervals(&mut self) -> FxHashMap<Reg, (isize, isize)> {
         let mut intervals: FxHashMap<Reg, (isize, isize)> = FxHashMap::default();
@@ -173,15 +175,15 @@ impl Regalloc {
                 }
             }
         }
-
         intervals
     }
 
     /// Simple Linear scan register allocation algorithm
-    fn linear_scan(&mut self, tmp: &mut FxHashMap<Reg, (isize, isize)>) 
-        -> FxHashMap<Reg, Register> {
+    fn linear_scan(&mut self, tmp: &mut FxHashMap<Reg, (isize, isize)>)
+        -> FxHashMap<Reg, Result<Register, usize>> {
         let mut intervals: Vec<(Reg, (isize, isize))> = Vec::new();
         let mut count = 0;
+        let mut stack_offset = 0;
 
         // Very hacky way of sorting this, fix it later
         while count <= self.instrs.len() {
@@ -193,35 +195,53 @@ impl Regalloc {
             count += 1;
         }
 
-        let mut mapping: FxHashMap<Reg, Register> = FxHashMap::default();
-        let mut free_regs: Vec<Register> 
-            = vec![RAX, RBX, RDX, RSI, RDI, R8, R9, R10, R11, R12, R13, R14];
-        let mut active: FxHashMap<Register, (isize, isize)> = FxHashMap::default();
+        let mut mapping: FxHashMap<Reg, Result<Register, usize>> = FxHashMap::default();
 
-        for i in intervals {
-            let reg   = i.0;
-            let inter = i.1;
+        let mut free_regs: Vec<Register>
+            = vec![RAX, RBX, RDX, RDI, RSI, R8, R9, R10, R11, R12, R13, R14];
 
-            /* expire old */
-            for v in active.clone().iter() {
-                if v.1.1 >= inter.0 { continue; }
-                active.remove(&v.0);
-                free_regs.push(*v.0);
+        // List of currently active x86 registers, sorted by the end of their lifetime
+        let mut active: SortedVec<(Register, (isize, isize))> = SortedVec::default();
+
+        for (reg, inter) in intervals {
+            // Expire old intervals to free registers again by removing all registers who's lifetime
+            // end lies above the current interval start from the lifetime list
+            while active.0.len() > 0 && active.0[0].1.1 < inter.0 {
+                let v = active.remove(0);
+                free_regs.push(v.0);
             }
 
             // Hardcode stack pointer to rbp
             if reg.0 == PReg::Sp {
-                mapping.insert(reg, RBP);
+                mapping.insert(reg, Ok(RBP));
                 continue;
             }
 
+            // If we need to spill
             if free_regs.len() == 0 {
-                // Spill a register to memory
-                mapping.insert(reg, None);
+                stack_offset += 8;
+
+                // Spill the register with the farthest use to memory
+                let spill_reg = active.pop().unwrap().0;
+
+                // Update current mapping of spilled register to use a stack offset instead
+                for v in mapping.clone() {
+                    if v.1.is_ok() && v.1.unwrap() == spill_reg {
+                        if let Some(x) = mapping.get_mut(&v.0) {
+                            *x = Err(stack_offset);
+                        }
+                    }
+                }
+
+                // Use the now free'd register for the current register
+                mapping.insert(reg, Ok(spill_reg));
+
+                // Update active to include new range
+                active.insert((spill_reg, inter), inter.1);
             } else {
                 let preg = free_regs.pop().unwrap();
-                active.insert(preg, inter);
-                mapping.insert(reg, preg);
+                active.insert((preg, inter), inter.1);
+                mapping.insert(reg, Ok(preg));
             }
         }
         mapping

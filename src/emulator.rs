@@ -275,6 +275,10 @@ impl Emulator {
                     let mut reg_allocator = Regalloc::new(&ssa);
                     let reg_mapping = reg_allocator.get_reg_mapping();
 
+                    for reg in &reg_mapping {
+                        println!("{:?}", reg);
+                    }
+
                     let labels: Vec<usize> = irgraph.labels.iter().map(|e| *e.0).collect();
                     self.jit.compile(&ssa, &reg_mapping, labels).unwrap()
                 }
