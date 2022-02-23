@@ -61,6 +61,15 @@ During execution, if the vm is left, the emulator determines the next step based
 If the reason was a syscall or a hooked function, a callback function is invoked to handle this
 event. If new code needs to be compiled, the above process just repeats.
 
+#### Riscv toolchain to test the binary
+
+This sets up a toolchain to compile riscv binaries that can be loaded/used by this project.
+```
+git clone https://github.com/riscv-collab/riscv-gnu-toolchain && cd riscv-gnu-toolchain
+./configure --prefix=/opt/riscv --with-arch=rv64i --enable-multilib
+sudo make linux -j 8
+```
+
 #### Memory Management
 
 The memory management unit is responsible for simulating a memory environment. Each spawned
