@@ -247,6 +247,7 @@ impl Regalloc {
         mapping
     }
 
+    // TODO currently disabled, but will become relevant again once I work on improving regalloc
     /*
        Algorithm
             Starting from a register use, traverse the CFG backwards until the registers definition

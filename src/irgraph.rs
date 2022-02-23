@@ -166,8 +166,17 @@ impl fmt::Display for Instruction {
                 }
             },
             Operation::Phi => {
-                write!(f, "{:#08X}  {} = φ({}, {})", self.pc.unwrap_or(0), self.o_reg.unwrap(),
-                       self.i_reg[0], self.i_reg[1])
+                let mut first = true;
+                write!(f, "{:#08X}  {} = φ(", self.pc.unwrap_or(0), self.o_reg.unwrap()).unwrap();
+                for i in &self.i_reg {
+                    if first { 
+                        write!(f, "{}", i).unwrap();
+                        first = false; 
+                    } else {
+                        write!(f, ", {}", i).unwrap();
+                    }
+                }
+                write!(f, ")")
             }
             Operation::Syscall => {
                 write!(f, "{:#08X}  Syscall", self.pc.unwrap_or(0))

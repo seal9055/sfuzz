@@ -252,10 +252,7 @@ impl Emulator {
     /// the loop to reenter the jit.
     pub fn run_jit(&mut self, pointers: &[u64]) -> Option<Fault> {
         loop {
-            let pc     = self.get_reg(Register::Pc);
-            let end_pc = pc + self.functions.get(&pc).unwrap();
-
-            println!("pc is: 0x{:x}", pc);
+            let pc = self.get_reg(Register::Pc);
 
             // Error out if code was unaligned.
             // since Riscv instructions are always 4-byte aligned this is a bug
@@ -263,15 +260,37 @@ impl Emulator {
 
             let jit_addr = match (*self.jit).lookup(pc) {
                 None => {
-
+                    // IR instructions + labels at start of each control block
                     let irgraph = self.lift_func(pc).unwrap();
 
+                    // IR-graph transformed to SSA form
+                    let end_pc = pc + self.functions.get(&pc).unwrap();
                     let mut ssa = SSABuilder::new(&irgraph, end_pc);
                     ssa.build_ssa();
 
-                    ssa.destruct();
-                    ssa.dump_dot();
+                    if pc == 0x10134 {
+                        ssa.dump_dot();
+                    }
 
+                    // SSA form destructed prior to register allocation
+                    ssa.destruct();
+
+                    // Removes all ssa counters from registers. Temporarily leads to codegen 
+                    // improvements until proper optimizations are in place.
+                    //for i in 0..ssa.instrs.len() {
+                    //    for j in 0..ssa.instrs[i].i_reg.len() {
+                    //        ssa.instrs[i].i_reg[j].1 = 0;
+                    //    }
+                    //    if let Some(v) = ssa.instrs[i].o_reg {
+                    //        ssa.instrs[i].o_reg = Some(Reg(v.0, 0));
+                    //    }
+                    //}
+
+                    for instr in &ssa.instrs {
+                        println!("{}", instr);
+                    }
+
+                    // Get mapping from each register to its assigned x86 register
                     let mut reg_allocator = Regalloc::new(&ssa);
                     let reg_mapping = reg_allocator.get_reg_mapping();
 

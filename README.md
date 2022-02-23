@@ -17,7 +17,7 @@ fuzzing.
 - [X] Emulator outline that enables starting threads and intercepting syscalls
 - [X] Lift code into intermediate representation
 - [X] Convert intermediate representation code to ssa form
-- [ ] Register allocation
+- [X] Register allocation
 - [ ] JIT Compile into x86\_64 machine code
 - [ ] Implement a good amount of commonly used syscalls in userland
 - [ ] MMU improvements (dirty bit memory resets, Read-on-Write memory protection, etc)

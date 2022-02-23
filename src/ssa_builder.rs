@@ -144,12 +144,22 @@ impl SSABuilder {
                     edges.push((index as u32, y as u32));
                     edges.push((index as u32, x as u32));
                 }
-                Operation::Jmp(x) => { /* End basic block with a non-returning jmp */
-                    if x < func_end {
+                Operation::Jmp(x) => { 
+                    // if the jmp targets an address within this function, add an edge for it
+                    if x <= func_end {
                         edges.push((index as u32, x as u32));
                     }
                 },
-                _ => { }
+                Operation::Ret => {},
+                _ => { 
+                    if let Some(v) = iterator.peek() {
+                        if let Some(pc) = v.pc {
+                            if irgraph.labels.get(&pc).is_some() {
+                                edges.push((index as u32, pc as u32));
+                            }
+                        }
+                    }
+                },
             }
             i+=1;
         }

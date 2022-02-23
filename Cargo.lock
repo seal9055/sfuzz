@@ -17,7 +17,7 @@ checksum = "14c189c53d098945499cdfa7ecc63567cf3886b3332b312a5b4585d8d3a6a610"
 [[package]]
 name = "elfparser"
 version = "0.1.0"
-source = "git+https://github.com/seal9055/local_crates/?branch=main#3408529f92f84e470b7854dcfd79bba7217f4c5e"
+source = "git+https://github.com/seal9055/local_crates/?branch=main#332d1668dd5365fe771a97ed8eaa3910a7948e73"
 dependencies = [
  "byteorder",
 ]
@@ -69,6 +69,7 @@ checksum = "3e2e65a1a2e43cfcb47a895c4c8b10d1f4a61097f9f254f183aee60cad9c651d"
 [[package]]
 name = "my_libs"
 version = "0.1.0"
+source = "git+https://github.com/seal9055/local_crates/?branch=main#332d1668dd5365fe771a97ed8eaa3910a7948e73"
 dependencies = [
  "byteorder",
 ]

@@ -225,6 +225,12 @@ impl Jit {
         let cur_jit_addr = jit.0.as_ptr() as usize + jit.1;
 
         self.lookup_arr.write().unwrap()[pc] = cur_jit_addr + code.len();
+
+        if pc == 0x10400 {
+            println!("********************************: {:x}", cur_jit_addr);
+            println!("********************************: {:x}", code.len());
+            println!("********************************: {:x}", cur_jit_addr + code.len());
+        }
     }
 
     fn get_reg_offset(&self, reg: RVReg) -> usize {
@@ -239,8 +245,7 @@ impl Jit {
         let mut label_map: FxHashMap<usize, CodeLabel> = FxHashMap::default();
         let mut spilled_regs: Vec<AsmRegister64> = Vec::new();
 
-        let mut pc = ssa.instrs[0].pc.unwrap();
-        let init_pc = pc;
+        let init_pc = ssa.instrs[0].pc.unwrap();
 
         for label in labels {
             label_map.insert(label, asm.create_label());
@@ -353,14 +358,6 @@ impl Jit {
             }
         }
 
-        /*
-           add r1, r2, r2
-
-           what if r2 is spilled
-
-
-        */
-
         /// Write an immediate to a register. Requires special implementation because immediates
         /// cannot be written directly to memory in x86
         macro_rules! write_imm_to_reg {
@@ -393,20 +390,16 @@ impl Jit {
             if instr.pc.is_some() {
                 if let Some(label) = label_map.get(&instr.pc.unwrap()) {
                     let mut tmp = label.clone();
-
-                    // Add a mapping of the previous block to its jit address to the lookup array.
-                    // These mappings are important so that jump targets that can't be precomputed
-                    // by labels eg. `jmp rax`, can make use of the lookup table to find their 
-                    // target.
-                    pc = instr.pc.unwrap();
-                    self.add_lookup(&asm.assemble(0x0).unwrap(), pc);
-
                     asm.set_label(&mut tmp).unwrap();
                 }
             }
 
-            // TODO rbp (pointing to stack) needs to be translated if I want to use it for register 
-            // offsets. Probably set rbp to something else instead.
+            // Add a mapping from riscv-addr to jit-addr for each instruction. Since control-flow
+            // targets cannot be precomputed for operations such as 'jmp reg', this needs to be done
+            // for every single instruction and not just the beginning of predetermined basic blocks
+            if let Some(addr) = instr.pc {
+                self.add_lookup(&asm.assemble(0x0).unwrap(), addr);
+            }
 
             match instr.op {
                 Operation::Loadi(v) => {
@@ -433,38 +426,38 @@ impl Jit {
 
                     let true_label = label_map.get(&t).unwrap();
 
-                    if instr.flags & (Flag::Signed | Flag::Equal)
-                        == Flag::Signed | Flag::Equal {
-                        asm.je(*true_label).unwrap();
-                    } else if instr.flags & (Flag::Signed | Flag::NEqual)
-                        == (Flag::Signed | Flag::NEqual) {
-                        asm.jne(*true_label).unwrap();
-                    } else if instr.flags & (Flag::Signed | Flag::Less)
-                        == (Flag::Signed | Flag::Less) {
-                        asm.jl(*true_label).unwrap();
-                    } else if instr.flags & (Flag::Signed | Flag::Less | Flag::Equal)
-                        == (Flag::Signed | Flag::Less | Flag::Equal) {
-                        asm.jle(*true_label).unwrap();
-                    } else if instr.flags & (Flag::Signed | Flag::Greater)
-                        == (Flag::Signed | Flag::Greater) {
-                        asm.jg(*true_label).unwrap();
-                    } else if instr.flags & (Flag::Signed | Flag::Greater | Flag::Equal)
-                        == (Flag::Signed | Flag::Greater | Flag::Equal) {
-                        asm.jge(*true_label).unwrap();
-                    } else if instr.flags & (Flag::Unsigned | Flag::Less)
-                        == (Flag::Unsigned | Flag::Less) {
-                        asm.jnae(*true_label).unwrap();
-                    } else if instr.flags & (Flag::Unsigned | Flag::Less | Flag::Equal)
-                        == (Flag::Unsigned | Flag::Less | Flag::Equal) {
-                        asm.jbe(*true_label).unwrap();
-                    } else if instr.flags & (Flag::Unsigned | Flag::Greater)
-                        == (Flag::Unsigned | Flag::Greater) {
-                        asm.ja(*true_label).unwrap();
-                    } else if instr.flags & (Flag::Unsigned | Flag::Greater | Flag::Equal)
-                        == (Flag::Unsigned | Flag::Greater | Flag::Equal) {
-                        asm.jae(*true_label).unwrap();
-                    } else {
-                        panic!("Unimplemented conditional branch flags");
+                    match instr.flags {
+                        0b000101 => {   /* Signed | Equal */
+                            asm.je(*true_label).unwrap();
+                        },
+                        0b001001 => {   /* Signed | NEqual */
+                            asm.jne(*true_label).unwrap();
+                        },
+                        0b010001 => {   /* Signed | Less */
+                            asm.jl(*true_label).unwrap();
+                        },
+                        0b100001 => {   /* Signed | Greater */
+                            asm.jg(*true_label).unwrap();
+                        },
+                        0b010101 => {   /* Signed | Less | Equal */
+                            asm.jle(*true_label).unwrap();
+                        },
+                        0b100101 => {   /* Signed | Greater | Equal */
+                            asm.jge(*true_label).unwrap();
+                        },
+                        0b010010 => {   /* Unsigned | Less */
+                            asm.jnae(*true_label).unwrap();
+                        },
+                        0b100010 => {   /* Unsigned | Greater */
+                            asm.ja(*true_label).unwrap();
+                        },
+                        0b010110 => {   /* Unsigned | Less | Equal */
+                            asm.jbe(*true_label).unwrap();
+                        },
+                        0b100110 => {   /* Unsigned | Greater | Equal */
+                            asm.jae(*true_label).unwrap();
+                        },
+                        _ => panic!("Unimplemented conditional branch flags")
                     }
                 },
                 Operation::Store => {
@@ -499,31 +492,31 @@ impl Jit {
                     asm.mov(rcx, ptr(r15+0x8u64)).unwrap();
                     asm.add(r2, rcx).unwrap();
 
-                    if instr.flags & (Flag::Signed | Flag::Byte) 
-                        == Flag::Signed | Flag::Byte {
+                    match instr.flags {
+                        0b0001000001 => {   /* Signed | Byte */
                             asm.movsx(r1, byte_ptr(r2)).unwrap();
-                    } else if instr.flags & (Flag::Signed | Flag::Word) 
-                        == Flag::Signed | Flag::Word {
+                        },
+                        0b0010000001 => {   /* Signed | Word */
                             asm.movsx(r1, word_ptr(r2)).unwrap();
-                    } else if instr.flags & (Flag::Signed | Flag::DWord) 
-                        == Flag::Signed | Flag::DWord {
+                        },
+                        0b0100000001 => {   /* Signed | DWord */
                             asm.movsxd(r1, dword_ptr(r2)).unwrap();
-                    } else if instr.flags & (Flag::Unsigned | Flag::Byte) 
-                        == Flag::Unsigned | Flag::Byte {
+                        },
+                        0b0001000010 => {   /* Unsigned | Byte */
                             asm.movzx(r1, byte_ptr(r2)).unwrap();
-                    } else if instr.flags & (Flag::Unsigned | Flag::Word) 
-                        == Flag::Unsigned | Flag::Word {
+                        },
+                        0b0010000010 => {   /* Unsigned | Word */
                             asm.movzx(r1, word_ptr(r2)).unwrap();
-                    } else if instr.flags & (Flag::Unsigned | Flag::DWord) 
-                        == Flag::Unsigned | Flag::DWord {
+                        },
+                        0b0100000010 => {   /* Unsigned | DWord */
                             let r2: AsmRegister32 = get_src_reg!(instr.i_reg[0], 1, 32).into();
                             asm.movzx(r1, dword_ptr(r2)).unwrap();
-                    } else if instr.flags == Flag::QWord {
+                        },
+                        0b1000000000 => {   /* QWord */
                             asm.mov(r1, qword_ptr(r2)).unwrap();
-                    } else {
-                        panic!("Unimplemented flag for Load operation used");
+                        },
+                        _ => panic!("Unimplemented flag for Load operation used"),
                     }
-
                     verify_save!(instr.o_reg.unwrap(), r1);
                 },
                 Operation::Add => {
@@ -534,10 +527,11 @@ impl Jit {
                             let r3_tmp = get_dst_reg!(instr.o_reg.unwrap());
 
                             asm.add(r1, r2).unwrap();
-                            verify_save!(instr.i_reg[0], r1);
 
                             if instr.i_reg[0] != instr.o_reg.unwrap() {
                                 write_to_dst_32!(r3_tmp, r1);
+                            } else {
+                                verify_save!(instr.i_reg[0], r1);
                             }
                         },
                         Flag::QWord => {
@@ -546,10 +540,11 @@ impl Jit {
                             let r3_tmp = get_dst_reg!(instr.o_reg.unwrap());
 
                             asm.add(r1, r2).unwrap();
-                            verify_save!(instr.i_reg[0], r1);
 
                             if instr.i_reg[0] != instr.o_reg.unwrap() {
                                 write_to_dst_64!(r3_tmp, r1);
+                            } else {
+                                verify_save!(instr.i_reg[0], r1);
                             }
                         },
                         _ => panic!("Unsupported flag provided for Add Instruction")
@@ -563,10 +558,11 @@ impl Jit {
                             let r3_tmp = get_dst_reg!(instr.o_reg.unwrap());
 
                             asm.sub(r1, r2).unwrap();
-                            verify_save!(instr.i_reg[0], r1);
 
                             if instr.i_reg[0] != instr.o_reg.unwrap() {
                                 write_to_dst_32!(r3_tmp, r1);
+                            } else {
+                                verify_save!(instr.i_reg[0], r1);
                             }
                         },
                         Flag::QWord => {
@@ -575,10 +571,11 @@ impl Jit {
                             let r3_tmp = get_dst_reg!(instr.o_reg.unwrap());
 
                             asm.sub(r1, r2).unwrap();
-                            verify_save!(instr.i_reg[0], r1);
 
                             if instr.i_reg[0] != instr.o_reg.unwrap() {
                                 write_to_dst_64!(r3_tmp, r1);
+                            } else {
+                                verify_save!(instr.i_reg[0], r1);
                             }
                         },
                         _ => panic!("Unsupported flag provided for Add Instruction")
@@ -593,10 +590,11 @@ impl Jit {
 
                             asm.mov(ecx, r2).unwrap();
                             asm.shl(r1, cl).unwrap();
-                            verify_save!(instr.i_reg[0], r1);
 
                             if instr.i_reg[0] != instr.o_reg.unwrap() {
                                 write_to_dst_32!(r3_tmp, r1);
+                            } else {
+                                verify_save!(instr.i_reg[0], r1);
                             }
                         },
                         Flag::QWord => {
@@ -606,10 +604,11 @@ impl Jit {
 
                             asm.mov(rcx, r2).unwrap();
                             asm.shl(r1, cl).unwrap();
-                            verify_save!(instr.i_reg[0], r1);
 
                             if instr.i_reg[0] != instr.o_reg.unwrap() {
                                 write_to_dst_64!(r3_tmp, r1);
+                            } else {
+                                verify_save!(instr.i_reg[0], r1);
                             }
                         },
                         _ => panic!("Unsupported flag provided for Sub Instruction")
@@ -621,10 +620,11 @@ impl Jit {
                     let r3_tmp = get_dst_reg!(instr.o_reg.unwrap());
 
                     asm.and(r1, r2).unwrap();
-                    verify_save!(instr.i_reg[0], r1);
 
                     if instr.i_reg[0] != instr.o_reg.unwrap() {
                         write_to_dst_64!(r3_tmp, r1);
+                    } else {
+                        verify_save!(instr.i_reg[0], r1);
                     }
                 },
                 Operation::Xor => {
@@ -633,10 +633,11 @@ impl Jit {
                     let r3_tmp = get_dst_reg!(instr.o_reg.unwrap());
 
                     asm.xor(r1, r2).unwrap();
-                    verify_save!(instr.i_reg[0], r1);
 
                     if instr.i_reg[0] != instr.o_reg.unwrap() {
                         write_to_dst_64!(r3_tmp, r1);
+                    } else {
+                        verify_save!(instr.i_reg[0], r1);
                     }
                 },
                 Operation::Or => {
@@ -645,10 +646,11 @@ impl Jit {
                     let r3_tmp = get_dst_reg!(instr.o_reg.unwrap());
 
                     asm.or(r1, r2).unwrap();
-                    verify_save!(instr.i_reg[0], r1);
 
                     if instr.i_reg[0] != instr.o_reg.unwrap() {
                         write_to_dst_64!(r3_tmp, r1);
+                    } else {
+                        verify_save!(instr.i_reg[0], r1);
                     }
                 },
                 Operation::Jmp(addr) => {
@@ -716,8 +718,10 @@ impl Jit {
                     let r1: AsmRegister64 = get_src_reg!(instr.o_reg.unwrap(), 0, 64).into();
                     let r2: AsmRegister64 = get_src_reg!(instr.i_reg[0], 1, 64).into();
 
-                    asm.mov(r1, r2).unwrap();
-                    verify_save!(instr.o_reg.unwrap(), r1);
+                    if r1 != r2 {
+                        asm.mov(r1, r2).unwrap();
+                        verify_save!(instr.o_reg.unwrap(), r1);
+                    }
                 }
                 _ => { panic!("unimplemented instr: {:?}", instr); }
             }
