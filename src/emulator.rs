@@ -292,7 +292,6 @@ impl Emulator {
     pub fn run_jit(&mut self) -> Option<Fault> {
         loop {
             let pc = self.get_reg(Register::Pc);
-            println!("pc is: {:#X}", pc);
 
             // Error out if code was unaligned.
             // since Riscv instructions are always 4-byte aligned this is a bug
@@ -303,20 +302,11 @@ impl Emulator {
                     // IR instructions + labels at start of each control block
                     let irgraph = self.lift_func(pc).unwrap();
 
-                    println!("irgraph length is: {}", irgraph.instrs.len());
-
-                    for instr in &irgraph.instrs {
-                        println!("{}", instr);
-                    }
-
                     // Compile the previously lifted function
                     self.jit.compile(&irgraph, &self.hooks).unwrap()
                 },
                 Some(addr) => addr
             };
-            println!("################################################");
-            println!("JUMPING TO: {:#0X} : {:#0X}", pc, jit_addr);
-            println!("################################################");
 
             let exit_code:  usize;
             let reentry_pc: usize;
@@ -337,30 +327,36 @@ impl Emulator {
 
             self.set_reg(Register::Pc, reentry_pc);
 
-            println!("JIT LEFT WITH CODE: {} & PC: {:#0X}", exit_code, reentry_pc);
+            if reentry_pc == 0x0000000000010194 {
+                let v = self.state.regs[Register::A0 as usize];
+                println!("A0 is: {:#0X}", v);
+                for i in 0..16 {
+                    println!("Mem is: {:?}", self.memory.memory[v+i as usize]);
+                }
+                panic!("");
+            }
 
             match exit_code {
                 1 => { /* Nothing special, just need to compile next code block */ },
                 2 => { /* SYSCALL */
-                    panic!("syscall hit");
-                    //match self.get_reg(Register::A7) {
-                    //    57 => {
-                    //        syscalls::close(self);
-                    //    },
-                    //    64 => {
-                    //        syscalls::write(self);
-                    //    },
-                    //    80 => {
-                    //        syscalls::fstat(self);
-                    //    },
-                    //    93 => {
-                    //        return syscalls::exit();
-                    //    },
-                    //    214 => {
-                    //        syscalls::brk(self);
-                    //    },
-                    //    _ => { panic!("Unimplemented syscall: {}", self.get_reg(Register::A7)); }
-                    //}
+                    match self.get_reg(Register::A7) {
+                        57 => {
+                            syscalls::close(self);
+                        },
+                        64 => {
+                            syscalls::write(self);
+                        },
+                        80 => {
+                            syscalls::fstat(self);
+                        },
+                        93 => {
+                            return syscalls::exit();
+                        },
+                        214 => {
+                            syscalls::brk(self);
+                        },
+                        _ => { panic!("Unimplemented syscall: {}", self.get_reg(Register::A7)); }
+                    }
                 },
                 3 => { /* Hooked function */
                     if let Some(callback) = self.hooks.get(&reentry_pc) {
@@ -615,7 +611,6 @@ impl Emulator {
         }
     }
 }
-
 
 /*
 #[cfg(test)]

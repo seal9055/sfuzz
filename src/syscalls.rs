@@ -60,6 +60,8 @@ pub fn write(emu: &mut Emulator) -> Option<Fault> {
     let buf   = emu.get_reg(Register::A1);
     let count = emu.get_reg(Register::A2);
 
+    panic!("Write hit");
+
     let file = emu.fd_list.get_mut(fd);
 
     if file.is_none() {

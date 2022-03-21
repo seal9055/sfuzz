@@ -102,10 +102,6 @@ impl Jit {
         let regs_64 = [rbx, rcx];
         let regs_32 = [ebx, ecx];
 
-        println!("################################################");
-        println!("Compiling: 0x{:x}", init_pc);
-        println!("################################################");
-
         /// Returns the destination register for an operation
         macro_rules! get_reg_64 {
             ($reg: expr, $i: expr) => {
@@ -175,11 +171,11 @@ impl Jit {
                 if first {
                     first = false;
                 } else {
-                    //jit_exit1!(4, pc);
+                    jit_exit1!(4, pc);
                 }
 
                 self.add_lookup(&asm.assemble(0x0).unwrap(), pc);
-                println!("0x{:X} -> 0x{:X}", pc, self.lookup(pc).unwrap());
+                //println!("0x{:X} -> 0x{:X}", pc, self.lookup(pc).unwrap());
             }
 
             match instr.op {
@@ -284,7 +280,6 @@ impl Jit {
                     // Insert hook if we attempt to jmp to a hooked function
                     if hooks.get(&addr).is_some() {
                         jit_exit1!(3, addr);
-                        panic!("HOOK HIT");
                     } else {
                         if let Some(jit_addr) = self.lookup(addr) {
                             asm.mov(rbx, jit_addr as u64).unwrap();
@@ -721,6 +716,40 @@ impl Jit {
                         asm.mov(ptr(r14 + reg_in1.get_offset()), r1).unwrap();
                     }
                 },
+                Operation::Slt => {
+                    let reg_out = instr.o_reg.unwrap();
+                    let r1 = get_reg_64!(extract_reg!(instr.i_reg[0]), 1);
+                    let reg_in2 = instr.i_reg[1];
+
+                    asm.push(r15).unwrap();
+                    asm.mov(r15, r1).unwrap();
+
+                    asm.xor(ecx, ecx).unwrap();
+
+                    match reg_in2 {
+                        Val::Reg(v) => {
+                            let tmp = get_reg_64!(v, 0);
+                            asm.cmp(r15, tmp).unwrap();
+                        }
+                        Val::Imm(v) => asm.cmp(r15, v).unwrap(),
+                    }
+
+                    match instr.flags {
+                        Flag::Signed   => asm.setl(cl).unwrap(),
+                        Flag::Unsigned => asm.setb(cl).unwrap(),
+                        _ => unreachable!(),
+                    }
+
+                    if reg_out.is_spilled() {
+                        asm.mov(ptr(r14 + reg_out.get_offset()), rcx).unwrap();
+                    } else {
+                        asm.mov(reg_out.convert_64(), rcx).unwrap();
+                    }
+                    asm.pop(r15).unwrap();
+                },
+                Operation::Syscall => {
+                    jit_exit1!(2, instr.pc.unwrap() + 4);
+                }
                 _ => panic!("unimplemented instr: {:?}", instr),
             }
         }

@@ -17,7 +17,7 @@ checksum = "14c189c53d098945499cdfa7ecc63567cf3886b3332b312a5b4585d8d3a6a610"
 [[package]]
 name = "elfparser"
 version = "0.1.0"
-source = "git+https://github.com/seal9055/local_crates/?branch=main#9cdda9dd238aa97a38038575197ce428c37518b7"
+source = "git+https://github.com/seal9055/local_crates/?branch=main#332d1668dd5365fe771a97ed8eaa3910a7948e73"
 dependencies = [
  "byteorder",
 ]
@@ -61,6 +61,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e2abad23fbc42b3700f2f279844dc832adb2b2eb069b2df918f455c4e18cc646"
 
 [[package]]
+name = "my_libs"
+version = "0.1.0"
+source = "git+https://github.com/seal9055/local_crates/?branch=main#332d1668dd5365fe771a97ed8eaa3910a7948e73"
+dependencies = [
+ "byteorder",
+]
+
+[[package]]
 name = "num-traits"
 version = "0.2.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -91,6 +99,7 @@ version = "0.1.0"
 dependencies = [
  "elfparser",
  "iced-x86",
+ "my_libs",
  "num-traits",
  "petgraph",
  "rustc-hash",
