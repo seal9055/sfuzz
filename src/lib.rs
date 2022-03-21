@@ -1,20 +1,18 @@
-#![feature(map_try_insert)]
-
 pub mod emulator;
 pub mod mmu;
 pub mod riscv;
 pub mod jit;
 pub mod syscalls;
 pub mod irgraph;
-pub mod ssa_builder;
-pub mod regalloc;
 
-#[macro_use] extern crate maplit;
 extern crate iced_x86;
 
 use elfparser::{self, ARCH64, ELFMAGIC, LITTLEENDIAN, TYPEEXEC, RISCV};
 use emulator::{Emulator, Register};
+use my_libs::sorted_vec::*;
+
 use std::process;
+
 use rustc_hash::FxHashMap;
 
 /// Small wrapper to easily handle unrecoverable errors without panicking
@@ -51,6 +49,7 @@ pub fn load_elf_segments(filename: &str, emu_inst: &mut Emulator)
     let target = std::fs::read(filename).ok()?;
     let elf_hdr = elfparser::Header::new(&target)?;
     let mut symbol_map: FxHashMap<String, usize> = FxHashMap::default();
+    let mut function_listing = SortedVec::default();
 
     if let Err(error) = verify_elf_hdr(elf_hdr) {
         error_exit(&format!("Process exited with error: {}", error));
@@ -106,40 +105,48 @@ pub fn load_elf_segments(filename: &str, emu_inst: &mut Emulator)
         let str_size  = (&target[str_start..]).iter().position(|&b| b == 0).unwrap_or(target.len());
         let sym_name = std::str::from_utf8(&target[str_start..str_start + str_size]).unwrap_or("");
 
+        /*
+            // Insert a mapping from the symbol name to its address into a hashmap we are returning
+            symbol_map.insert(sym_name.to_string(), sym_entry.sym_value);
+        */
+
         // If the entry is a function, insert a mapping from the symbol name to its address into a
         // hashmap we are returning
         if sym_entry.sym_info == 0x2 || sym_entry.sym_info == 0x12 {
-            emu_inst.functions.insert(sym_entry.sym_value, sym_entry.sym_size);
             symbol_map.insert(sym_name.to_string(), sym_entry.sym_value);
+            function_listing.insert((sym_entry.sym_value, sym_entry.sym_size), 
+                                    sym_entry.sym_value as isize);
         }
     }
+
+    // Some functions such as `frame_dummy` have a size of 0 listed in their metadata. This causes
+    // issues once I need to use this size to determine the function end, so whenever this happens I
+    // instead determine the function size using the start address of the next function.
+    for i in 0..function_listing.0.len() {
+        let mut v = function_listing.0[i];
+        if v.1 == 0 {
+            v.1 = function_listing.0[i+1].0 - v.0;
+        }
+        emu_inst.functions.insert(v.0, v.1);
+    }
+
     emu_inst.set_reg(Register::Pc, elf_hdr.entry_addr);
     Some(symbol_map)
 }
-
 
 /// Wrapper function for each emulator, takes care of running the emulator, memory resets, etc
 pub fn worker(_thr_id: usize, mut emu: Emulator) {
     let original = emu.clone();
     const BATCH_SIZE: usize = 10;
     let mut count = 0;
+
     loop {
         emu.reset(&original); //= original.fork();
-
-        // Array used to store pointers to addresses in memory that need to be accessed during 
-        // JIT execution
-        // [memory-mapped registers, memory, permissions, lookup_arr]
-        let pointers =  [  
-            emu.state.regs.as_ptr() as u64, 
-            emu.memory.memory.as_ptr() as u64, 
-            emu.memory.permissions.as_ptr() as u64,
-            emu.jit.lookup_arr.read().unwrap().as_ptr() as u64
-        ];
-
-        emu.run_jit(&pointers).unwrap();
+        emu.run_jit().unwrap();
         count +=1;
         if count == BATCH_SIZE {
             count = 0;
-            emu.jit.stats.lock().unwrap().total_cases += BATCH_SIZE; }
+            emu.jit.stats.lock().unwrap().total_cases += BATCH_SIZE; 
+        }
     }
 }

@@ -6,22 +6,18 @@ use crate::{
     syscalls,
     error_exit,
     irgraph::{IRGraph, Flag},
-    ssa_builder::SSABuilder,
-    regalloc::Regalloc,
 };
 
 use std::sync::Arc;
-use std::collections::BTreeMap;
 use std::arch::asm;
-use rustc_hash::FxHashMap;
+use std::collections::BTreeMap;
 
-/// File Descriptors
+use rustc_hash::FxHashMap;
+use iced_x86::code_asm::*;
+
 pub const STDIN:  isize = 0;
 pub const STDOUT: isize = 1;
 pub const STDERR: isize = 2;
-
-/// Number of registers (33 Riscv Regs + 2 temporary regs needed for ir-gen)
-pub const NUMREGS: usize = 35;
 
 /// 33 RISCV Registers + 2 Extra temporary registers that the IR needs
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Ord, PartialOrd)]
@@ -60,14 +56,31 @@ pub enum Register {
     T5,
     T6,
     Pc,
-    Z1, // Z[1-2] are temporary registers used to generate ir instructions
-    Z2,
+    Z1,
+    Z2
+}
+
+impl Register {
+    pub fn is_spilled(&self) -> bool {
+        true
+    }
+
+    pub fn convert_64(&self) -> AsmRegister64 {
+        rax
+    }
+
+    pub fn convert_32(&self) -> AsmRegister32 {
+        eax
+    }
+
+    pub fn get_offset(&self) -> u64 {
+        *self as u64 * 8
+    }
 }
 
 impl From<u32> for Register {
-    /// Convert a number to a Register enum
     fn from(val: u32) -> Self {
-        assert!(val < NUMREGS as u32);
+        assert!(val < 33);
         unsafe {
             core::ptr::read_unaligned(&(val as usize) as *const usize as *const Register)
         }
@@ -76,7 +89,8 @@ impl From<u32> for Register {
 
 /// Various faults that can occur during program execution. These can be syscalls, bugs, or other
 /// non-standard behaviors that require kernel involvement
-#[derive(Clone, Copy, Debug, PartialEq)] pub enum Fault {
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Fault {
     /// Syscall
     Syscall,
 
@@ -104,11 +118,10 @@ impl From<u32> for Register {
     Exit,
 }
 
-/// Describes the current state of the emulator
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct State {
-    pub regs: [usize; 33],
+    regs: [usize; 33],
 }
 
 impl Default for State {
@@ -133,25 +146,26 @@ pub struct Emulator {
     /// important functions such as malloc/free to our own custom implementations
     pub hooks: FxHashMap<usize, fn(&mut Emulator) -> Result<(), Fault>>,
 
-    /// The actual jit compiler backing
-    pub jit: Arc<Jit>,
-
     /// List of file descriptors that the process can use for syscalls
     pub fd_list: Vec<isize>,
 
     /// Mapping between function address and function size
     pub functions: FxHashMap<usize, usize>,
+
+    /// The actual jit compiler backing
+    pub jit: Arc<Jit>,
 }
 
 impl Emulator {
+    /// Create a new emulator that has access to the shared jit backing
     pub fn new(size: usize, jit: Arc<Jit>) -> Self {
         Emulator {
-            memory: Mmu::new(size),
-            state: State::default(),
-            hooks: FxHashMap::default(),
-            jit,
+            memory:  Mmu::new(size),
+            state:   State::default(),
+            hooks:   FxHashMap::default(),
             fd_list: vec![STDIN, STDOUT, STDERR],
             functions: FxHashMap::default(),
+            jit,
         }
     }
 
@@ -159,12 +173,12 @@ impl Emulator {
     #[must_use]
     pub fn fork(&self) -> Self {
         Emulator {
-            memory:     self.memory.fork(),
-            state:      State::default(),
-            hooks:      self.hooks.clone(),
-            jit:        self.jit.clone(),
-            fd_list:    self.fd_list.clone(),
+            memory:  self.memory.fork(),
+            state:   State::default(),
+            hooks:   self.hooks.clone(),
+            fd_list: self.fd_list.clone(),
             functions:  self.functions.clone(),
+            jit:     self.jit.clone(),
         }
     }
 
@@ -179,13 +193,24 @@ impl Emulator {
 
     /// Set a register
     pub fn set_reg(&mut self, reg: Register, val: usize) {
-        assert!((reg as usize) < NUMREGS);
+        assert!((reg as usize) < 33);
         if reg == Register::Zero { panic!("Can't set zero-register"); }
         self.state.regs[reg as usize] = val;
     }
 
+    /*
+    /// Set a register using assembly instructions in the jit
+    pub fn jit_set_reg(&mut self, asm: &mut CodeAssembler, dst: Register, src: AsmRegister64) {
+        let dst_off = self.get_reg_offset(dst);
+        if dst_off != 0 { // Don't do the write if destination is zero-register
+            asm.mov(ptr(r13+dst_off), src).unwrap();
+        }
+    }
+    */
+
     /// Get the value stored in a register
     pub fn get_reg(&self, reg: Register) -> usize {
+        assert!((reg as usize) < 33);
         if reg == Register::Zero { return 0; }
         self.state.regs[reg as usize]
     }
@@ -205,41 +230,55 @@ impl Emulator {
         self.memory.free(addr)
     }
 
-    /// Debug print for registers
+    /// Print out memory mapped registers
     pub fn dump_regs(&self) {
-        println!("zero {:x?}", self.get_reg(Register::Zero));
-        println!("ra   {:x?}", self.get_reg(Register::Ra));
-        println!("sp   {:x?}", self.get_reg(Register::Sp));
-        println!("gp   {:x?}", self.get_reg(Register::Gp));
-        println!("tp   {:x?}", self.get_reg(Register::Tp));
-        println!("t0   {:x?}", self.get_reg(Register::T0));
-        println!("t1   {:x?}", self.get_reg(Register::T1));
-        println!("t2   {:x?}", self.get_reg(Register::T2));
-        println!("s0   {:x?}", self.get_reg(Register::S0));
-        println!("s1   {:x?}", self.get_reg(Register::S1));
-        println!("a0   {:x?}", self.get_reg(Register::A0));
-        println!("a1   {:x?}", self.get_reg(Register::A1));
-        println!("a2   {:x?}", self.get_reg(Register::A2));
-        println!("a3   {:x?}", self.get_reg(Register::A3));
-        println!("a4   {:x?}", self.get_reg(Register::A4));
-        println!("a5   {:x?}", self.get_reg(Register::A5));
-        println!("a6   {:x?}", self.get_reg(Register::A6));
-        println!("a7   {:x?}", self.get_reg(Register::A7));
-        println!("s2   {:x?}", self.get_reg(Register::S2));
-        println!("s3   {:x?}", self.get_reg(Register::S3));
-        println!("s4   {:x?}", self.get_reg(Register::S4));
-        println!("s5   {:x?}", self.get_reg(Register::S5));
-        println!("s6   {:x?}", self.get_reg(Register::S6));
-        println!("s7   {:x?}", self.get_reg(Register::S7));
-        println!("s8   {:x?}", self.get_reg(Register::S8));
-        println!("s9   {:x?}", self.get_reg(Register::S9));
-        println!("s10  {:x?}", self.get_reg(Register::S10));
-        println!("s11  {:x?}", self.get_reg(Register::S11));
-        println!("t3   {:x?}", self.get_reg(Register::T3));
-        println!("t4   {:x?}", self.get_reg(Register::T4));
-        println!("t5   {:x?}", self.get_reg(Register::T5));
-        println!("t6   {:x?}", self.get_reg(Register::T6));
-        println!("pc   {:x?}", self.get_reg(Register::Pc));
+        println!("ZE  {:#018X}  ra  {:#018X}  sp  {:#018X}  gp  {:#018X}", 
+                 self.get_reg(Register::Zero),
+                 self.get_reg(Register::Ra),
+                 self.get_reg(Register::Sp),
+                 self.get_reg(Register::Gp));
+
+        println!("tp  {:#018X}  t0  {:#018X}  t1  {:#018X}  t2  {:#018X}",
+                 self.get_reg(Register::Tp),
+                 self.get_reg(Register::T0),
+                 self.get_reg(Register::T1),
+                 self.get_reg(Register::T2));
+
+        println!("s0  {:#018X}  s1  {:#018X}  a0  {:#018X}  a1  {:#018X}",
+                 self.get_reg(Register::S0),
+                 self.get_reg(Register::S1),
+                 self.get_reg(Register::A0),
+                 self.get_reg(Register::A1));
+
+        println!("a2  {:#018X}  a3  {:#018X}  a4  {:#018X}  a5  {:#018X}",
+                 self.get_reg(Register::A2),
+                 self.get_reg(Register::A3),
+                 self.get_reg(Register::A4),
+                 self.get_reg(Register::A5));
+
+        println!("a6  {:#018X}  a7  {:#018X}  s2  {:#018X}  s3  {:#018X}",
+                 self.get_reg(Register::A6),
+                 self.get_reg(Register::A7),
+                 self.get_reg(Register::S2),
+                 self.get_reg(Register::S3));
+
+        println!("s4  {:#018X}  s5  {:#018X}  s6  {:#018X}  s7  {:#018X}",
+                 self.get_reg(Register::S4),
+                 self.get_reg(Register::S5),
+                 self.get_reg(Register::S6),
+                 self.get_reg(Register::S7));
+
+        println!("s8  {:#018X}  s9  {:#018X}  s10 {:#018X}  s11 {:#018X}",
+                 self.get_reg(Register::S8),
+                 self.get_reg(Register::S9),
+                 self.get_reg(Register::S10),
+                 self.get_reg(Register::S11));
+
+        println!("t3  {:#018X}  t4  {:#018X}  t5  {:#018X}  t6  {:#018X}",
+                 self.get_reg(Register::T3),
+                 self.get_reg(Register::T4),
+                 self.get_reg(Register::T5),
+                 self.get_reg(Register::T6));
     }
 
     /// Runs the jit until exit/crash. It checks if the code at `pc` has already been compiled. If
@@ -250,7 +289,7 @@ impl Emulator {
     /// Once the jit exits it collects the reentry_pc (where to continue execution), and the exit
     /// code. It performs an appropriate operation based on the exit code and then continues with
     /// the loop to reenter the jit.
-    pub fn run_jit(&mut self, pointers: &[u64]) -> Option<Fault> {
+    pub fn run_jit(&mut self) -> Option<Fault> {
         loop {
             let pc = self.get_reg(Register::Pc);
 
@@ -259,49 +298,14 @@ impl Emulator {
             if pc & 3 != 0 { return Some(Fault::ExecFault(pc)); }
 
             let jit_addr = match (*self.jit).lookup(pc) {
-                None => {
+                Option::None => {
                     // IR instructions + labels at start of each control block
                     let irgraph = self.lift_func(pc).unwrap();
 
-                    // IR-graph transformed to SSA form
-                    let end_pc = pc + self.functions.get(&pc).unwrap();
-                    let mut ssa = SSABuilder::new(&irgraph, end_pc);
-                    ssa.build_ssa();
-
-                    if pc == 0x10134 {
-                        ssa.dump_dot();
-                    }
-
-                    // SSA form destructed prior to register allocation
-                    ssa.destruct();
-
-                    // Removes all ssa counters from registers. Temporarily leads to codegen 
-                    // improvements until proper optimizations are in place.
-                    //for i in 0..ssa.instrs.len() {
-                    //    for j in 0..ssa.instrs[i].i_reg.len() {
-                    //        ssa.instrs[i].i_reg[j].1 = 0;
-                    //    }
-                    //    if let Some(v) = ssa.instrs[i].o_reg {
-                    //        ssa.instrs[i].o_reg = Some(Reg(v.0, 0));
-                    //    }
-                    //}
-
-                    for instr in &ssa.instrs {
-                        println!("{}", instr);
-                    }
-
-                    // Get mapping from each register to its assigned x86 register
-                    let mut reg_allocator = Regalloc::new(&ssa);
-                    let reg_mapping = reg_allocator.get_reg_mapping();
-
-                    for reg in &reg_mapping {
-                        println!("{:?}", reg);
-                    }
-
-                    let labels: Vec<usize> = irgraph.labels.iter().map(|e| *e.0).collect();
-                    self.jit.compile(&ssa, &reg_mapping, labels).unwrap()
-                }
-                Some(addr) => { addr }
+                    // Compile the previously lifted function
+                    self.jit.compile(&irgraph, &self.hooks).unwrap()
+                },
+                Some(addr) => addr
             };
 
             let exit_code:  usize;
@@ -315,16 +319,25 @@ impl Emulator {
                 call_dest = in(reg) func,
                 out("rax") exit_code,
                 out("rcx") reentry_pc,
-                out("rdx") _,
-                in("r15") pointers.as_ptr() as u64,
+                in("r13") self.memory.memory.as_ptr() as u64,
+                in("r14") self.state.regs.as_ptr() as u64,
+                in("r15") self.jit.lookup_arr.read().unwrap().as_ptr() as u64,
                 );
             }
 
             self.set_reg(Register::Pc, reentry_pc);
 
+            if reentry_pc == 0x0000000000010194 {
+                let v = self.state.regs[Register::A0 as usize];
+                println!("A0 is: {:#0X}", v);
+                for i in 0..16 {
+                    println!("Mem is: {:?}", self.memory.memory[v+i as usize]);
+                }
+                panic!("");
+            }
+
             match exit_code {
-                1 => { /* Nothing special, just need to compile next code block */
-                },
+                1 => { /* Nothing special, just need to compile next code block */ },
                 2 => { /* SYSCALL */
                     match self.get_reg(Register::A7) {
                         57 => {
@@ -352,9 +365,21 @@ impl Emulator {
                         error_exit("Attempted to hook invalid function");
                     }
                 },
+                4 => { /* Debug function, huge performance cost, only use while debugging */
+                    self.debug_jit(reentry_pc);
+                }
                 _ => panic!("Invalid JIT return code: {:x}", exit_code),
             }
         }
+    }
+
+    fn debug_jit(&mut self, pc: usize) {
+        let opcode: u32 = self.memory.read_at(pc, Perms::READ | Perms::EXECUTE).map_err(|_|
+            Fault::ExecFault(pc)).unwrap();
+        let instr = decode_instr(opcode);
+
+        println!("\n{:#X}  {:?}", pc, instr);
+        self.dump_regs();
     }
 
     /// Returns a BTreeMap of pc value's at which a label should be created
@@ -390,6 +415,8 @@ impl Emulator {
         let start_pc = pc;
         let end_pc   = start_pc + self.functions.get(&pc).unwrap();
 
+        println!("({:#0x} : {:#0x})", start_pc, end_pc);
+
         while pc < end_pc {
             let opcodes: u32 = self.memory.read_at(pc, Perms::READ | Perms::EXECUTE).map_err(|_|
                 Fault::ExecFault(pc)).unwrap();
@@ -424,35 +451,25 @@ impl Emulator {
 
             match *instr {
                 Instr::Lui {rd, imm} => {
-                    irgraph.loadi(rd, imm, Flag::Signed);
+                    irgraph.movi(rd, imm, Flag::Signed);
                 },
                 Instr::Auipc {rd, imm} => {
                     let val = (imm).wrapping_add(pc as i32);
-                    irgraph.loadi(rd, val, Flag::Signed);
+                    irgraph.movi(rd, val, Flag::Signed);
                 },
                 Instr::Jal {rd, imm} => {
-                    let ret_val = pc.wrapping_add(4);
                     let jmp_target = ((pc as i32).wrapping_add(imm)) as usize;
 
-                    // Load return value into newly allocated register
                     if rd != Register::Zero {
-                        irgraph.loadi(rd, ret_val as i32, Flag::Unsigned);
-                        irgraph.call(jmp_target);
-                    } else {
-                        irgraph.jmp(jmp_target);
+                        irgraph.movi(rd, (pc + 4) as i32, Flag::Signed);
                     }
+                    irgraph.jmp(jmp_target);
                 },
                 Instr::Jalr {rd, imm, rs1} => {
                     if rd != Register::Zero {
-                        let ret_val = pc.wrapping_add(4);
-                        let imm_reg = irgraph.loadi(Register::Z1, imm, Flag::Signed);
-                        let jmp_target = irgraph.add(Register::Z2, rs1, imm_reg, Flag::DWord);
-
-                        irgraph.loadi(rd, ret_val as i32, Flag::Unsigned);
-                        irgraph.call_reg(jmp_target)
-                    } else {
-                        irgraph.ret();
+                        irgraph.movi(rd, (pc + 4) as i32, Flag::Signed);
                     }
+                    irgraph.jmp_offset(rs1, imm as usize);
                 },
                 Instr::Beq  { rs1, rs2, imm, mode } |
                 Instr::Bne  { rs1, rs2, imm, mode } |
@@ -498,17 +515,14 @@ impl Emulator {
                 Instr::Lhu {rd, rs1, imm, mode} |
                 Instr::Lwu {rd, rs1, imm, mode} |
                 Instr::Ld  {rd, rs1, imm, mode} => {
-                    let imm_reg  = irgraph.loadi(Register::Z1, imm, Flag::Signed);
-                    let mem_addr = irgraph.add(Register::Z2, rs1, imm_reg, Flag::DWord);
-
                     match mode {
-                        0b000 => irgraph.load(rd, mem_addr, Flag::Byte | Flag::Signed),    // LB
-                        0b001 => irgraph.load(rd, mem_addr, Flag::Word | Flag::Signed),    // LH
-                        0b010 => irgraph.load(rd, mem_addr, Flag::DWord | Flag::Signed),   // LW
-                        0b100 => irgraph.load(rd, mem_addr, Flag::Byte | Flag::Unsigned),  // LBU
-                        0b101 => irgraph.load(rd, mem_addr, Flag::Word | Flag::Unsigned),  // LHU
-                        0b110 => irgraph.load(rd, mem_addr, Flag::DWord | Flag::Unsigned), // LWU
-                        0b011 => irgraph.load(rd, mem_addr, Flag::QWord),                  // LD
+                        0b000 => irgraph.load(rd, rs1, imm, Flag::Byte | Flag::Signed),    // LB
+                        0b001 => irgraph.load(rd, rs1, imm, Flag::Word | Flag::Signed),    // LH
+                        0b010 => irgraph.load(rd, rs1, imm, Flag::DWord | Flag::Signed),   // LW
+                        0b100 => irgraph.load(rd, rs1, imm, Flag::Byte | Flag::Unsigned),  // LBU
+                        0b101 => irgraph.load(rd, rs1, imm, Flag::Word | Flag::Unsigned),  // LHU
+                        0b110 => irgraph.load(rd, rs1, imm, Flag::DWord | Flag::Unsigned), // LWU
+                        0b011 => irgraph.load(rd, rs1, imm, Flag::QWord),                  // LD
                         _ => unreachable!(),
                     };
                 },
@@ -516,14 +530,11 @@ impl Emulator {
                 Instr::Sh  {rs1, rs2, imm, mode} |
                 Instr::Sw  {rs1, rs2, imm, mode} |
                 Instr::Sd  {rs1, rs2, imm, mode} => {
-                    let imm_reg  = irgraph.loadi(Register::Z1, imm, Flag::Signed);
-                    let mem_addr = irgraph.add(Register::Z2, rs1, imm_reg, Flag::DWord);
-
                     match mode {
-                        0b000 => { irgraph.store(rs2, mem_addr, Flag::Byte) },  // SB
-                        0b001 => { irgraph.store(rs2, mem_addr, Flag::Word) },  // SH
-                        0b010 => { irgraph.store(rs2, mem_addr, Flag::DWord) }, // SW
-                        0b011 => { irgraph.store(rs2, mem_addr, Flag::QWord) }, // SD
+                        0b000 => { irgraph.store(rs1, rs2, imm, Flag::Byte) },  // SB
+                        0b001 => { irgraph.store(rs1, rs2, imm, Flag::Word) },  // SH
+                        0b010 => { irgraph.store(rs1, rs2, imm, Flag::DWord) }, // SW
+                        0b011 => { irgraph.store(rs1, rs2, imm, Flag::QWord) }, // SD
                         _ => { unreachable!(); },
                     }
                 },
@@ -540,21 +551,20 @@ impl Emulator {
                 Instr::Slliw {rd, rs1, imm } |
                 Instr::Srliw {rd, rs1, imm } |
                 Instr::Sraiw {rd, rs1, imm } => {
-                    let imm_reg = irgraph.loadi(Register::Z1, imm, Flag::Signed);
                     match instr {
-                        Instr::Addi  { .. } => irgraph.add(rd, rs1, imm_reg, Flag::QWord),
-                        Instr::Slti  { .. } => irgraph.slt(rd, rs1, imm_reg, Flag::Signed),
-                        Instr::Sltiu { .. } => irgraph.slt(rd, rs1, imm_reg, Flag::Unsigned),
-                        Instr::Xori  { .. } => irgraph.xor(rd, rs1, imm_reg),
-                        Instr::Ori   { .. } => irgraph.or(rd, rs1, imm_reg),
-                        Instr::Andi  { .. } => irgraph.and(rd, rs1, imm_reg),
-                        Instr::Slli  { .. } => irgraph.shl(rd, rs1, imm_reg, Flag::QWord),
-                        Instr::Srli  { .. } => irgraph.shr(rd, rs1, imm_reg, Flag::QWord),
-                        Instr::Srai  { .. } => irgraph.sar(rd, rs1, imm_reg, Flag::QWord),
-                        Instr::Addiw { .. } => irgraph.add(rd, rs1, imm_reg, Flag::DWord),
-                        Instr::Slliw { .. } => irgraph.shl(rd, rs1, imm_reg, Flag::DWord),
-                        Instr::Srliw { .. } => irgraph.shr(rd, rs1, imm_reg, Flag::DWord),
-                        Instr::Sraiw { .. } => irgraph.sar(rd, rs1, imm_reg, Flag::DWord),
+                        Instr::Sltiu { .. } => irgraph.slti(rd, rs1, imm, Flag::Unsigned),
+                        Instr::Slti  { .. } => irgraph.slti(rd, rs1, imm, Flag::Signed),
+                        Instr::Addi  { .. } => irgraph.addi(rd, rs1, imm, Flag::QWord),
+                        Instr::Slli  { .. } => irgraph.shli(rd, rs1, imm, Flag::QWord),
+                        Instr::Srli  { .. } => irgraph.shri(rd, rs1, imm, Flag::QWord),
+                        Instr::Srai  { .. } => irgraph.sari(rd, rs1, imm, Flag::QWord),
+                        Instr::Addiw { .. } => irgraph.addi(rd, rs1, imm, Flag::DWord),
+                        Instr::Slliw { .. } => irgraph.shli(rd, rs1, imm, Flag::DWord),
+                        Instr::Srliw { .. } => irgraph.shri(rd, rs1, imm, Flag::DWord),
+                        Instr::Sraiw { .. } => irgraph.sari(rd, rs1, imm, Flag::DWord),
+                        Instr::Xori  { .. } => irgraph.xori(rd, rs1, imm),
+                        Instr::Andi  { .. } => irgraph.andi(rd, rs1, imm),
+                        Instr::Ori   { .. } => irgraph.ori(rd, rs1, imm),
                         _ => unreachable!(),
                     };
                 },
@@ -602,100 +612,24 @@ impl Emulator {
     }
 }
 
+/*
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn branch_test() {
-        let mut instrs: Vec<Instr> = Vec::new();
-        let jit = Arc::new(Jit::new(16 * 1024 * 1024));
-        let mut emu = Emulator::new(64 * 1024 * 1024, jit);
+    fn temporary() {
+        let shared = Arc::new(Shared::new(16 * 1024 * 1024));
+        let mut emu = Emulator::new(1024 * 1024, shared);
 
-        /*0x1000*/ instrs.push(Instr::Lui { rd: Register::A0, imm: 20 });
-        /*0x1004*/ instrs.push(Instr::Lui { rd: Register::A1, imm: 10 });
-        /*0x1008*/ instrs.push(Instr::Beq { rs1: Register::A0, rs2: Register::A1,
-            imm: 0x20, mode: 0});
+        let addr = emu.allocate(0x40, Perms::READ | Perms::WRITE | Perms::EXECUTE).unwrap();
+        emu.set_reg(Register::Pc, addr);
 
-        //b1
-        /*0x100c*/ instrs.push(Instr::Add { rd: Register::A2, rs1: Register::A0,
-            rs2: Register::A1 });
-        /*0x1010*/ instrs.push(Instr::Lui { rd: Register::A3, imm: 1 });
-        /*0x1014*/ instrs.push(Instr::Jal { rd: Register::Zero, imm: 0x4 }); //goto b2
+        let data = std::fs::read("tests/output").unwrap();
+        emu.memory.write_mem(addr, &data, data.len()).unwrap();
 
-        //b2
-        /*0x1018*/ instrs.push(Instr::Addi { rd: Register::A4, rs1: Register::A2, imm: 5});
-        /*0x101c*/ instrs.push(Instr::Addi { rd: Register::A5, rs1: Register::A4, imm: 1});
-        /*0x1020*/ instrs.push(Instr::Addi { rd: Register::A6, rs1: Register::A3, imm: 0 });
-        /*0x1024*/ instrs.push(Instr::Jal { rd: Register::Zero, imm: 0x10 }); //goto end
-
-        //b3
-        /*0x1028*/ instrs.push(Instr::Sub { rd: Register::A2, rs1: Register::A0,
-            rs2: Register::A1 });
-        /*0x102c*/ instrs.push(Instr::Lui { rd: Register::A3, imm: 2 });
-        /*0x1030*/ instrs.push(Instr::Jal { rd: Register::Zero, imm: -0x18 }); //goto b2
-
-        /*0x1034*/ instrs.push(Instr::Lui { rd: Register::Zero, imm: 0 });
-        /*0x101c*/ instrs.push(Instr::Jalr { rd: Register::Zero, imm: 0, rs1: Register::A0 });
-
-        // end
-
-
-        let mut keys: Vec<usize> = emu.extract_labels(0x1000, &instrs).keys().cloned().collect();
-        keys.insert(0, 0x1000);
-
-        let mut irgraph = IRGraph::default();
-        emu.lift(&mut irgraph, &instrs, &mut keys, 0x1000);
-
-        let mut ssa = SSABuilder::new(&irgraph);
-        ssa.build_ssa();
-
-        ssa.destruct();
-        ssa.dump_dot();
-
-        let mut reg_allocator = Regalloc::new(&ssa);
-        let reg_mapping = reg_allocator.get_reg_mapping();
-
-        let labels: Vec<usize> = irgraph.labels.iter().map(|e| *e.0).collect();
-        emu.jit.compile(&ssa, &reg_mapping, labels);
-
-        emu.set_reg(Register::Pc, 0x1000);
+        println!("size: {}", data.len());
         emu.run_jit();
     }
-
-    #[test]
-    fn loop_test() {
-        let mut instrs: Vec<Instr> = Vec::new();
-        let jit = Arc::new(Jit::new(16 * 1024 * 1024));
-        let mut emu = Emulator::new(64 * 1024 * 1024, jit);
-
-        // .b1
-        /*0x1000*/ instrs.push(Instr::Lui { rd: Register::A0, imm: 0x3 });
-        /*0x1004*/ instrs.push(Instr::Lui { rd: Register::A1, imm: 0x0 });
-        /*0x1008*/ instrs.push(Instr::Lui { rd: Register::A2, imm: 0x9 });
-        /*0x100c*/ instrs.push(Instr::Jal { rd: Register::Zero, imm: 0xc }); // jmp .b3
-
-        // .b2
-        /*0x1010*/ instrs.push(Instr::Addi { rd: Register::A0, rs1: Register::A0, imm: 0x3 });
-        /*0x1014*/ instrs.push(Instr::Addi { rd: Register::A1, rs1: Register::A0, imm: 0x1 });
-
-        // .b3
-        /*0x1018*/ instrs.push(Instr::Bne { rs1: Register::A1, rs2: Register::A2,  // branch to .b2
-            imm: -0x8, mode: 1});
-
-        // .end
-        /*0x101c*/ instrs.push(Instr::Jalr { rd: Register::Zero, imm: 0, rs1: Register::A0 });
-
-        let mut keys: Vec<usize> = emu.extract_labels(0x1000, &instrs).keys().cloned().collect();
-        keys.insert(0, 0x1000);
-
-        let mut irgraph = IRGraph::default();
-        emu.lift(&mut irgraph, &instrs, &mut keys, 0x1000);
-
-        println!("GRAPH: {:?}", irgraph);
-
-        let mut ssa_builder = SSABuilder::new(&irgraph);
-        ssa_builder.build_ssa();
-        ssa_builder.dump_dot();
-    }
 }
+*/
