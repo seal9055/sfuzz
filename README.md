@@ -16,8 +16,6 @@ fuzzing.
 - [X] Basic memory management unit layout
 - [X] Emulator outline that enables starting threads and intercepting syscalls
 - [X] Lift code into intermediate representation
-- [X] Convert intermediate representation code to ssa form
-- [X] Register allocation
 - [ ] JIT Compile into x86\_64 machine code
 - [ ] Implement a good amount of commonly used syscalls in userland
 - [ ] MMU improvements (dirty bit memory resets, Read-on-Write memory protection, etc)
@@ -51,23 +49,86 @@ generation phase. This phase locks the JIT backing mutex until the code is compi
 all other threads.
 
 The code generation procedure lifts all RISCV instructions into an intermediate
-representation. This representation is converted to single static assignment form to accomodate
-potential future optimizations. Finally x86\_64 register allocation is done and the code
-is compiled into the JIT backing. Since this is a JIT compiler, the code generation needs to add
-instructions that leave the vm on certain conditions. These include jumps to non-compiled code,
-syscalls, hooked functions or various errors.
+representation that is means to be architecture agnostic, thus allowing the fuzzer to be extended
+with other architectures by implementing a new frontend. This intermediate representation is then
+passed on to the jit backend which takes care of compiling the code into X86\_64 machine code,
+copies it over into the jit backing buffer and populates the riscv -> X86 lookup table with the
+newly compiled addressed.
 
-During execution, if the vm is left, the emulator determines the next step based on the exit code.
+Since this is a JIT compiler that only compiled one function at a time, we need to have the ability
+to exit the JIT during execution. Some possible reasons are that a function is hit that has not yet 
+been compiled, various errors such as out of bound reads/writes, syscalls or hooked functions.
+During execution in the JIT, rsp is never modified, so the JIT can be entered and exited with code
+shown below.
+
+First the JIT address is determined via either the lookup table or by first compiling the function. 
+This address is then passed to the unsafe block that uses inlined assembly to invoke the JIT. The
+memory region allocated for the emulator, alongside memory mapped registers and the JIT lookup table
+are loaded into registers so the JIT can make use of them. In the JIT itself, it makes use of these
+passed in pointers to access memory or lookup addresses in the lookup table. If it has to leave the
+JIT for one of the previously mentioned reasons, it sets an exit code, the address it wants to
+reenter on and returns back to the emulator.
+
+
+```rs
+// Determine if the given address has already been compiled. If so, just return the JIT address, if
+// not, lift the code into the intermediate representation and compile it.
+let jit_addr = match (*self.jit).lookup(pc) {
+    Option::None => {
+        // IR instructions + labels at start of each control block
+        let irgraph = self.lift_func(pc).unwrap();
+
+        // Compile the previously lifted function
+        self.jit.compile(&irgraph, &self.hooks).unwrap()
+    },
+    Some(addr) => addr
+};
+
+// Enter the JIT
+unsafe {
+    let func = *(&jit_addr as *const usize as *const fn());
+
+    asm!(r#"
+        call {call_dest}
+    "#,
+    call_dest = in(reg) func,
+    out("rax") exit_code,
+    out("rcx") reentry_pc,
+    in("r13") self.memory.memory.as_ptr() as u64,
+    in("r14") self.state.regs.as_ptr() as u64,
+    in("r15") self.jit.lookup_arr.read().unwrap().as_ptr() as u64,
+    );
+}
+
+// Exit the JIT
+mov rax, <exit_code>
+mov rcx, <addr>
+ret
+```
+
+During execution, once the vm is left, the emulator determines the next step based on the exit code.
 If the reason was a syscall or a hooked function, a callback function is invoked to handle this
-event. If new code needs to be compiled, the above process just repeats.
+event. If new code needs to be compiled, the above process just repeats. The current codes are:
+
+```
+1: Code found that has not yet been compiled -> compile it and reenter JIT
+2: Syscall encountered -> Check syscall number and invoke according function before reentering JIT
+    Currently implemented syscalls: close, write, fstat, exit, brk
+3: A hooked function has been encountered -> Invoke call back and reenter JIT
+    Currently implemented hooks: malloc, free
+4: Debug print -> Print out current state of all registers and reenter JIT
+```
 
 #### Riscv toolchain to test the binary
 
 This sets up a toolchain to compile riscv binaries that can be loaded/used by this project.
 ```
-git clone https://github.com/riscv-collab/riscv-gnu-toolchain && cd riscv-gnu-toolchain
-./configure --prefix=/opt/riscv --with-arch=rv64i --enable-multilib
-sudo make linux -j 8
+Riscv compiler/tooling:
+    git clone https://github.com/riscv-collab/riscv-gnu-toolchain && cd riscv-gnu-toolchain
+    ./configure --prefix=/opt/riscv --with-arch=rv64i --enable-multilib
+    sudo make linux -j 8
+Debugger:
+    gdb-multiarch
 ```
 
 #### Memory Management
@@ -89,7 +150,7 @@ ready to start fuzzing.
 
 #### Code Generation
 
-This emulator makes use of a custom just in time compiler for all of its execution. The code
+This emulator makes use of a custom just-in-time compiler for all of its execution. The code
 generation is a multi-step process that will hopefully lead to a 20-50x performance increase over
 pure emulation once simple optimizations are applied.
 
@@ -99,42 +160,45 @@ JIT code backend and attempts to compile the entire function into the JIT backen
 execution. While this mutex does have performance costs due to stopping all other threads,
 it allows
 us to have one memory region of code that all threads can make use off, thus only having to compile
-each function once which ultimately leads to both memory and performance increases. Once the
-compilation is completed, the muted is unlocked and the address of the newly generated code is
-returned to the calling emulator which can then resume execution.<br><br>
+each function once which ultimately leads to both memory and performance improvements. Once the
+compilation is completed, the mutex is unlocked and the address of the newly generated code is
+returned to the calling emulator which can then resume execution. At this point all other threads
+can also access this newly compiled code via the translation table.<br><br>
 
 `1. Lift the function to the intermediate representation` (Completed)
 
 The first step of actual code generation is to lift the entire function into an intermediate
-representation. The size of the function is determined during the initial target setupin main by
-parsing the elf header and setting up a hashmap mapping function start addresses to their
-sizes. This process basically just iterates through all original instructions and creates an IR
+representation. The size of the function is determined during the initialization phase when first
+loading the target. This is done by parsing the elf metadata and setting up a hashmap mapping
+function start addresses to their sizes. <br><br>
+
+This process basically just iterates through all original instructions and creates an IR
 instruction based on the original instruction using large switch statement. The below example
 imitates how the intermediate representation may look like for a very minimal function that
 pretty much just performs a branch based on a comparison in the first block.
 ```
 Label @ 0x1000
-0x001000  A0(0) = 0x14
-0x001004  A1(0) = 0xA
-0x001008  if A0(0) == A1(0) (0x100C, 0x1028)
+0x001000  A0 = 0x14
+0x001004  A1 = 0xA
+0x001008  if A0 == A1 (0x100C, 0x1028)
 
 Label @ 0x100C
-0x00100C  A2(0) = A0(0) + A1(0)
-0x001010  A3(0) = 0x1
+0x00100C  A2 = A0 + A1
+0x001010  A3 = 0x1
 0x001014  Jmp 0x1018
 
 Label @ 0x1018
-0x001018  Z1(0) = 0x5
-0x000000  A4(0) = A2(0) + Z1(0)
-0x00101C  Z1(0) = 0x1
-0x000000  A5(0) = A4(0) + Z1(0)
-0x001020  Z1(0) = 0x0
-0x000000  A6(0) = A3(0) + Z1(0)
+0x001018  Z1 = 0x5
+0x000000  A4 = A2 + Z1
+0x00101C  Z1 = 0x1
+0x000000  A5 = A4 + Z1
+0x001020  Z1 = 0x0
+0x000000  A6 = A3 + Z1
 0x001024  Jmp 0x1034
 
 Label @ 0x1028
-0x001028  A2(0) = A0(0) - A1(0)
-0x00102C  A3(0) = 0x2
+0x001028  A2 = A0 - A1
+0x00102C  A3 = 0x2
 0x001030  Jmp 0x1018
 
 Label @ 0x1034
@@ -151,9 +215,74 @@ instruction and thus only the first IR instruction corresponding to a RISCV inst
 an address. Also note how the register names still represent the original RISCV registers
 (apart from Z1/Z2 which are temporary registers used by the IR). This is important to correctly map
 special registers such as the Zero register or distinguish between callee-saved/caller-saves
-registers later. Finally all registers have a '(0)' appended to them. This does not yet serve a
-purpose, but will be necessary to hold additional information during the next step.
+registers later. 
 <br><br>
+
+At this point I attempted a couple of different approaches before settling on the current code
+generation procedure. My first approach was to first transform the above IR code into single static
+assignment form. This allows for stronger optimizations and is a very populat choice for modern 
+compilers. Next I used a linear scan register allocator to assign registers to the code and compile 
+the final code.
+
+This approach led to multiple issues that led to me eventually abandoning it in favor of the current
+implementation. Some of the reasons are listed below.
+
+1. **Debugging** - Since this is meant to be a fuzzer, being able to properly debug crashes, or at
+   least print out register states is important. After doing register allocation, determining which
+   X86 register is allocated for each RISCV register at runtime to print out useful information is
+   very difficult.
+
+2. **Extendability** - When it comes to register allocation, a lot of the backend features (eg.
+   A0-A7 for arguments, or syscall number in A7) are architecture dependent. This makes it a lot
+   harder to write the backend in a way that can be extended with new architectures by just adding a
+   front end.
+
+3. **Performance** - In theory the ssa/regalloc approach can lead to better final code. In this case
+   however, since its a binary translator, a lot of registers such as function arguments or stack
+   pointers had to be hardcoded to x86 registers since we don't have information such as number of
+   arguments when translating binary -> binary. This in addition with the meta-data required by the
+   JIT (pointer to memory, permissions, JIT lookup table and register spill-stack) led to most X86
+   registers being in use, leaving only 4 X86 registers available for the actual register allocation
+   in my approach. This could obviously be greatly improved upon, but this would require a lot more
+   time to achieve comparable results.
+
+
+4. **Complexity** - This approach added a lot of extra complexity to the project which caused major
+   issues for project with a relatively short timeframe.
+
+The implementation details for this approach are listed in `Appendix A`, and the code for this
+approach can be viewed at commit `7d129ab847d171b66901f4c936dd2ad5c5a1b79a` on the github
+repository.
+
+`2. Compiling to x86 machine code` (In Progress)
+
+This phase pretty much just loops through all the previously lifted IR instructions and compiles
+them to X86 code. Whenever a syscall or a hooked function is encountered, appropriate instructions
+are generated to leave the JIT and handle the procedure. Currently all registers are still memory
+mapped, however in the future I plan on hardcoding the most popular riscv registers to X86 registers
+as demonstrated in the rv8 paper. The 10 most used registers make up 80% of all riscv register
+usages, so this should lead to a great performance increase.
+
+In the current state a simple add instruction would compile to the following. This is still far from
+optimal, but the previously mentioned improvement should greatly improve this for common registers.
+
+`r3 = r1 + r2`
+```asm
+mov rbx, [r14 + r1_offset]
+mov rcx, [r14 + r2_offset]
+add rbx, rcx
+mov [r14 + r3_offset], rbx
+```
+
+Other improvements such as byte level permissions checks and dirty bit checks will be added soon as
+well, however I am currently still working on correctly implementing the base JIT.
+<br><br>
+
+**Current State**: JIT compiler successfuly prints out "Hello World" when invoked with a simple
+hello world binary as the target, but crashes right afterwards. This indicates that it is mostly
+correct, but still has some small bugs that need to be fixed.
+
+#### Apendix A
 
 `2. Generate single-static-assignment form for the IR` (Completed)
 
@@ -265,7 +394,7 @@ In the current state of the compiler, ssa representation does not yet serve much
 (although it can lead to better register allocation) since no optimizations have been written. This
 form does however allow for powerful optimizations to be added in the future.<br><br>
 
-`3. Potential Optimizations` (Not yet started)
+`3. Potential Optimizations`
 
 Modern compiler backends employ many different optimizations to produce the best code possible. In
 this case, due to limited time I will stick to very simple optimizations that are fairly
@@ -273,52 +402,67 @@ straightforward to implement while providing decent performance benefits such as
 instructions that attempt to write to the Zero register (basically a nop), or some basic constant
 propagation to eliminate all temporary instructions that my IR added.<br><br>
 
-`4. Register Allocation` (In progress)
+`4. Register Allocation`
 
-The goal of this phase is to replace the previously set ssa instructions with standard x86\_64
-registers. The main difficulty of this process is to correctly determine efficient register
+The goal of this phase is to replace the previously set ssa instruction operands with standard 
+X86\_64 registers. The main difficulty of this process is to correctly determine efficient register
 allocation strategies that result in the least amount of registers being spilled to memory. This
 phase is still very early in development, and I am not entirely sure how I want to implement
 it yet.
 
-* Computing liveness sets
-This is the first part of register allocation, and is pretty much finished at this point. The goal
-here is to determine which sets of registers are alive at the beginning of a block, and which
-registers will remain alive coming out of a block. "Alive" in this context referring to a register
-still being in use. To accomplish this I implemented Algorithms 4 & 5 from [Computing Liveness
-Sets for SSA-Form Programs](https://hal.inria.fr/inria-00558509v2/document) by Brandner et al. This
-algorithm starts at the uses of each register, and starts traversing the blocks backwards, filling
-in each block's live-in and live-out sets as appropriate until the registers declaration is found.
-Below you can once again see the results of this phase applied on the previously generated SSA-Code
+* Instruction Numbering
+
+The first step is to number the instructions. This assigns a unique id to each instruction. The main
+thing to consider here is that instructions need to be ordered in order of execution. This means
+that every instruction A that is executed before instruction B needs to have a lower id. This can be
+accomplished using the previously generated dominator tree's. 
+
+* Register Live Intervals
+
+The goal of this phase is to determine how long each register is alive. For each used register it
+computed an interval from the point that the register is first defined to its last usage according
+to the previously marked id numbers during the instruction numbering phase.
+
+* Linear Scan Register Allocation
+
+This algorithm is pretty much the simplest way to do register allocation across block boundaries.
+Nevertheless it is the most popularly used register allocation algorithm in JIT compilers since it 
+results in low compile time which is an important metric for JIT compilers. Additionally it only
+produces slightly worse code than much slower algorithms such as graph coloring approaches.
+
+The pseudo-code for this register allocation approach is listed below. We loop through all
+previously determined register liveness intervals and allocate an X86 register as long as there are
+free registers are available. If there is no free register available, the last used register is
+spilled to memory to obtain a free register. 
+
+```rs
+for (reg, interval) in live_intervals { // in order of increasing starting point
+    // Start by expiring old intervals by removing all no longer in use registers from the active
+    // mapping and adding it to the free registers instead.
+    expire_old_intervals(); 
+
+    if free_regs.is_empty() {
+    // Need to spill register to memory if there are no more free registers available
+        // Spill the register with the farthest use
+        spill_reg = active.pop();
+
+        // Use the now free'd register for the current register
+        mapping.insert(reg, spill_reg);
+
+        // Insert new range to active range
+        active.insert(spill_reg, inter);
+    } else {
+    // Free register available, so just add it to the mapping
+        preg = free_regs.pop();
+        active.insert(preg, inter);
+        mapping.insert(reg, preg);
+    }
+    return mapping;
+}
 ```
-Block 0:
-live_in:  {}
-live_out: {Reg(A0, 1), Reg(A1, 1)}
-
-Block 1:
-live_in:  {Reg(A0, 1), Reg(A1, 1)}
-live_out: {Reg(A2, 1), Reg(A3, 1)}
-
-Block 2:
-live_in:  {Reg(A2, 2), Reg(A3, 2)}
-live_out: {}
-
-Block 3:
-live_in:  {Reg(A0, 1), Reg(A1, 1)}
-live_out: {Reg(A2, 3), Reg(A3, 3)}
-```
-<p style="text-align:center;"<i>F5</i></p>
-
-* For the next part I am thinking of using parts from: [Linear Scan Register Allocation on SSA
-Form](http://citeseerx.ist.psu.edu/viewdoc/download;jsessionid=018086FDA4BF35452D6324C96C3EC9D1?doi=10.1.1.162.2590&rep=rep1&type=pdf),
-to implement a linear scan register allocator, however, I am still uncertain.
-
-
-<br><br>
-`5. Compiling to x86 machine code` (Not yet started)
-<br><br>
 
 #### References
+ 
 * Emulation based fuzzing - Brandon Falk
 * Cranelift [https://cfallin.org/blog/] - Chris Fallin
 * Rv8: a high performance RISC-V to x86 binary translator - Michael Clark & Bruce Hoult

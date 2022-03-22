@@ -40,9 +40,8 @@ impl fmt::Display for Val {
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum Operation {
     Undefined,
-    MovI(i32),
     Jmp(usize),
-    JmpOff(usize),
+    JmpOff(i32),
     Branch(usize, usize),
     Syscall,
     Store,
@@ -104,10 +103,6 @@ impl Instruction {
 impl fmt::Display for Instruction {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self.op {
-            Operation::MovI(x) => {
-                write!(f, "{:#08X}  {:?} = {:#0X}",
-                       self.pc.unwrap_or(0), self.o_reg.unwrap(), ReallySigned(x as i32))
-            },
             Operation::Jmp(x) => {
                 write!(f, "{:#08X}  Jmp {:#0x?}", self.pc.unwrap_or(0), x)
             },
@@ -239,7 +234,7 @@ impl IRGraph {
         self.labels.insert(pc, self.instrs.len());
     }
 
-    /// r1 = #imm
+    /// r1 = imm
     pub fn movi(&mut self, r1: PReg, imm: i32, flag: u16) -> PReg {
         self.instrs.push( Instruction {
             op: Operation::Mov,
@@ -278,7 +273,7 @@ impl IRGraph {
     }
 
     /// Jmp (r1 + addr)
-    pub fn jmp_offset(&mut self, r1: PReg, addr: usize) {
+    pub fn jmp_offset(&mut self, r1: PReg, addr: i32) {
         self.instrs.push( Instruction {
             op: Operation::JmpOff(addr),
             i_reg: vec![Reg(r1)],

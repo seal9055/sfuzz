@@ -102,10 +102,6 @@ impl Jit {
         let regs_64 = [rbx, rcx];
         let regs_32 = [ebx, ecx];
 
-        //println!("Compiling {:#0X}", init_pc);
-
-        //TODO early return
-
         /// Returns the destination register for an operation
         macro_rules! get_reg_64 {
             ($reg: expr, $i: expr) => {
@@ -168,15 +164,9 @@ impl Jit {
             }
         }
 
-        // Insert hook for addresses we want to hook with our own function and return
-        if hooks.get(&init_pc).is_some() {
-            jit_exit1!(3, init_pc);
-            return Some(self.add_jitblock(&asm.assemble(0x0).unwrap(), init_pc));
-        }
-
         let mut first = true;
-        for instr in &irgraph.instrs {
 
+        for instr in &irgraph.instrs {
             if let Some(pc) = instr.pc {
                 if first {
                     first = false;
@@ -188,11 +178,31 @@ impl Jit {
             }
 
             match instr.op {
+                Operation::MovI(v) => {
+                    let r1 = instr.o_reg.unwrap();
+                    let reg = get_reg_64!(r1, 0);
+
+                    // sign/zero extend immediate
+                    let extended = match instr.flags {
+                        Flag::Signed => {
+                            v as i64 as u64
+                        },
+                        Flag::Unsigned => {
+                            v as u64
+                        }
+                        _ => unreachable!(),
+                    };
+                    asm.mov(reg, extended as u64).unwrap();
+
+                    if r1.is_spilled() {
+                        asm.mov(ptr(r14 + r1.get_offset()), reg).unwrap();
+                    }
+                },
                 Operation::Mov => {
                     let reg_out = instr.o_reg.unwrap();
                     let reg_in  = instr.i_reg[0];
 
-                    let preg_out = get_reg_64!(reg_out, 0); // rbx
+                    let preg_out = get_reg_64!(reg_out, 0);
 
                     match reg_in {
                         Val::Reg(v) => {
@@ -201,11 +211,16 @@ impl Jit {
                         },
                         Val::Imm(v) => {
                             // sign/zero extend immediate
-                            match instr.flags {
-                                Flag::Signed   => asm.mov(preg_out, v as i64).unwrap(),
-                                Flag::Unsigned => asm.mov(preg_out, v as u64).unwrap(),
+                            let extended = match instr.flags {
+                                Flag::Signed => {
+                                    v as i64 as u64
+                                },
+                                Flag::Unsigned => {
+                                    v as u64
+                                }
                                 _ => unreachable!(),
                             };
+                            asm.mov(preg_out, extended).unwrap();
                         }
                     }
 
@@ -214,13 +229,11 @@ impl Jit {
                     }
                 },
                 Operation::Branch(t, _f) => {
-                    let r1 = extract_reg!(instr.i_reg[0]);
-                    let r2 = extract_reg!(instr.i_reg[1]);
+                    let r1 = get_reg_64!(extract_reg!(instr.i_reg[0]), 0);
+                    let r2 = get_reg_64!(extract_reg!(instr.i_reg[1]), 1);
                     let mut fallthrough = asm.create_label();
 
-                    asm.mov(rax, ptr(r14 + r1.get_offset())).unwrap();
-                    asm.mov(rbx, ptr(r14 + r2.get_offset())).unwrap();
-                    asm.cmp(rax, rbx).unwrap();
+                    asm.cmp(r1, r2).unwrap();
 
                     match instr.flags {
                         0b000101 => {   /* Signed | Equal */
@@ -242,8 +255,7 @@ impl Jit {
                             asm.jnge(fallthrough).unwrap();
                         },
                         0b010010 => {   /* Unsigned | Less */
-                            //asm.jae(fallthrough).unwrap();
-                            asm.jnb(fallthrough).unwrap();
+                            asm.jae(fallthrough).unwrap();
                         },
                         0b100010 => {   /* Unsigned | Greater */
                             asm.jna(fallthrough).unwrap();
@@ -257,27 +269,30 @@ impl Jit {
                         _ => panic!("Unimplemented conditional branch flags")
                     }
 
-                    let shifted = t * 2;
-                    asm.mov(rbx, ptr(r15 + shifted)).unwrap();
+                    asm.mov(rbx, ptr(r15 + (t * 2))).unwrap();
                     asm.jmp(rbx).unwrap();
 
                     asm.set_label(&mut fallthrough).unwrap();
                     asm.nop().unwrap();
                 },
                 Operation::Jmp(addr) => {
-                    if let Some(jit_addr) = self.lookup(addr) {
-                        asm.mov(rbx, jit_addr as u64).unwrap();
-                        asm.jmp(rbx).unwrap();
+                    // Insert hook if we attempt to jmp to a hooked function
+                    if hooks.get(&addr).is_some() {
+                        jit_exit1!(3, addr);
                     } else {
-                        let mut jit_exit = asm.create_label();
-                        let shifted = addr * 2;
-                        asm.mov(rbx, ptr(r15 + shifted)).unwrap();
-                        asm.test(rbx, rbx).unwrap();
-                        asm.jz(jit_exit).unwrap();
-                        asm.jmp(rbx).unwrap();
+                        if let Some(jit_addr) = self.lookup(addr) {
+                            asm.mov(rbx, jit_addr as u64).unwrap();
+                            asm.jmp(rbx).unwrap();
+                        } else {
+                            let mut jit_exit = asm.create_label();
+                            asm.mov(rbx, ptr(r15 + (addr * 2))).unwrap();
+                            asm.test(rbx, rbx).unwrap();
+                            asm.jz(jit_exit).unwrap();
+                            asm.jmp(rbx).unwrap();
 
-                        asm.set_label(&mut jit_exit).unwrap();
-                        jit_exit1!(1, addr);
+                            asm.set_label(&mut jit_exit).unwrap();
+                            jit_exit1!(1, addr);
+                        }
                     }
                 },
                 Operation::JmpOff(addr) => {
@@ -297,27 +312,23 @@ impl Jit {
                 },
                 Operation::Store => {
                     let r1   = get_reg_64!(extract_reg!(instr.i_reg[0]), 0);
-                    let r2   = extract_reg!(instr.i_reg[1]);
+                    let r2   = get_reg_64!(extract_reg!(instr.i_reg[1]), 1);
                     let offset = extract_imm!(instr.i_reg[2]);
 
-                    asm.add(r1, offset).unwrap();
+                    asm.add(r1, r13).unwrap();
 
                     match instr.flags {
                         Flag::Byte => {
-                            asm.mov(rcx, byte_ptr(r14 + r2.get_offset())).unwrap();
-                            asm.mov(byte_ptr(r13 + r1), cl).unwrap();
+                            asm.mov(byte_ptr(r1 + offset), r2).unwrap();
                         }
                         Flag::Word => {
-                            asm.mov(rcx, word_ptr(r14 + r2.get_offset())).unwrap();
-                            asm.mov(word_ptr(r13 + r1), cx).unwrap();
+                            asm.mov(word_ptr(r1 + offset), r2).unwrap();
                         }
                         Flag::DWord => {
-                            asm.mov(rcx, dword_ptr(r14 + r2.get_offset())).unwrap();
-                            asm.mov(dword_ptr(r13 + r1), ecx).unwrap();
+                            asm.mov(dword_ptr(r1 + offset), r2).unwrap();
                         }
                         Flag::QWord => {
-                            asm.mov(rcx, qword_ptr(r14 + r2.get_offset())).unwrap();
-                            asm.mov(qword_ptr(r13 + r1), rcx).unwrap();
+                            asm.mov(qword_ptr(r1 + offset), r2).unwrap();
                         }
                         _ => panic!("Unimplemented flag for store operation used"),
                     }

@@ -1,10 +1,10 @@
-#1. 0 size function bug
+#1. Small bug remaining that results in a bug that eventually cascades and results in a crash
 
 #2. Concurrency bug since I insert stuff into map during compilation
 
-#3. Update readme to reflect current status
+#3. Dirty bit mem resets
 
-#4. Dirty bit mem resets
+#4. Hardcode most used registers for performance gains
 
 #5. Permission checks
 

@@ -327,14 +327,14 @@ impl Emulator {
 
             self.set_reg(Register::Pc, reentry_pc);
 
-            if reentry_pc == 0x0000000000010194 {
-                let v = self.state.regs[Register::A0 as usize];
-                println!("A0 is: {:#0X}", v);
-                for i in 0..16 {
-                    println!("Mem is: {:?}", self.memory.memory[v+i as usize]);
-                }
-                panic!("");
-            }
+            //if reentry_pc == 0x0000000000010194 {
+            //    let v = self.state.regs[Register::A0 as usize];
+            //    println!("A0 is: {:#0X}", v);
+            //    for i in 0..16 {
+            //        println!("Mem is: {:?}", self.memory.memory[v+i as usize]);
+            //    }
+            //    panic!("");
+            //}
 
             match exit_code {
                 1 => { /* Nothing special, just need to compile next code block */ },
@@ -413,9 +413,11 @@ impl Emulator {
         let mut instrs: Vec<Instr> = Vec::new();
 
         let start_pc = pc;
+
+        //println!("PC IS: {:#0X}", pc);
         let end_pc   = start_pc + self.functions.get(&pc).unwrap();
 
-        println!("({:#0x} : {:#0x})", start_pc, end_pc);
+        //println!("({:#0x} : {:#0x})", start_pc, end_pc);
 
         while pc < end_pc {
             let opcodes: u32 = self.memory.read_at(pc, Perms::READ | Perms::EXECUTE).map_err(|_|
@@ -454,14 +456,14 @@ impl Emulator {
                     irgraph.movi(rd, imm, Flag::Signed);
                 },
                 Instr::Auipc {rd, imm} => {
-                    let val = (imm).wrapping_add(pc as i32);
-                    irgraph.movi(rd, val, Flag::Signed);
+                    let sign_extended = (imm as i64 as u64).wrapping_add(pc as u64);
+                    irgraph.movi(rd, sign_extended as i32, Flag::Signed);
                 },
                 Instr::Jal {rd, imm} => {
-                    let jmp_target = ((pc as i32).wrapping_add(imm)) as usize;
+                    let jmp_target = ((pc as i32) + imm) as usize;
 
                     if rd != Register::Zero {
-                        irgraph.movi(rd, (pc + 4) as i32, Flag::Signed);
+                        irgraph.movi(rd, (pc + 4) as i32, Flag::Unsigned);
                     }
                     irgraph.jmp(jmp_target);
                 },
@@ -469,7 +471,7 @@ impl Emulator {
                     if rd != Register::Zero {
                         irgraph.movi(rd, (pc + 4) as i32, Flag::Signed);
                     }
-                    irgraph.jmp_offset(rs1, imm as usize);
+                    irgraph.jmp_offset(rs1, imm);
                 },
                 Instr::Beq  { rs1, rs2, imm, mode } |
                 Instr::Bne  { rs1, rs2, imm, mode } |
