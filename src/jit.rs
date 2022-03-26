@@ -98,13 +98,16 @@ impl Jit {
             -> Result<(), Fault>>) -> Option<usize> {
 
         let mut asm = CodeAssembler::new(64).unwrap();
+
+        // Address of function start
         let init_pc = irgraph.instrs[0].pc.unwrap();
+
+        // Temporary registers used to load spilled registers into
         let regs_64 = [rbx, rcx];
-        let regs_32 = [ebx, ecx];
 
-        //println!("Compiling {:#0X}", init_pc);
 
-        //TODO early return
+        //TODO early return to fix race condition bug
+
 
         /// Returns the destination register for an operation
         macro_rules! get_reg_64 {
@@ -114,18 +117,6 @@ impl Jit {
                     regs_64[$i]
                 } else {
                     $reg.convert_64()
-                }
-            }
-        }
-
-        /// Returns the destination register for an operation
-        macro_rules! get_reg_32 {
-            ($reg: expr, $i: expr) => {
-                if $reg.is_spilled() {
-                    asm.mov(regs_32[$i], ptr(r14 + $reg.get_offset())).unwrap();
-                    regs_32[$i]
-                } else {
-                    $reg.convert_32()
                 }
             }
         }
@@ -176,50 +167,49 @@ impl Jit {
 
         let mut first = true;
         for instr in &irgraph.instrs {
-
             if let Some(pc) = instr.pc {
                 if first {
                     first = false;
                 } else {
-                    jit_exit1!(4, pc);
+                    //jit_exit1!(4, pc);
                 }
                 self.add_lookup(&asm.assemble(0x0).unwrap(), pc);
-                //println!("0x{:X} -> 0x{:X}", pc, self.lookup(pc).unwrap());
             }
 
             match instr.op {
                 Operation::Mov => {
-                    let reg_out = instr.o_reg.unwrap();
-                    let reg_in  = instr.i_reg[0];
+                    let vr_out = instr.o_reg.unwrap();
+                    let input  = instr.i_reg[0];
+                    let r_out  = get_reg_64!(vr_out, 0);
 
-                    let preg_out = get_reg_64!(reg_out, 0); // rbx
-
-                    match reg_in {
+                    // Check if input is a register or an immediate
+                    match input {
                         Val::Reg(v) => {
-                            let v = get_reg_64!(v, 1);
-                            asm.mov(preg_out, v).unwrap();
+                            let r_in = get_reg_64!(v, 1);
+                            asm.mov(r_out, r_in).unwrap();
                         },
                         Val::Imm(v) => {
                             // sign/zero extend immediate
                             match instr.flags {
-                                Flag::Signed   => asm.mov(preg_out, v as i64).unwrap(),
-                                Flag::Unsigned => asm.mov(preg_out, v as u64).unwrap(),
+                                Flag::Signed   => asm.mov(r_out, v as i64).unwrap(),
+                                Flag::Unsigned => asm.mov(r_out, v as u64).unwrap(),
                                 _ => unreachable!(),
                             };
                         }
                     }
 
-                    if reg_out.is_spilled() {
-                        asm.mov(ptr(r14 + reg_out.get_offset()), preg_out).unwrap();
+                    // Save the result of the operation if necessary
+                    if vr_out.is_spilled() {
+                        asm.mov(ptr(r14 + vr_out.get_offset()), r_out).unwrap();
                     }
                 },
                 Operation::Branch(t, _f) => {
-                    let r1 = extract_reg!(instr.i_reg[0]);
-                    let r2 = extract_reg!(instr.i_reg[1]);
+                    let vr_in1 = extract_reg!(instr.i_reg[0]);
+                    let vr_in2 = extract_reg!(instr.i_reg[1]);
                     let mut fallthrough = asm.create_label();
 
-                    asm.mov(rax, ptr(r14 + r1.get_offset())).unwrap();
-                    asm.mov(rbx, ptr(r14 + r2.get_offset())).unwrap();
+                    asm.mov(rax, ptr(r14 + vr_in1.get_offset())).unwrap();
+                    asm.mov(rbx, ptr(r14 + vr_in2.get_offset())).unwrap();
                     asm.cmp(rax, rbx).unwrap();
 
                     match instr.flags {
@@ -296,442 +286,415 @@ impl Jit {
                     jit_exit2!(1, reg);
                 },
                 Operation::Store => {
-                    let r1   = get_reg_64!(extract_reg!(instr.i_reg[0]), 0);
-                    let r2   = extract_reg!(instr.i_reg[1]);
+                    let vr_in1 = extract_reg!(instr.i_reg[0]);
+                    let vr_in2 = extract_reg!(instr.i_reg[1]);
+                    let r_in1  = get_reg_64!(vr_in1, 0);
                     let offset = extract_imm!(instr.i_reg[2]);
 
-                    asm.add(r1, offset).unwrap();
+                    asm.add(r_in1, offset).unwrap();
 
+                    // Perform store operation with varying operand sizes based on flags
                     match instr.flags {
                         Flag::Byte => {
-                            asm.mov(rcx, byte_ptr(r14 + r2.get_offset())).unwrap();
-                            asm.mov(byte_ptr(r13 + r1), cl).unwrap();
-                        }
+                            asm.mov(rcx, byte_ptr(r14 + vr_in2.get_offset())).unwrap();
+                            asm.mov(byte_ptr(r13 + r_in1), cl).unwrap();
+                        },
                         Flag::Word => {
-                            asm.mov(rcx, word_ptr(r14 + r2.get_offset())).unwrap();
-                            asm.mov(word_ptr(r13 + r1), cx).unwrap();
-                        }
+                            asm.mov(rcx, word_ptr(r14 + vr_in2.get_offset())).unwrap();
+                            asm.mov(word_ptr(r13 + r_in1), cx).unwrap();
+                        },
                         Flag::DWord => {
-                            asm.mov(rcx, dword_ptr(r14 + r2.get_offset())).unwrap();
-                            asm.mov(dword_ptr(r13 + r1), ecx).unwrap();
-                        }
+                            asm.mov(rcx, dword_ptr(r14 + vr_in2.get_offset())).unwrap();
+                            asm.mov(dword_ptr(r13 + r_in1), ecx).unwrap();
+                        },
                         Flag::QWord => {
-                            asm.mov(rcx, qword_ptr(r14 + r2.get_offset())).unwrap();
-                            asm.mov(qword_ptr(r13 + r1), rcx).unwrap();
-                        }
+                            asm.mov(rcx, qword_ptr(r14 + vr_in2.get_offset())).unwrap();
+                            asm.mov(qword_ptr(r13 + r_in1), rcx).unwrap();
+                        },
                         _ => panic!("Unimplemented flag for store operation used"),
                     }
                 },
                 Operation::Load => {
-                    let r1 = instr.o_reg.unwrap();
-                    let r2 = get_reg_64!(extract_reg!(instr.i_reg[0]), 0);
+                    let vr_out = instr.o_reg.unwrap();
+                    let vr_in1 = extract_reg!(instr.i_reg[0]);
+                    let r_in1  = get_reg_64!(vr_in1, 0);
                     let offset = extract_imm!(instr.i_reg[1]);
 
-                    asm.add(r2, r13).unwrap();
+                    asm.add(r_in1, offset).unwrap();
 
+                    // Perform load operation with varying operand sizes based on flags
                     match instr.flags {
                         0b0001000001 => {   /* Signed | Byte */
-                            let r1 = get_reg_64!(r1, 1);
-                            asm.movsx(r1, byte_ptr(r2 + offset)).unwrap();
+                            let r_out = get_reg_64!(vr_out, 1);
+                            asm.movsx(r_out, byte_ptr(r_in1 + r13)).unwrap();
                         },
                         0b0010000001 => {   /* Signed | Word */
-                            let r1 = get_reg_64!(r1, 1);
-                            asm.movsx(r1, word_ptr(r2 + offset)).unwrap();
+                            let r_out = get_reg_64!(vr_out, 1);
+                            asm.movsx(r_out, word_ptr(r_in1 + r13)).unwrap();
                         },
                         0b0100000001 => {   /* Signed | DWord */
-                            let r1 = get_reg_64!(r1, 1);
-                            asm.movsxd(r1, dword_ptr(r2 + offset)).unwrap();
+                            let r_out = get_reg_64!(vr_out, 1);
+                            asm.movsxd(r_out, dword_ptr(r_in1 + r13)).unwrap();
                         },
                         0b0001000010 => {   /* Unsigned | Byte */
-                            let r1 = get_reg_64!(r1, 1);
-                            asm.movzx(r1, byte_ptr(r2 + offset)).unwrap();
+                            let r_out = get_reg_64!(vr_out, 1);
+                            asm.movzx(r_out, byte_ptr(r_in1 + r13)).unwrap();
                         },
                         0b0010000010 => {   /* Unsigned | Word */
-                            let r1 = get_reg_64!(r1, 1);
-                            asm.movzx(r1, word_ptr(r2 + offset)).unwrap();
-                        },
-                        0b0100000010 => {   /* Unsigned | DWord */
-                            let reg1 = get_reg_32!(extract_reg!(instr.i_reg[0]), 1);
-                            asm.movzx(reg1, dword_ptr(r2 + offset)).unwrap();
-                            if r1.is_spilled() {
-                                asm.mov(ptr(r14 + r1.get_offset()), reg1).unwrap();
-                            }
-                            continue;
+                            let r_out = get_reg_64!(vr_out, 1);
+                            asm.movzx(r_out, word_ptr(r_in1 + r13)).unwrap();
                         },
                         0b1000000000 => {   /* QWord */
-                            let r1 = get_reg_64!(r1, 1);
-                            asm.mov(r1, qword_ptr(r2 + offset)).unwrap();
+                            let r_out = get_reg_64!(vr_out, 1);
+                            asm.mov(r_out, qword_ptr(r_in1 + r13)).unwrap();
+                        },
+                        0b0100000010 => {   /* Unsigned | DWord */
+                            let r_out = get_reg_64!(vr_out, 1);
+
+                            asm.movzx(to_32(r_out), dword_ptr(r_in1 + r13)).unwrap();
+
+                            // Save the result of the operation if necessary
+                            if vr_out.is_spilled() {
+                                asm.mov(ptr(r14 + vr_out.get_offset()), rcx).unwrap();
+                            }
+                            continue;
                         },
                         _ => panic!("Unimplemented flag for Load operation used"),
                     }
 
-                    if r1.is_spilled() {
-                        asm.mov(ptr(r14 + r1.get_offset()), rcx).unwrap();
+                    // Save the result of the operation if necessary
+                    if vr_out.is_spilled() {
+                        asm.mov(ptr(r14 + vr_out.get_offset()), rcx).unwrap();
                     }
                 },
                 Operation::Add => {
-                    let reg_out = instr.o_reg.unwrap();
-                    let reg_in1 = extract_reg!(instr.i_reg[0]);
-                    let reg_in2 = instr.i_reg[1];
+                    let vr_out = instr.o_reg.unwrap();
+                    let vr_in1 = extract_reg!(instr.i_reg[0]);
+                    let in2    = instr.i_reg[1];
+                    let r_in1  = get_reg_64!(vr_in1, 0);
 
                     match instr.flags {
-                        Flag::DWord => {
-                            let r1 = get_reg_32!(reg_in1, 0);
-
-                            match reg_in2 {
+                        Flag::DWord => { /* 32-bit add operation */
+                            // Check if input-2 is a register or an immediate
+                            match in2 {
                                 Val::Reg(v) => {
-                                    let tmp = get_reg_32!(v, 1);
-                                    asm.add(r1, tmp).unwrap();
+                                    let r_in2 = get_reg_64!(v, 1);
+                                    asm.add(to_32(r_in1), to_32(r_in2)).unwrap();
                                 },
-                                Val::Imm(v) => asm.add(r1, v).unwrap(),
-                            }
-
-                            if reg_out != reg_in1 {
-                                if reg_out.is_spilled() {
-                                    asm.mov(ptr(r14 + reg_out.get_offset()), r1).unwrap();
-                                } else {
-                                    asm.mov(reg_out.convert_32(), r1).unwrap();
-                                }
-                            } else if reg_in1.is_spilled() {
-                                asm.mov(ptr(r14 + reg_in1.get_offset()), r1).unwrap();
+                                Val::Imm(v) => {
+                                    asm.add(to_32(r_in1), v).unwrap();
+                                    // RISCV requires signextension on 32-bit instructions on imm's
+                                    asm.movsxd(r_in1, to_32(r_in1)).unwrap();
+                                },
                             }
                         },
-                        Flag::QWord => {
-                            let r1 = get_reg_64!(reg_in1, 0); // rbx
-
-                            match reg_in2 {
+                        Flag::QWord => { /* 64-bit add operation */
+                            // Check if input-2 is a register or an immediate
+                            match in2 {
                                 Val::Reg(v) => {
-                                    let tmp = get_reg_64!(v, 1);
-                                    asm.add(r1, tmp).unwrap();
+                                    let r_in2 = get_reg_64!(v, 1);
+                                    asm.add(r_in1, r_in2).unwrap();
                                 },
-                                Val::Imm(v) => asm.add(r1, v).unwrap(),
-                            }
-
-                            if reg_out != reg_in1 {
-                                if reg_out.is_spilled() {
-                                    asm.mov(ptr(r14 + reg_out.get_offset()), r1).unwrap();
-                                } else {
-                                    asm.mov(reg_out.convert_64(), r1).unwrap();
-                                }
-                            } else if reg_in1.is_spilled() {
-                                asm.mov(ptr(r14 + reg_in1.get_offset()), r1).unwrap();
+                                Val::Imm(v) => asm.add(r_in1, v).unwrap(),
                             }
                         },
                         _ => panic!("Unsupported flag provided for Add Instruction")
+                    }
+
+                    // Save the result of the operation if necessary
+                    if vr_out.is_spilled() {
+                        asm.mov(ptr(r14 + vr_out.get_offset()), r_in1).unwrap();
+                    } else {
+                        if vr_out != vr_in1 {
+                            asm.mov(vr_out.convert_64(), r_in1).unwrap();
+                        }
                     }
                 },
                 Operation::Sub => {
-                    let reg_out = instr.o_reg.unwrap();
-                    let reg_in1 = extract_reg!(instr.i_reg[0]);
-                    let reg_in2 = instr.i_reg[1];
+                    let vr_out = instr.o_reg.unwrap();
+                    let vr_in1 = extract_reg!(instr.i_reg[0]);
+                    let in2    = instr.i_reg[1];
+                    let r_in1  = get_reg_64!(vr_in1, 0);
 
                     match instr.flags {
-                        Flag::DWord => {
-                            let r1 = get_reg_32!(reg_in1, 0);
-
-                            match reg_in2 {
-                                Val::Reg(v) => { 
-                                    let tmp = get_reg_32!(v, 1);
-                                    asm.sub(r1, tmp).unwrap();
-                                }
-                                Val::Imm(v) => asm.sub(r1, v).unwrap(),
-                            }
-                            if reg_out != reg_in1 {
-                                if reg_out.is_spilled() {
-                                    asm.mov(ptr(r14 + reg_out.get_offset()), r1).unwrap();
-                                } else {
-                                    asm.mov(reg_out.convert_32(), r1).unwrap();
-                                }
-                            } else if reg_in1.is_spilled() {
-                                asm.mov(ptr(r14 + reg_in1.get_offset()), r1).unwrap();
-                            }
-                        },
-                        Flag::QWord => {
-                            let r1 = get_reg_64!(reg_in1, 0);
-
-                            match reg_in2 {
+                        Flag::DWord => { /* 32-bit sub operation */
+                            // Check if input-2 is a register or an immediate
+                            match in2 {
                                 Val::Reg(v) => {
-                                    let tmp = get_reg_64!(v, 1);
-                                    asm.sub(r1, tmp).unwrap();
-                                }
-                                Val::Imm(v) => asm.sub(r1, v).unwrap(),
-                            }
-
-                            if reg_out != reg_in1 {
-                                if reg_out.is_spilled() {
-                                    asm.mov(ptr(r14 + reg_out.get_offset()), r1).unwrap();
-                                } else {
-                                    asm.mov(reg_out.convert_64(), r1).unwrap();
-                                }
-                            } else if reg_in1.is_spilled() {
-                                asm.mov(ptr(r14 + reg_in1.get_offset()), r1).unwrap();
+                                    let r_in2 = get_reg_64!(v, 1);
+                                    asm.sub(to_32(r_in1), to_32(r_in2)).unwrap();
+                                },
+                                Val::Imm(v) => {
+                                    asm.sub(to_32(r_in1), v).unwrap();
+                                    // RISCV requires signextension on 32-bit instructions on imm's
+                                    asm.movsxd(r_in1, to_32(r_in1)).unwrap();
+                                },
                             }
                         },
-                        _ => panic!("Unsupported flag provided for Add Instruction")
+                        Flag::QWord => { /* 64-bit sub operation */
+                            // Check if input-2 is a register or an immediate
+                            match in2 {
+                                Val::Reg(v) => {
+                                    let r_in2 = get_reg_64!(v, 1);
+                                    asm.sub(r_in1, r_in2).unwrap();
+                                },
+                                Val::Imm(v) => asm.sub(r_in1, v).unwrap(),
+                            }
+                        },
+                        _ => panic!("Unsupported flag provided for Sub Instruction")
+                    }
+
+                    // Save the result of the operation if necessary
+                    if vr_out.is_spilled() {
+                        asm.mov(ptr(r14 + vr_out.get_offset()), r_in1).unwrap();
+                    } else {
+                        if vr_out != vr_in1 {
+                            asm.mov(vr_out.convert_64(), r_in1).unwrap();
+                        }
                     }
                 },
                 Operation::Shl => {
-                    let reg_out = instr.o_reg.unwrap();
-                    let reg_in1 = extract_reg!(instr.i_reg[0]);
-                    let reg_in2 = instr.i_reg[1];
+                    let vr_out = instr.o_reg.unwrap();
+                    let vr_in1 = extract_reg!(instr.i_reg[0]);
+                    let in2    = instr.i_reg[1];
+                    let r_in1  = get_reg_64!(vr_in1, 0);
 
                     match instr.flags {
-                        Flag::DWord => {
-                            let r1 = get_reg_32!(reg_in1, 0);
-
-                            match reg_in2 {
+                        Flag::DWord => { /* 32-bit shl operation */
+                            // Check if input-2 is a register or an immediate
+                            match in2 {
                                 Val::Reg(v) => {
-                                    let tmp = get_reg_32!(v, 1);
-                                    asm.mov(ecx, tmp).unwrap();
-                                    asm.shl(r1, cl).unwrap();
-                                }
-                                Val::Imm(v) => asm.shl(r1, v).unwrap(),
-                            }
-
-                            if reg_out != reg_in1 {
-                                if reg_out.is_spilled() {
-                                    asm.mov(ptr(r14 + reg_out.get_offset()), r1).unwrap();
-                                } else {
-                                    asm.mov(reg_out.convert_32(), r1).unwrap();
-                                }
-                            } else if reg_in1.is_spilled() {
-                                asm.mov(ptr(r14 + reg_in1.get_offset()), r1).unwrap();
+                                    let r_in2 = get_reg_64!(v, 1);
+                                    asm.mov(rcx, r_in2).unwrap();
+                                    asm.shl(to_32(r_in1), cl).unwrap();
+                                },
+                                Val::Imm(v) => {
+                                    asm.shl(to_32(r_in1), v).unwrap();
+                                    // RISCV requires signextension on 32-bit instructions on imm's
+                                    asm.movsxd(r_in1, to_32(r_in1)).unwrap();
+                                },
                             }
                         },
-                        Flag::QWord => {
-                            let r1 = get_reg_64!(reg_in1, 0);
-
-                            match reg_in2 {
+                        Flag::QWord => { /* 64-bit shl operation */
+                            // Check if input-2 is a register or an immediate
+                            match in2 {
                                 Val::Reg(v) => {
-                                    let tmp = get_reg_64!(v, 1);
-                                    asm.mov(rcx, tmp).unwrap();
-                                    asm.shl(r1, cl).unwrap();
-                                }
-                                Val::Imm(v) => asm.shl(r1, v).unwrap(),
-                            }
-
-                            if reg_out != reg_in1 {
-                                if reg_out.is_spilled() {
-                                    asm.mov(ptr(r14 + reg_out.get_offset()), r1).unwrap();
-                                } else {
-                                    asm.mov(reg_out.convert_64(), r1).unwrap();
-                                }
-                            } else if reg_in1.is_spilled() {
-                                asm.mov(ptr(r14 + reg_in1.get_offset()), r1).unwrap();
+                                    let r_in2 = get_reg_64!(v, 1);
+                                    asm.mov(rcx, r_in2).unwrap();
+                                    asm.shl(r_in1, cl).unwrap();
+                                },
+                                Val::Imm(v) => asm.shl(r_in1, v).unwrap(),
                             }
                         },
-                        _ => panic!("Unsupported flag provided for Add Instruction")
+                        _ => panic!("Unsupported flag provided for Shl Instruction")
+                    }
+
+                    // Save the result of the operation if necessary
+                    if vr_out.is_spilled() {
+                        asm.mov(ptr(r14 + vr_out.get_offset()), r_in1).unwrap();
+                    } else {
+                        if vr_out != vr_in1 {
+                            asm.mov(vr_out.convert_64(), r_in1).unwrap();
+                        }
                     }
                 },
                 Operation::Shr => {
-                    let reg_out = instr.o_reg.unwrap();
-                    let reg_in1 = extract_reg!(instr.i_reg[0]);
-                    let reg_in2 = instr.i_reg[1];
+                    let vr_out = instr.o_reg.unwrap();
+                    let vr_in1 = extract_reg!(instr.i_reg[0]);
+                    let in2    = instr.i_reg[1];
+                    let r_in1  = get_reg_64!(vr_in1, 0);
 
                     match instr.flags {
-                        Flag::DWord => {
-                            let r1 = get_reg_32!(reg_in1, 0);
-
-                            match reg_in2 {
+                        Flag::DWord => { /* 32-bit shr operation */
+                            // Check if input-2 is a register or an immediate
+                            match in2 {
                                 Val::Reg(v) => {
-                                    let tmp = get_reg_32!(v, 1);
-                                    asm.mov(ecx, tmp).unwrap();
-                                    asm.shr(r1, cl).unwrap();
-                                }
-                                Val::Imm(v) => asm.shr(r1, v).unwrap(),
-                            }
-
-                            if reg_out != reg_in1 {
-                                if reg_out.is_spilled() {
-                                    asm.mov(ptr(r14 + reg_out.get_offset()), r1).unwrap();
-                                } else {
-                                    asm.mov(reg_out.convert_32(), r1).unwrap();
-                                }
-                            } else if reg_in1.is_spilled() {
-                                asm.mov(ptr(r14 + reg_in1.get_offset()), r1).unwrap();
+                                    let r_in2 = get_reg_64!(v, 1);
+                                    asm.mov(rcx, r_in2).unwrap();
+                                    asm.shr(to_32(r_in1), cl).unwrap();
+                                },
+                                Val::Imm(v) => {
+                                    asm.shr(to_32(r_in1), v).unwrap();
+                                    // RISCV requires signextension on 32-bit instructions on imm's
+                                    asm.movsxd(r_in1, to_32(r_in1)).unwrap();
+                                },
                             }
                         },
-                        Flag::QWord => {
-                            let r1 = get_reg_64!(reg_in1, 0);
-
-                            match reg_in2 {
+                        Flag::QWord => { /* 64-bit shr operation */
+                            // Check if input-2 is a register or an immediate
+                            match in2 {
                                 Val::Reg(v) => {
-                                    let tmp = get_reg_64!(v, 1);
-                                    asm.mov(rcx, tmp).unwrap();
-                                    asm.shr(r1, cl).unwrap();
-                                }
-                                Val::Imm(v) => asm.shr(r1, v).unwrap(),
-                            }
-
-                            if reg_out != reg_in1 {
-                                if reg_out.is_spilled() {
-                                    asm.mov(ptr(r14 + reg_out.get_offset()), r1).unwrap();
-                                } else {
-                                    asm.mov(reg_out.convert_64(), r1).unwrap();
-                                }
-                            } else if reg_in1.is_spilled() {
-                                asm.mov(ptr(r14 + reg_in1.get_offset()), r1).unwrap();
+                                    let r_in2 = get_reg_64!(v, 1);
+                                    asm.mov(rcx, r_in2).unwrap();
+                                    asm.shr(r_in1, cl).unwrap();
+                                },
+                                Val::Imm(v) => asm.shr(r_in1, v).unwrap(),
                             }
                         },
-                        _ => panic!("Unsupported flag provided for Add Instruction")
+                        _ => panic!("Unsupported flag provided for Shr Instruction")
+                    }
+
+                    // Save the result of the operation if necessary
+                    if vr_out.is_spilled() {
+                        asm.mov(ptr(r14 + vr_out.get_offset()), r_in1).unwrap();
+                    } else {
+                        if vr_out != vr_in1 {
+                            asm.mov(vr_out.convert_64(), r_in1).unwrap();
+                        }
                     }
                 },
                 Operation::Sar => {
-                    let reg_out = instr.o_reg.unwrap();
-                    let reg_in1 = extract_reg!(instr.i_reg[0]);
-                    let reg_in2 = instr.i_reg[1];
+                    let vr_out = instr.o_reg.unwrap();
+                    let vr_in1 = extract_reg!(instr.i_reg[0]);
+                    let in2    = instr.i_reg[1];
+                    let r_in1  = get_reg_64!(vr_in1, 0);
 
                     match instr.flags {
-                        Flag::DWord => {
-                            let r1 = get_reg_32!(reg_in1, 0);
-
-                            match reg_in2 {
+                        Flag::DWord => { /* 32-bit sar operation */
+                            // Check if input-2 is a register or an immediate
+                            match in2 {
                                 Val::Reg(v) => {
-                                    let tmp = get_reg_32!(v, 1);
-                                    asm.mov(ecx, tmp).unwrap();
-                                    asm.sar(r1, cl).unwrap();
-                                }
-                                Val::Imm(v) => asm.sar(r1, v).unwrap(),
-                            }
-
-                            if reg_out != reg_in1 {
-                                if reg_out.is_spilled() {
-                                    asm.mov(ptr(r14 + reg_out.get_offset()), r1).unwrap();
-                                } else {
-                                    asm.mov(reg_out.convert_32(), r1).unwrap();
-                                }
-                            } else if reg_in1.is_spilled() {
-                                asm.mov(ptr(r14 + reg_in1.get_offset()), r1).unwrap();
+                                    let r_in2 = get_reg_64!(v, 1);
+                                    asm.mov(rcx, r_in2).unwrap();
+                                    asm.sar(to_32(r_in1), cl).unwrap();
+                                },
+                                Val::Imm(v) => {
+                                    asm.sar(to_32(r_in1), v).unwrap();
+                                    // RISCV requires signextension on 32-bit instructions on imm's
+                                    asm.movsxd(r_in1, to_32(r_in1)).unwrap();
+                                },
                             }
                         },
-                        Flag::QWord => {
-                            let r1 = get_reg_64!(reg_in1, 0);
-
-                            match reg_in2 {
+                        Flag::QWord => { /* 64-bit sar operation */
+                            // Check if input-2 is a register or an immediate
+                            match in2 {
                                 Val::Reg(v) => {
-                                    let tmp = get_reg_64!(v, 1);
-                                    asm.mov(rcx, tmp).unwrap();
-                                    asm.sar(r1, cl).unwrap();
-                                }
-                                Val::Imm(v) => asm.sar(r1, v).unwrap(),
-                            }
-
-                            if reg_out != reg_in1 {
-                                if reg_out.is_spilled() {
-                                    asm.mov(ptr(r14 + reg_out.get_offset()), r1).unwrap();
-                                } else {
-                                    asm.mov(reg_out.convert_64(), r1).unwrap();
-                                }
-                            } else if reg_in1.is_spilled() {
-                                asm.mov(ptr(r14 + reg_in1.get_offset()), r1).unwrap();
+                                    let r_in2 = get_reg_64!(v, 1);
+                                    asm.mov(rcx, r_in2).unwrap();
+                                    asm.sar(r_in1, cl).unwrap();
+                                },
+                                Val::Imm(v) => asm.sar(r_in1, v).unwrap(),
                             }
                         },
-                        _ => panic!("Unsupported flag provided for Add Instruction")
+                        _ => panic!("Unsupported flag provided for Sar Instruction")
+                    }
+
+                    // Save the result of the operation if necessary
+                    if vr_out.is_spilled() {
+                        asm.mov(ptr(r14 + vr_out.get_offset()), r_in1).unwrap();
+                    } else {
+                        if vr_out != vr_in1 {
+                            asm.mov(vr_out.convert_64(), r_in1).unwrap();
+                        }
                     }
                 },
                 Operation::And => {
-                    let reg_out = instr.o_reg.unwrap();
-                    let reg_in1 = extract_reg!(instr.i_reg[0]);
-                    let reg_in2 = instr.i_reg[1];
+                    let vr_out = instr.o_reg.unwrap();
+                    let vr_in1 = extract_reg!(instr.i_reg[0]);
+                    let in2    = instr.i_reg[1];
+                    let r_in1  = get_reg_64!(vr_in1, 0);
 
-                    let r1 = get_reg_64!(reg_in1, 0);
-
-                    match reg_in2 {
+                    // Check if input-2 is a register or an immediate
+                    match in2 {
                         Val::Reg(v) => {
-                            let tmp = get_reg_64!(v, 1);
-                            asm.and(r1, tmp).unwrap();
-                        }
-                        Val::Imm(v) => asm.and(r1, v).unwrap(),
+                            let r_in2 = get_reg_64!(v, 1);
+                            asm.and(r_in1, r_in2).unwrap();
+                        },
+                        Val::Imm(v) => asm.and(r_in1, v).unwrap(),
                     }
 
-                    if reg_out != reg_in1 {
-                        if reg_out.is_spilled() {
-                            asm.mov(ptr(r14 + reg_out.get_offset()), r1).unwrap();
-                        } else {
-                            asm.mov(reg_out.convert_64(), r1).unwrap();
+                    // Save the result of the operation if necessary
+                    if vr_out.is_spilled() {
+                        asm.mov(ptr(r14 + vr_out.get_offset()), r_in1).unwrap();
+                    } else {
+                        if vr_out != vr_in1 {
+                            asm.mov(vr_out.convert_64(), r_in1).unwrap();
                         }
-                    } else if reg_in1.is_spilled() {
-                        asm.mov(ptr(r14 + reg_in1.get_offset()), r1).unwrap();
                     }
                 },
                 Operation::Xor => {
-                    let reg_out = instr.o_reg.unwrap();
-                    let reg_in1 = extract_reg!(instr.i_reg[0]);
-                    let reg_in2 = instr.i_reg[1];
+                    let vr_out = instr.o_reg.unwrap();
+                    let vr_in1 = extract_reg!(instr.i_reg[0]);
+                    let in2    = instr.i_reg[1];
+                    let r_in1  = get_reg_64!(vr_in1, 0);
 
-                    let r1 = get_reg_64!(reg_in1, 0);
-
-                    match reg_in2 {
+                    // Check if input-2 is a register or an immediate
+                    match in2 {
                         Val::Reg(v) => {
-                            let tmp = get_reg_64!(v, 1);
-                            asm.xor(r1, tmp).unwrap();
-                        }
-                        Val::Imm(v) => asm.xor(r1, v).unwrap(),
+                            let r_in2 = get_reg_64!(v, 1);
+                            asm.xor(r_in1, r_in2).unwrap();
+                        },
+                        Val::Imm(v) => asm.xor(r_in1, v).unwrap(),
                     }
 
-                    if reg_out != reg_in1 {
-                        if reg_out.is_spilled() {
-                            asm.mov(ptr(r14 + reg_out.get_offset()), r1).unwrap();
-                        } else {
-                            asm.mov(reg_out.convert_64(), r1).unwrap();
+                    // Save the result of the operation if necessary
+                    if vr_out.is_spilled() {
+                        asm.mov(ptr(r14 + vr_out.get_offset()), r_in1).unwrap();
+                    } else {
+                        if vr_out != vr_in1 {
+                            asm.mov(vr_out.convert_64(), r_in1).unwrap();
                         }
-                    } else if reg_in1.is_spilled() {
-                        asm.mov(ptr(r14 + reg_in1.get_offset()), r1).unwrap();
                     }
                 },
                 Operation::Or => {
-                    let reg_out = instr.o_reg.unwrap();
-                    let reg_in1 = extract_reg!(instr.i_reg[0]);
-                    let reg_in2 = instr.i_reg[1];
+                    let vr_out = instr.o_reg.unwrap();
+                    let vr_in1 = extract_reg!(instr.i_reg[0]);
+                    let in2    = instr.i_reg[1];
+                    let r_in1  = get_reg_64!(vr_in1, 0);
 
-                    let r1 = get_reg_64!(reg_in1, 0);
-
-                    match reg_in2 {
+                    // Check if input-2 is a register or an immediate
+                    match in2 {
                         Val::Reg(v) => {
-                            let tmp = get_reg_64!(v, 1);
-                            asm.or(r1, tmp).unwrap();
-                        }
-                        Val::Imm(v) => asm.or(r1, v).unwrap(),
+                            let r_in2 = get_reg_64!(v, 1);
+                            asm.or(r_in1, r_in2).unwrap();
+                        },
+                        Val::Imm(v) => asm.or(r_in1, v).unwrap(),
                     }
 
-                    if reg_out != reg_in1 {
-                        if reg_out.is_spilled() {
-                            asm.mov(ptr(r14 + reg_out.get_offset()), r1).unwrap();
-                        } else {
-                            asm.mov(reg_out.convert_64(), r1).unwrap();
+                    // Save the result of the operation if necessary
+                    if vr_out.is_spilled() {
+                        asm.mov(ptr(r14 + vr_out.get_offset()), r_in1).unwrap();
+                    } else {
+                        if vr_out != vr_in1 {
+                            asm.mov(vr_out.convert_64(), r_in1).unwrap();
                         }
-                    } else if reg_in1.is_spilled() {
-                        asm.mov(ptr(r14 + reg_in1.get_offset()), r1).unwrap();
                     }
                 },
                 Operation::Slt => {
-                    let reg_out = instr.o_reg.unwrap();
-                    let r1 = get_reg_64!(extract_reg!(instr.i_reg[0]), 1);
-                    let reg_in2 = instr.i_reg[1];
+                    let vr_out = instr.o_reg.unwrap();
+                    let vr_in1 = extract_reg!(instr.i_reg[0]);
+                    let in2    = instr.i_reg[1];
+                    let r_in1  = get_reg_64!(vr_in1, 0);
 
+                    // Need an extra register for this operation, use r15 and restore it after instr
                     asm.push(r15).unwrap();
-                    asm.mov(r15, r1).unwrap();
+                    asm.mov(r15, r_in1).unwrap();
 
                     asm.xor(ecx, ecx).unwrap();
 
-                    match reg_in2 {
+                    // Check if input-2 is a register or an immediate
+                    match in2 {
                         Val::Reg(v) => {
-                            let tmp = get_reg_64!(v, 0);
-                            asm.cmp(r15, tmp).unwrap();
-                        }
+                            let r_in2 = get_reg_64!(v, 0);
+                            asm.cmp(r15, r_in2).unwrap();
+                        },
                         Val::Imm(v) => asm.cmp(r15, v).unwrap(),
                     }
 
+                    // Check if operation is Signed or Unsigned
                     match instr.flags {
                         Flag::Signed   => asm.setl(cl).unwrap(),
                         Flag::Unsigned => asm.setb(cl).unwrap(),
                         _ => unreachable!(),
                     }
 
-                    if reg_out.is_spilled() {
-                        asm.mov(ptr(r14 + reg_out.get_offset()), rcx).unwrap();
+                    // Save the result of the operation if necessary
+                    if vr_out.is_spilled() {
+                        asm.mov(ptr(r14 + vr_out.get_offset()), rcx).unwrap();
                     } else {
-                        asm.mov(reg_out.convert_64(), rcx).unwrap();
+                        if vr_out != vr_in1 {
+                            asm.mov(vr_out.convert_64(), rcx).unwrap();
+                        }
                     }
                     asm.pop(r15).unwrap();
                 },
@@ -744,6 +707,16 @@ impl Jit {
 
         // Actually compile the function and return the address it is compiled at
         Some(self.add_jitblock(&asm.assemble(0x0).unwrap(), init_pc))
+    }
+}
+
+#[allow(non_upper_case_globals)]
+fn to_32(reg: AsmRegister64) -> AsmRegister32 {
+    match reg {
+        rax => eax,
+        rbx => ebx,
+        rcx => ecx,
+        _ => unreachable!(),
     }
 }
 

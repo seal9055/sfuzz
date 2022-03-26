@@ -56,12 +56,12 @@ copies it over into the jit backing buffer and populates the riscv -> X86 lookup
 newly compiled addressed.
 
 Since this is a JIT compiler that only compiled one function at a time, we need to have the ability
-to exit the JIT during execution. Some possible reasons are that a function is hit that has not yet 
+to exit the JIT during execution. Some possible reasons are that a function is hit that has not yet
 been compiled, various errors such as out of bound reads/writes, syscalls or hooked functions.
 During execution in the JIT, rsp is never modified, so the JIT can be entered and exited with code
 shown below.
 
-First the JIT address is determined via either the lookup table or by first compiling the function. 
+First the JIT address is determined via either the lookup table or by first compiling the function.
 This address is then passed to the unsafe block that uses inlined assembly to invoke the JIT. The
 memory region allocated for the emulator, alongside memory mapped registers and the JIT lookup table
 are loaded into registers so the JIT can make use of them. In the JIT itself, it makes use of these
@@ -124,6 +124,9 @@ event. If new code needs to be compiled, the above process just repeats. The cur
 This sets up a toolchain to compile riscv binaries that can be loaded/used by this project.
 ```
 Riscv compiler/tooling:
+    sudo apt-get install autoconf automake autotools-dev curl python3 libmpc-dev libmpfr-dev \
+    libgmp-dev gawk build-essential bison flex texinfo gperf libtool patchutils bc zlib1g-dev \
+    libexpat-dev
     git clone https://github.com/riscv-collab/riscv-gnu-toolchain && cd riscv-gnu-toolchain
     ./configure --prefix=/opt/riscv --with-arch=rv64i --enable-multilib
     sudo make linux -j 8
@@ -215,13 +218,13 @@ instruction and thus only the first IR instruction corresponding to a RISCV inst
 an address. Also note how the register names still represent the original RISCV registers
 (apart from Z1/Z2 which are temporary registers used by the IR). This is important to correctly map
 special registers such as the Zero register or distinguish between callee-saved/caller-saves
-registers later. 
+registers later.
 <br><br>
 
 At this point I attempted a couple of different approaches before settling on the current code
 generation procedure. My first approach was to first transform the above IR code into single static
-assignment form. This allows for stronger optimizations and is a very populat choice for modern 
-compilers. Next I used a linear scan register allocator to assign registers to the code and compile 
+assignment form. This allows for stronger optimizations and is a very populat choice for modern
+compilers. Next I used a linear scan register allocator to assign registers to the code and compile
 the final code.
 
 This approach led to multiple issues that led to me eventually abandoning it in favor of the current
@@ -278,9 +281,9 @@ Other improvements such as byte level permissions checks and dirty bit checks wi
 well, however I am currently still working on correctly implementing the base JIT.
 <br><br>
 
-**Current State**: JIT compiler successfuly prints out "Hello World" when invoked with a simple
-hello world binary as the target, but crashes right afterwards. This indicates that it is mostly
-correct, but still has some small bugs that need to be fixed.
+**Current State**: JIT compiler works and prints out hello world in a loop. Next steps will be to
+               implement dirty bit memory resets to massively improve performance and memory
+               checking within the JIT load & store instructions.
 
 #### Apendix A
 
@@ -404,7 +407,7 @@ propagation to eliminate all temporary instructions that my IR added.<br><br>
 
 `4. Register Allocation`
 
-The goal of this phase is to replace the previously set ssa instruction operands with standard 
+The goal of this phase is to replace the previously set ssa instruction operands with standard
 X86\_64 registers. The main difficulty of this process is to correctly determine efficient register
 allocation strategies that result in the least amount of registers being spilled to memory. This
 phase is still very early in development, and I am not entirely sure how I want to implement
@@ -415,7 +418,7 @@ it yet.
 The first step is to number the instructions. This assigns a unique id to each instruction. The main
 thing to consider here is that instructions need to be ordered in order of execution. This means
 that every instruction A that is executed before instruction B needs to have a lower id. This can be
-accomplished using the previously generated dominator tree's. 
+accomplished using the previously generated dominator tree's.
 
 * Register Live Intervals
 
@@ -426,20 +429,20 @@ to the previously marked id numbers during the instruction numbering phase.
 * Linear Scan Register Allocation
 
 This algorithm is pretty much the simplest way to do register allocation across block boundaries.
-Nevertheless it is the most popularly used register allocation algorithm in JIT compilers since it 
+Nevertheless it is the most popularly used register allocation algorithm in JIT compilers since it
 results in low compile time which is an important metric for JIT compilers. Additionally it only
 produces slightly worse code than much slower algorithms such as graph coloring approaches.
 
 The pseudo-code for this register allocation approach is listed below. We loop through all
 previously determined register liveness intervals and allocate an X86 register as long as there are
 free registers are available. If there is no free register available, the last used register is
-spilled to memory to obtain a free register. 
+spilled to memory to obtain a free register.
 
 ```rs
 for (reg, interval) in live_intervals { // in order of increasing starting point
     // Start by expiring old intervals by removing all no longer in use registers from the active
     // mapping and adding it to the free registers instead.
-    expire_old_intervals(); 
+    expire_old_intervals();
 
     if free_regs.is_empty() {
     // Need to spill register to memory if there are no more free registers available
@@ -462,7 +465,7 @@ for (reg, interval) in live_intervals { // in order of increasing starting point
 ```
 
 #### References
- 
+
 * Emulation based fuzzing - Brandon Falk
 * Cranelift [https://cfallin.org/blog/] - Chris Fallin
 * Rv8: a high performance RISC-V to x86 binary translator - Michael Clark & Bruce Hoult
