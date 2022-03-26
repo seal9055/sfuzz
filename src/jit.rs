@@ -1,6 +1,7 @@
 use crate::{
     irgraph::{IRGraph, Flag, Operation, Val},
     emulator::{Emulator, Fault},
+    mmu::{Perms},
 };
 
 use rustc_hash::FxHashMap;
@@ -101,6 +102,7 @@ impl Jit {
 
         // Address of function start
         let init_pc = irgraph.instrs[0].pc.unwrap();
+        let mut pc = 0;
 
         // Temporary registers used to load spilled registers into
         let regs_64 = [rbx, rcx];
@@ -167,13 +169,14 @@ impl Jit {
 
         let mut first = true;
         for instr in &irgraph.instrs {
-            if let Some(pc) = instr.pc {
+            if let Some(v) = instr.pc {
+                pc = v;
                 if first {
                     first = false;
                 } else {
-                    //jit_exit1!(4, pc);
+                    //jit_exit1!(4, v);
                 }
-                self.add_lookup(&asm.assemble(0x0).unwrap(), pc);
+                self.add_lookup(&asm.assemble(0x0).unwrap(), v);
             }
 
             match instr.op {
@@ -290,8 +293,42 @@ impl Jit {
                     let vr_in2 = extract_reg!(instr.i_reg[1]);
                     let r_in1  = get_reg_64!(vr_in1, 0);
                     let offset = extract_imm!(instr.i_reg[2]);
+                    let mut fallthrough = asm.create_label();
 
                     asm.add(r_in1, offset).unwrap();
+
+                    // Retrieve instruction operand size and retrieve memory permission bits
+                    let sz = match instr.flags {
+                        Flag::Byte => {
+                            asm.mov(rax, byte_ptr(r_in1 + r12)).unwrap();
+                            1
+                        },
+                        Flag::Word => {
+                            asm.mov(rax, word_ptr(r_in1 + r12)).unwrap();
+                            2
+                        },
+                        Flag::DWord => {
+                            asm.mov(rax, dword_ptr(r_in1 + r12)).unwrap();
+                            4
+                        },
+                        Flag::QWord => {
+                            asm.mov(rax, qword_ptr(r_in1 + r12)).unwrap();
+                            8
+                        },
+                        _ => unreachable!(),
+                    };
+
+                    // Set the permissions mask based on size
+                    let mask = (0..sz).fold(0u64, |acc, i| acc + ((Perms::WRITE as u64) << (8*i)));
+
+                    // rcx is permissions mask that checks that `size` bits have Perms::Read
+                    // rax contains the accessed memory permissions
+                    asm.mov(rcx, mask).unwrap();
+                    asm.and(rax, rcx).unwrap();
+                    asm.cmp(rax, rcx).unwrap();
+                    asm.je(fallthrough).unwrap();
+                    jit_exit1!(9, pc as u64);
+                    asm.set_label(&mut fallthrough).unwrap();
 
                     // Perform store operation with varying operand sizes based on flags
                     match instr.flags {
@@ -319,8 +356,55 @@ impl Jit {
                     let vr_in1 = extract_reg!(instr.i_reg[0]);
                     let r_in1  = get_reg_64!(vr_in1, 0);
                     let offset = extract_imm!(instr.i_reg[1]);
+                    let mut fallthrough = asm.create_label();
 
                     asm.add(r_in1, offset).unwrap();
+
+                    // Retrieve instruction operand size and retrieve memory permission bits
+                    let sz = match instr.flags {
+                        0b0001000001 => { 
+                            asm.mov(rax, byte_ptr(r_in1 + r12)).unwrap();
+                            1
+                        },
+                        0b0010000001 => {
+                            asm.mov(rax, word_ptr(r_in1 + r12)).unwrap();
+                            2
+                        },
+                        0b0100000001 => {
+                            asm.mov(rax, dword_ptr(r_in1 + r12)).unwrap();
+                            4
+                        },
+                        0b0001000010 => {
+                            asm.mov(rax, byte_ptr(r_in1 + r12)).unwrap();
+                            1
+                        },
+                        0b0010000010 => {
+                            asm.mov(rax, word_ptr(r_in1 + r12)).unwrap();
+                            2
+                        },
+                        0b0100000010 => {
+                            asm.mov(rax, word_ptr(r_in1 + r12)).unwrap();
+                            4
+                        },
+                        0b1000000000 => {
+                            asm.mov(rax, qword_ptr(r_in1 + r12)).unwrap();
+                            8
+                        },
+                        _ => unreachable!(),
+                    };
+
+
+                    // Set the permissions mask based on size
+                    let mask = (0..sz).fold(0u64, |acc, i| acc + ((Perms::READ as u64) << (8*i)));
+
+                    // rcx is permissions mask that checks that `size` bits have Perms::Read
+                    // rax contains the accessed memory permissions
+                    asm.mov(rcx, mask).unwrap();
+                    asm.and(rax, rcx).unwrap();
+                    asm.cmp(rax, rcx).unwrap();
+                    asm.je(fallthrough).unwrap();
+                    jit_exit1!(8, pc as u64);
+                    asm.set_label(&mut fallthrough).unwrap();
 
                     // Perform load operation with varying operand sizes based on flags
                     match instr.flags {

@@ -43,8 +43,9 @@ fn main() {
     });
 
     // Setup Stack
-    let stack = emu.allocate(1024 * 1024, Perms::READ | Perms::WRITE).expect("Error allocating stack");
-    emu.set_reg(Register::Sp, stack + 1024 * 1024);
+    let stack = emu.allocate(1024 * 1024, Perms::READ | Perms::WRITE)
+        .expect("Error allocating stack");
+    emu.set_reg(Register::Sp, (stack + (1024 * 1024)) - 8);
     // TODO setup argc, argv & envp
 
     // Setu hooks

@@ -319,6 +319,7 @@ impl Emulator {
                 call_dest = in(reg) func,
                 out("rax") exit_code,
                 out("rcx") reentry_pc,
+                in("r12") self.memory.permissions.as_ptr() as u64,
                 in("r13") self.memory.memory.as_ptr() as u64,
                 in("r14") self.state.regs.as_ptr() as u64,
                 in("r15") self.jit.lookup_arr.read().unwrap().as_ptr() as u64,
@@ -368,6 +369,12 @@ impl Emulator {
                 4 => { /* Debug function, huge performance cost, only use while debugging */
                     self.debug_jit(reentry_pc);
                 }
+                8 => { /* Attempted to read memory without read permissions */
+                    panic!("Invalid memory read: {:#0X}", reentry_pc);
+                },
+                9 => { /* Attempted to write to memory without write permissions */
+                    panic!("Invalid memory write: {:#0X}", reentry_pc);
+                },
                 _ => panic!("Invalid JIT return code: {:x}", exit_code),
             }
         }
@@ -607,7 +614,7 @@ impl Emulator {
                 Instr::Ecall {} => {
                     irgraph.syscall();
                 },
-                _ => { panic!("A problem occured while lifting to IR"); },
+                _ => { panic!("A problem occured while lifting to IR: {:?}", instr); },
             }
             pc += 4;
         }
