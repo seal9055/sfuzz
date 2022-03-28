@@ -109,7 +109,9 @@ impl Jit {
 
 
         //TODO early return to fix race condition bug
-
+        //if let Some(v) = self.lookup(init_pc) {
+        //    if v != 0 { return Some(v); }
+        //}
 
         /// Returns the destination register for an operation
         macro_rules! get_reg_64 {
@@ -294,6 +296,7 @@ impl Jit {
                     let r_in1  = get_reg_64!(vr_in1, 0);
                     let offset = extract_imm!(instr.i_reg[2]);
                     let mut fallthrough = asm.create_label();
+                    let mut skip = asm.create_label();
 
                     asm.add(r_in1, offset).unwrap();
 
@@ -321,14 +324,25 @@ impl Jit {
                     // Set the permissions mask based on size
                     let mask = (0..sz).fold(0u64, |acc, i| acc + ((Perms::WRITE as u64) << (8*i)));
 
-                    // rcx is permissions mask that checks that `size` bits have Perms::Read
+                    // rcx is permissions mask that checks that `size` bits have Perms::Write
                     // rax contains the accessed memory permissions
                     asm.mov(rcx, mask).unwrap();
                     asm.and(rax, rcx).unwrap();
                     asm.cmp(rax, rcx).unwrap();
                     asm.je(fallthrough).unwrap();
                     jit_exit1!(9, pc as u64);
+
+                    // Check if the page has already been dirtied, if not set in bitmap and continue
                     asm.set_label(&mut fallthrough).unwrap();
+                    asm.mov(rcx, r_in1).unwrap();
+                    asm.shr(rcx, 12).unwrap();
+                    asm.bts(qword_ptr(r11), rcx).unwrap();
+                    asm.jc(skip).unwrap();
+
+                    // The page has not already been dirtied, push to vector and inc its size by 1
+                    asm.mov(qword_ptr(r10 + (r9*8)), rcx).unwrap();
+                    asm.add(r9, 1).unwrap();
+                    asm.set_label(&mut skip).unwrap();
 
                     // Perform store operation with varying operand sizes based on flags
                     match instr.flags {

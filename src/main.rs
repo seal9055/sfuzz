@@ -55,8 +55,8 @@ fn main() {
                      .expect("Inserting Free hook failed"), free_hook);
 
     // Spawn worker threads to do the actual fuzzing
-    for thr_id in 0..1 {
-        let emu = emu.clone();
+    for thr_id in 0..8 {
+        let emu = emu.fork();
         thread::spawn(move || worker(thr_id, emu));
     }
 

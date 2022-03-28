@@ -134,7 +134,6 @@ impl Default for State {
 
 /// Emulator that runs the actual code. Each thread gets its own emulator in which everything is
 /// separate except the jit backing that all emulators share.
-#[derive(Clone)]
 pub struct Emulator {
     /// Memory backing for the emulator, contains actual memory bytes and permissions
     pub memory: Mmu,
@@ -173,12 +172,12 @@ impl Emulator {
     #[must_use]
     pub fn fork(&self) -> Self {
         Emulator {
-            memory:  self.memory.fork(),
-            state:   State::default(),
-            hooks:   self.hooks.clone(),
-            fd_list: self.fd_list.clone(),
+            memory:     self.memory.fork(),
+            state:      self.state.clone(),
+            hooks:      self.hooks.clone(),
+            fd_list:    self.fd_list.clone(),
             functions:  self.functions.clone(),
-            jit:     self.jit.clone(),
+            jit:        self.jit.clone(),
         }
     }
 
@@ -319,14 +318,20 @@ impl Emulator {
                 call_dest = in(reg) func,
                 out("rax") exit_code,
                 out("rcx") reentry_pc,
-                in("r12") self.memory.permissions.as_ptr() as u64,
-                in("r13") self.memory.memory.as_ptr() as u64,
-                in("r14") self.state.regs.as_ptr() as u64,
-                in("r15") self.jit.lookup_arr.read().unwrap().as_ptr() as u64,
+                inout("r9") self.memory.dirty_size,
+                in("r10")   self.memory.dirty.as_ptr() as u64,
+                in("r11")   self.memory.dirty_bitmap.as_ptr() as u64,
+                in("r12")   self.memory.permissions.as_ptr() as u64,
+                in("r13")   self.memory.memory.as_ptr() as u64,
+                in("r14")   self.state.regs.as_ptr() as u64,
+                in("r15")   self.jit.lookup_arr.read().unwrap().as_ptr() as u64,
                 );
+
+                self.memory.dirty.set_len(self.memory.dirty_size as usize);
             }
 
             self.set_reg(Register::Pc, reentry_pc);
+
 
             //if reentry_pc == 0x0000000000010194 {
             //    let v = self.state.regs[Register::A0 as usize];

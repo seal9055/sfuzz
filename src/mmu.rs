@@ -39,7 +39,7 @@ macro_rules! impl_byte_conversions {
 impl_byte_conversions!(u8, u16, u32, u64, u128, i8, i16, i32, i64, i128);
 
 /// Describes the virtual memory space that each emulator uses (each emulator has their own)
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Mmu {
     /// Block of memory used by an emulator instance, contains the actual memory
     pub memory: Vec<u8>,
@@ -50,53 +50,58 @@ pub struct Mmu {
     /// Holds the current program break at which new memory is allocated whenever needed
     alloc_addr: usize,
 
-    dirty: Vec<usize>,
+    pub dirty: Vec<usize>,
 
-    dirty_bitmap: Vec<u64>,
+    pub dirty_bitmap: Vec<u64>,
+
+    pub dirty_size: u64,
 }
 
 impl Mmu {
     /// Allocate initial memory space
     pub fn new(size: usize) -> Self {
         Mmu {
-            memory: vec![0u8; size],
-            permissions: vec![0u8; size],
-            alloc_addr: FIRSTALLOCATION,
-            dirty: Vec::with_capacity(size / 4096 + 1),
+            memory:       vec![0u8; size],
+            permissions:  vec![0u8; size],
+            alloc_addr:   FIRSTALLOCATION,
+            dirty:        Vec::with_capacity(size / 4096 + 1),
             dirty_bitmap: vec![0u64; size / 4096 / 64 + 1],
+            dirty_size:   0,
         }
     }
 
-    /// Fork the mmu's memory so another emulator can be started with it
+    /// Fork the mmu's memory so another emulator can be started with it. This will be an exact copy
+    /// of the input emulator, except that the dirty lists will be emptied.
     pub fn fork(&self) -> Self {
         let size = self.memory.len();
         Mmu {
-            memory: self.memory.clone(),
-            permissions: self.permissions.clone(),
-            alloc_addr: self.alloc_addr,
-            dirty: Vec::with_capacity(size / 4096 + 1),
+            memory:       self.memory.clone(),
+            permissions:  self.permissions.clone(),
+            alloc_addr:   self.alloc_addr,
+            dirty:        Vec::with_capacity(size / 4096 + 1),
             dirty_bitmap: vec![0u64; size / 4096 / 64 + 1],
+            dirty_size:   0,
         }
     }
 
     /// Restores memory back to original state prior to any fuzz cases
     pub fn reset(&mut self, other: &Mmu) {
-        //for &block in &self.dirty {
-        //    let start = block * 4096;
-        //    let end   = (block + 1) * 4096;
+        for &block in &self.dirty {
+            let start = block * 4096;
+            let end   = (block + 1) * 4096;
 
-        //    // Zero the bitmap
-        //    self.dirty_bitmap[block / 64] = 0;
+            // Completely reset the high level bitmap
+            self.dirty_bitmap[block / 64] = 0;
 
-        //    // Reset memory state
-        //    self.memory[start..end].copy_from_slice(&other.memory[start..end]);
+            // Reset all dirtied memory pages
+            self.memory[start..end].copy_from_slice(&other.memory[start..end]);
+            self.permissions[start..end].copy_from_slice(&other.permissions[start..end]);
+        }
+        // Reset dirty list
+        self.dirty.clear();
+        self.dirty_size = 0;
 
-        //    // Restory permissions
-        //    self.permissions[start..end].copy_from_slice(&other.permissions[start..end]);
-        //}
-        //self.dirty.clear();
-        self.memory = other.memory.clone();
-        self.permissions = other.permissions.clone();
+        // Reset current base address of heap allocator
         self.alloc_addr = other.alloc_addr;
     }
 
@@ -130,6 +135,23 @@ impl Mmu {
             Mmu::check_perms(self.permissions[i], Perms::WRITE).ok_or(Fault::WriteFault(i))?;
         }
         self.memory[addr..end_addr].copy_from_slice(&data[0..size]);
+
+        let block_start = addr / 4096;
+        let block_end   = (addr + size) / 4096;
+        for block in block_start..=block_end {
+            let idx = block / 64;
+            let bit = block % 64;
+
+            // If the bitmap does not already have an entry for the current write
+            if self.dirty_bitmap[idx] & (1 << bit) == 0 {
+                // Add a new entry to the dirty list
+                self.dirty.push(block);
+
+                // Update the dirty bitmap so that this page is not marked as dirty again on further
+                // writes
+                self.dirty_bitmap[idx] |= 1 << bit;
+            }
+        }
         Ok(())
     }
 

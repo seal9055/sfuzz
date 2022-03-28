@@ -146,10 +146,74 @@ an entire memory space used purely for permissions.
 The mmu exposes a custom alloc/free implementation that in combination with the byte level memory
 permissions detects most relevant heap bugs (double free, uaf, heap buffer overflow).
 
-Most aspects of the mmu are not yet relevant such as dirty bit resets for massive performance
-increases or snapshot based memory resets, so I will hold off on implementing these until sfuzz is
-ready to start fuzzing.
+`1. Byte level permission checks`
 
+On most architectures, permissions are handled at the hardware level. This means that whenever an
+instruction tries to access memory, with permissions not matching the access pattern, an abort is
+generated which is then handled at the software level. Generally these permissions are handled at
+the page table level so each page of memory has its own permission bits. With guard pages placed
+around critical locations such as kernel memory, this protects the operating system from crucial
+many bugs, and prevents memory accesses that are completely off of their target. When it comes to
+exploitation however, a small 8 byte out of bounds access can oftentimes already be enough to
+compromise the security of an application.  
+
+A tool commonly used while fuzzing is address sanitizer (also called asan). When a binary is 
+compiled using asan, it is instrumented at compile time with extra checks that make sure that every 
+memory access has the correct access permissions. This tool however has a few very relevant issues. 
+For one it requires access to the binaries source code to recompile it with proper instrumentation. 
+This makes it only useful to open source projects, which especially when fuzzing embedded systems,
+is often not available. Secondly, asan has a very non-significant performance overhead. According to
+a study conducted by google in 2012 (AddressSanitizer: A Fast Address Sanity Checker), it resulted
+in a 73% slowdown, which is quite a bit, especially when operating a fuzzer which is entirely
+dependant on its performance. This slowdown however was worth it due to the power of byte level
+permission checks and led to 300 new bugs being discovered in the Chrome browser at the time.
+
+In this case since the binary is being run in a custom JIT compiler, both of these drawbacks can be 
+almost entirely mitigated. Not having source code available is not an issue at all anymore since all 
+of the code is being generated at runtime anyways. As for the performance aspects, EXECUTE
+permissions are almost entirely free since they are checked once when a function is first compiled,
+and then assumed to be true for the rest of program execution. This would need some changes when
+dealing with JIT compilers that frequently change their executable memory mappings, but for 99% of
+use cases it should suffice. As for load and store instructions (that require the READ and WRITE
+permissions), the checks consist of 5 assembly instructions (1 memory load, 1 conditional jmp and 3
+arithmetic instructions). While this results in some additional overhead when performing frequent
+memory accesses, it is nowhere near as expensive as address sanitizer.
+
+These permission bits mean that every out of bounds memory access (even if it is just a
+single byte) instantly results in a notification to the fuzzer which can then modify its corpus to
+focus on this bug and attempt to increase the out of bounds bug. This permission model also applies
+to library functions such as malloc & free. These are hooked at compile time to instead call custom
+malloc/free implementations that support this byte level memory model. These hooked functions also
+include additional checks to completely destruct free'd memory so common heap bugs such as use
+after free's or double free's are instantly reported as well instead of leading to undefined
+behavior.
+
+`2. Dirty-bit memory resets`
+In the current implementation each new address space is 64mb large. This means that on each new fuzz
+case, this entire space needs to be reset to its initial state. Doing a massive 64mb memcpy() on
+each new fuzz case is very impractical and leads to completely unacceptable performance. Here we can
+borrow a concept that is common in the operating systems world: dirty bits. In operating systems,
+these are mainted at the page table level similar to the permissions. This bit is set whenever a
+write to memory occurs. This means that when copying memory between different cache levels, or just
+clearing memory, the page table can be traversed, and only pages with the dirty bit set need to have
+work done on them.
+
+The same principal applies to this fuzzer. When a fuzzer is run, only a very small percentage of
+this 64mb address space is actually overwritten. This means that by maintaining a dirty bit list,
+we can selectively chose which pages are reset while leaving most of the memory intact. The memory
+space in this case is not maintained in a page table so some of the implementation details differ,
+but the principal remains.
+
+The implementation in this project was heavily influenced by Brandon Falk's prior research into
+obtaining extremely fast memory resets. He tested multiple different approaches over the years, but
+eventually settled on one similar to this since walking the page tables in the jit-compiled assembly
+code to set a dirty bit was unnecessarily expensive. Instead 2 vector data structures are
+maitained. Whenever memory is dirtied, the address is pushed to an initially empty array that
+contains a listing of all dirtied memory regions. Additionally a dirty bitmap is maintained that is
+used to verify that only 1 address from each page is pushed to this array to avoid duplicates.
+Populating this vector during execution is very simple and only requires 6 additional instructions
+during store operations. While resetting, the fuzzer can then just iterate through the previously 
+populator vector and free the address ranges that were pushed to the vector.
 
 #### Code Generation
 
@@ -168,7 +232,7 @@ compilation is completed, the mutex is unlocked and the address of the newly gen
 returned to the calling emulator which can then resume execution. At this point all other threads
 can also access this newly compiled code via the translation table.<br><br>
 
-`1. Lift the function to the intermediate representation` (Completed)
+`1. Lift the function to the intermediate representation`
 
 The first step of actual code generation is to lift the entire function into an intermediate
 representation. The size of the function is determined during the initialization phase when first
@@ -257,7 +321,7 @@ The implementation details for this approach are listed in `Appendix A`, and the
 approach can be viewed at commit `7d129ab847d171b66901f4c936dd2ad5c5a1b79a` on the github
 repository.
 
-`2. Compiling to x86 machine code` (In Progress)
+`2. Compiling to x86 machine code`
 
 This phase pretty much just loops through all the previously lifted IR instructions and compiles
 them to X86 code. Whenever a syscall or a hooked function is encountered, appropriate instructions
@@ -285,9 +349,46 @@ well, however I am currently still working on correctly implementing the base JI
                implement dirty bit memory resets to massively improve performance and memory
                checking within the JIT load & store instructions.
 
+#### Performance Measurements
+
+`1. Initial single threaded JIT performance`
+
+This initial test just compares the fuzzers performance when used on a simple hello world binary.
+This is after having implemented dirty bit memory resets and byte level memory checks, the latter of
+which adds some performance overhead. In this case I compare the JIT to the below runner that pretty
+much just spawns the hello world process using a fork/exec combination similar to how most fuzzers
+operate. The JIT achieved 400,000 cases per second which is what I used for the loop size of the
+below runner. The C-code, compiled with -O3, needed slightly over 10 seconds to finish, making it
+about 10x slower than the JIT in its current state.
+
+```c
+int main() {
+    char *args[2];
+    args[0] = "./hello";
+    args[1] = NULL;
+
+    for (int i = 0; i < 400000; i++) {
+        if (fork() == 0) {
+            execv(args[0], args);
+        }
+    }
+}
+```
+
+The C implementation is pretty much as simple as it gets, the JIT however still has a lot of 
+potential for optimizations that will further grow this gap. Some of this will come from simple code
+optimizations while generating JIT code, others from adding improvements that shorten the code that
+has to be run such as snapshot based fuzzing. Another major performance gap will come from
+multi-threading. While the C-code above can certainly be multithreaded, it will eventually run into
+major locking issues when executing the `fork()` and `execv()` syscalls alongside all of the
+syscalls occuring in the actual fuzzer target. All of these have to go into the kernel, and with
+enough threads, a lot of time will be wasted in kernel locks. In comparison, the JIT emulates all
+syscalls in userland which avoids this cost entirely thus scaling linearly with cores as the
+`fork()` implementation starts falling off.
+
 #### Apendix A
 
-`2. Generate single-static-assignment form for the IR` (Completed)
+`2. Generate single-static-assignment form for the IR`
 
 The next step is to lift the previously generated code into single static assignment form. In this
 form each variable is assigned exactly once. This is where the second field of each register comes
@@ -478,3 +579,5 @@ et al
 * http://web.cs.ucla.edu/~palsberg/course/cs132/linearscan.pdf
 * Basic-Block Graphs: Living Dinosaurs? - Jens Knoop et al
 * RISCV User ISA specification
+* AddressSanitizer: A Fast Address Sanity Checker
+    https://static.googleusercontent.com/media/research.google.com/en//pubs/archive/37752.pdf
