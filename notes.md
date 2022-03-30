@@ -7,11 +7,11 @@
     3. Self-Modifying code  
 
 ## Fuzzing Reading List
-    1.  https://www.fuzzingbook.org/
-    2.  https://lcamtuf.blogspot.com/
-    3.  https://www.amazon.com/Fuzzing-Brute-Force-Vulnerability-Discovery/dp/0321446119
+    1.  y https://www.fuzzingbook.org/
+    2.  y https://lcamtuf.blogspot.com/
+    3.  n https://www.amazon.com/Fuzzing-Brute-Force-Vulnerability-Discovery/dp/0321446119
+    4.  y https://lcamtuf.coredump.cx/afl/technical_details.txt
 
-    4.  https://lcamtuf.coredump.cx/afl/technical_details.txt
     5.  https://arxiv.org/pdf/2005.07797.pdf
     6.  https://wcventure.github.io/FuzzingPaper/Paper/TRel18_Fuzzing.pdf
     7.  https://www.amazon.com/Fuzzing-Software-Security-Assurance-Information/dp/1596932147
@@ -42,6 +42,14 @@
     > Generate tuples of the above form for each piece of code. If a new tuple is encountered, add
         the mutated input as a new corpus entry (A -> B, simplest hash would be A ^ B)
     > Generally better than block coverage since it provides more insight into program execution
+        - Can trivially distinguish between the following 2 paths
+          A -> B -> C -> D -> E (tuples: AB, BC, CD, DE)
+          A -> B -> D -> C -> E (tuples: AB, BD, DC, CE)
+    > Could count how often each edge is taken?
+
+    cur_location = <COMPILE_TIME_RANDOM>;
+    shared_mem[cur_location ^ prev_location]++; 
+    prev_location = cur_location >> 1;
 
 ##### Trace/path Coverage
     > Number of logical paths in the program that were taken during execution
@@ -52,9 +60,12 @@
 
 ##### Collision Free coverage strategies
 
+
 ## Mutational Strategies
-##### Feedback loop approach
-    > Measure what type of mutations result in new coverage and use them more frequently
+##### General approach
+    > Feedback loop approach
+        - Measure what type of mutations result in new coverage and use them more frequently
+    > Start with sequential deterministic mutations before moving on to randomness
 
 ##### Individual strategies
     > Walking bit flips - sequential ordered bitflips
@@ -99,6 +110,12 @@
         same crash by mutating this input. This process uses very similar methods as the main
         fuzzer. Eventually it will have generated a small corpus of inputs related to the bug that
         can be triaged together to better understand the bug
+
+##### Deduping Crashes
+    > Group "similar" crashes together
+        - With edge based coverage this can be done whenever a new tuple is found that hasnt been
+            used to achieve this crash before, or if a tuple is missing
+    
 
 ## Performance
 ##### Persistent mode / Snapshot fuzzing

@@ -341,13 +341,7 @@ add rbx, rcx
 mov [r14 + r3_offset], rbx
 ```
 
-Other improvements such as byte level permissions checks and dirty bit checks will be added soon as
-well, however I am currently still working on correctly implementing the base JIT.
 <br><br>
-
-**Current State**: JIT compiler works and prints out hello world in a loop. Next steps will be to
-               implement dirty bit memory resets to massively improve performance and memory
-               checking within the JIT load & store instructions.
 
 #### Performance Measurements
 
