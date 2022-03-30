@@ -38,7 +38,7 @@ fn main() {
     let mut emu = Emulator::new(64 * 1024 * 1024, jit);
 
     // Insert loadable segments into emulator address space and retrieve symbol table information
-    let sym_map = load_elf_segments("./test_bin", &mut emu).unwrap_or_else(||{
+    let sym_map = load_elf_segments("./oob", &mut emu).unwrap_or_else(||{
         error_exit("Unrecoverable error while loading elf segments");
     });
 
@@ -48,14 +48,14 @@ fn main() {
     emu.set_reg(Register::Sp, (stack + (1024 * 1024)) - 8);
     // TODO setup argc, argv & envp
 
-    // Setu hooks
+    // Setup hooks
     emu.hooks.insert(*sym_map.get("_malloc_r")
                      .expect("Inserting Malloc hook failed"), malloc_hook);
     emu.hooks.insert(*sym_map.get("_free_r")
                      .expect("Inserting Free hook failed"), free_hook);
 
     // Spawn worker threads to do the actual fuzzing
-    for thr_id in 0..8 {
+    for thr_id in 0..1 {
         let emu = emu.fork();
         thread::spawn(move || worker(thr_id, emu));
     }

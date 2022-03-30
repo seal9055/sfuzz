@@ -128,8 +128,8 @@ Riscv compiler/tooling:
     libgmp-dev gawk build-essential bison flex texinfo gperf libtool patchutils bc zlib1g-dev \
     libexpat-dev
     git clone https://github.com/riscv-collab/riscv-gnu-toolchain && cd riscv-gnu-toolchain
-    ./configure --prefix=/opt/riscv --with-arch=rv64i --enable-multilib
-    sudo make linux -j 8
+    ./configure --prefix=/opt/riscv --with-arch=rv64i
+    sudo make -j
 Debugger:
     gdb-multiarch
 ```
@@ -571,8 +571,7 @@ for (reg, interval) in live_intervals { // in order of increasing starting point
 * Cranelift [https://cfallin.org/blog/] - Chris Fallin
 * Rv8: a high performance RISC-V to x86 binary translator - Michael Clark & Bruce Hoult
 * Generating Low-Overhead Dynamic Binary Translators - Mathias Payer & Thomas R. Gross
-* Efficiently Computing Static Single Assignment Form and the Control Dependence Graph - Cytron
-et al
+* Efficiently Computing Static Single Assignment Form and the Control Dependence Graph - Cytron et al
 * Engineerining a compiler Keith D. Cooper & Londa Torczon
 * Computing Liveness Sets for SSA-Form Programs - Brandner et al
 * Linear Scan Register Allocation on SSA Form - Christian Wimmer & Michael Franz
@@ -581,3 +580,4 @@ et al
 * RISCV User ISA specification
 * AddressSanitizer: A Fast Address Sanity Checker
     https://static.googleusercontent.com/media/research.google.com/en//pubs/archive/37752.pdf
+* 

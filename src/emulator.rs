@@ -434,7 +434,7 @@ impl Emulator {
         while pc < end_pc {
             let opcodes: u32 = self.memory.read_at(pc, Perms::READ | Perms::EXECUTE).map_err(|_|
                 Fault::ExecFault(pc)).unwrap();
-            let instr = decode_instr(opcodes);
+            let instr = decode_instr(opcodes).expect(&format!("Error occured at {:#0X}", pc));
             instrs.push(instr);
             pc +=4;
         }
@@ -619,7 +619,7 @@ impl Emulator {
                 Instr::Ecall {} => {
                     irgraph.syscall();
                 },
-                _ => { panic!("A problem occured while lifting to IR: {:?}", instr); },
+                _ => panic!("A problem occured while lifting pc={:#0X} instr={:?}", pc, instr),
             }
             pc += 4;
         }

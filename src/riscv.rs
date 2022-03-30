@@ -254,7 +254,7 @@ impl JType {
     }
 }
 
-pub fn decode_instr(instr: u32) -> Instr {
+pub fn decode_instr(instr: u32) -> Result<Instr, u32> {
     let opcode = instr & 0b1111111;
 
     let ret = match opcode {
@@ -518,9 +518,9 @@ pub fn decode_instr(instr: u32) -> Instr {
                 _ => { panic!("Instr: {:#?}", instr); }//unreachable!(); }
             }
         },
-        _ => { return Instr::Nil; }
+        _ => { return Err(instr); }
     };
-    ret
+    Ok(ret)
 }
 
 /// Unit tests for each Instruction encoding Riscv uses
