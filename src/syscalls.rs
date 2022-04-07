@@ -136,7 +136,7 @@ pub fn write(emu: &mut Emulator) -> Option<Fault> {
         return None;
     }
 
-    if false {
+    if true {
         let file = file.unwrap();
         if *file == STDOUT || *file == STDERR {
             let mut read_data = vec![0u8; count];
@@ -159,8 +159,10 @@ pub fn brk(emu: &mut Emulator) -> Option<Fault> {
         //panic!("brk not implemented for non 0 base address");
     }
 
-    emu.set_reg(Register::A0, 0);
-    panic!("brk not yet implemented");
+    emu.set_reg(Register::A0, !0);
+
+    //panic!("brk not yet implemented");
+    None
 }
 
 pub fn close(emu: &mut Emulator) -> Option<Fault> {

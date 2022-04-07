@@ -14,6 +14,7 @@ my_libs = { git = "https://github.com/seal9055/local_crates/", branch = "main" }
 rustc-hash = "1.1.0"
 petgraph = "0.6.0"
 num-traits = "0.2.14"
+byteorder = "1.4.3"
 
 [dependencies.iced-x86]
 version = "1.15.0"

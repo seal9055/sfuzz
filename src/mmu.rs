@@ -1,7 +1,7 @@
 use crate::emulator::Fault;
 
 /// The starting address for our memory allocator
-const FIRSTALLOCATION: usize = 0x60000 - 0x8;
+const FIRSTALLOCATION: usize = 0x600000 - 0x8;
 
 /// Used in this manner, the permissions can easily be used for bitflag permission checks
 #[non_exhaustive]

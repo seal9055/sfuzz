@@ -2,7 +2,7 @@ use crate::{
     mmu::{Mmu, Perms},
     elfparser,
     riscv::{decode_instr, Instr},
-    jit::Jit,
+    jit::{Jit, LibFuncs},
     syscalls,
     error_exit,
     irgraph::{IRGraph, Flag},
@@ -145,6 +145,10 @@ pub struct Emulator {
     /// important functions such as malloc/free to our own custom implementations
     pub hooks: FxHashMap<usize, fn(&mut Emulator) -> Result<(), Fault>>,
 
+    /// Another form of hook, just that in this case they point to precompiled code so the JIT can
+    /// immediately jump to them instead of dealing with the performance overhead of hooks
+    pub custom_lib: FxHashMap<usize, LibFuncs>,
+
     /// List of file descriptors that the process can use for syscalls
     pub fd_list: Vec<isize>,
 
@@ -159,11 +163,12 @@ impl Emulator {
     /// Create a new emulator that has access to the shared jit backing
     pub fn new(size: usize, jit: Arc<Jit>) -> Self {
         Emulator {
-            memory:  Mmu::new(size),
-            state:   State::default(),
-            hooks:   FxHashMap::default(),
-            fd_list: vec![STDIN, STDOUT, STDERR],
-            functions: FxHashMap::default(),
+            memory:     Mmu::new(size),
+            state:      State::default(),
+            hooks:      FxHashMap::default(),
+            custom_lib: FxHashMap::default(),
+            fd_list:    vec![STDIN, STDOUT, STDERR],
+            functions:  FxHashMap::default(),
             jit,
         }
     }
@@ -175,6 +180,7 @@ impl Emulator {
             memory:     self.memory.fork(),
             state:      self.state.clone(),
             hooks:      self.hooks.clone(),
+            custom_lib: self.custom_lib.clone(),
             fd_list:    self.fd_list.clone(),
             functions:  self.functions.clone(),
             jit:        self.jit.clone(),
@@ -302,7 +308,7 @@ impl Emulator {
                     let irgraph = self.lift_func(pc).unwrap();
 
                     // Compile the previously lifted function
-                    self.jit.compile(&irgraph, &self.hooks).unwrap()
+                    self.jit.compile(&irgraph, &self.hooks, &self.custom_lib).unwrap()
                 },
                 Some(addr) => addr
             };
@@ -347,18 +353,23 @@ impl Emulator {
                 2 => { /* SYSCALL */
                     match self.get_reg(Register::A7) {
                         57 => {
+                            println!("close hit");
                             syscalls::close(self);
                         },
                         64 => {
+                            println!("write hit");
                             syscalls::write(self);
                         },
                         80 => {
+                            println!("fstat hit");
                             syscalls::fstat(self);
                         },
                         93 => {
+                            println!("exit hit");
                             return syscalls::exit();
                         },
                         214 => {
+                            println!("brk hit");
                             syscalls::brk(self);
                         },
                         _ => { panic!("Unimplemented syscall: {}", self.get_reg(Register::A7)); }

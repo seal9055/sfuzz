@@ -1,6 +1,6 @@
 use crate::{
     irgraph::{IRGraph, Flag, Operation, Val},
-    emulator::{Emulator, Fault},
+    emulator::{Emulator, Fault, Register as PReg},
     mmu::{Perms},
 };
 
@@ -25,6 +25,12 @@ pub fn alloc_rwx(size: usize) -> &'static mut [u8] {
 
         std::slice::from_raw_parts_mut(ret, size)
     }
+}
+
+#[derive(Clone, Debug, Copy)]
+pub enum LibFuncs {
+    STRLEN,
+    STRCMP,
 }
 
 /// Holds various information related to tracking statistics for the fuzzer
@@ -55,7 +61,7 @@ impl Jit {
     }
 
     /// Write opcodes to the JIT backing buffer and add a mapping to lookup table
-    pub fn add_jitblock(&self, code: &[u8], pc: usize) -> usize {
+    pub fn add_jitblock(&self, code: &[u8], pc: Option<usize>) -> usize {
         let mut jit = self.jit_backing.lock().unwrap();
 
         let jit_inuse = jit.1;
@@ -64,7 +70,9 @@ impl Jit {
         let addr = jit.0.as_ptr() as usize + jit_inuse;
 
         // add mapping
-        self.lookup_arr.write().unwrap()[pc / 4] = addr;
+        if let Some(v) = pc {
+            self.lookup_arr.write().unwrap()[v / 4] = addr;
+        }
 
         jit.1 += code.len();
 
@@ -96,7 +104,7 @@ impl Jit {
     /// r14 : contains pointer to memory mapped register array
     /// r15 : contains pointer to jit lookup array
     pub fn compile(&self, irgraph: &IRGraph, hooks: &FxHashMap<usize, fn(&mut Emulator) 
-            -> Result<(), Fault>>) -> Option<usize> {
+            -> Result<(), Fault>>, custom_lib: &FxHashMap<usize, LibFuncs>) -> Option<usize> {
 
         let mut asm = CodeAssembler::new(64).unwrap();
 
@@ -166,7 +174,19 @@ impl Jit {
         // Insert hook for addresses we want to hook with our own function and return
         if hooks.get(&init_pc).is_some() {
             jit_exit1!(3, init_pc);
-            return Some(self.add_jitblock(&asm.assemble(0x0).unwrap(), init_pc));
+            return Some(self.add_jitblock(&asm.assemble(0x0).unwrap(), Some(init_pc)));
+        }
+
+        // String library functions such as strlen() or strcmp() contain optimizations that go out
+        // of bounds because they always attempt to read 8 bytes at a time. This causes issues for
+        // the byte-level permission checks that detect a bug. Since I don't want to incurr the 
+        // performance overhead of hooking all of them, I instead jit custom implementations of 
+        // these functions written in assembly
+        if let Some(v) = custom_lib.get(&init_pc) {
+            let b = self.compile_lib(init_pc, *v);
+
+            println!("{:?} compiled at: 0x{:X}", v, b.unwrap());
+            return b;
         }
 
         let mut first = true;
@@ -804,7 +824,100 @@ impl Jit {
         }
 
         // Actually compile the function and return the address it is compiled at
-        Some(self.add_jitblock(&asm.assemble(0x0).unwrap(), init_pc))
+        Some(self.add_jitblock(&asm.assemble(0x0).unwrap(), Some(init_pc)))
+    }
+
+    // TODO permission checks
+    /// JIT-compiled strcmp implementation
+    fn compile_strcmp(&self, pc: usize) -> Option<usize> {
+        let mut asm = CodeAssembler::new(64).unwrap();
+        let mut loop_start = asm.create_label();
+        let mut end_above  = asm.create_label();
+        let mut end_below  = asm.create_label();
+        let mut end_equal  = asm.create_label();
+
+        // Load A0 into rax & A1 into rbx
+        asm.mov(rax, ptr(r14 + PReg::A0.get_offset())).unwrap();
+        asm.mov(rbx, ptr(r14 + PReg::A1.get_offset())).unwrap();
+        asm.xor(rcx, rcx).unwrap();
+
+        // Main loop to compare the 2 strings
+        asm.set_label(&mut loop_start).unwrap();
+        asm.mov(dl, byte_ptr(rax + rcx)).unwrap();
+        asm.mov(dh, byte_ptr(rbx + rcx)).unwrap();
+        asm.inc(rcx).unwrap();
+        asm.test(dl, dl).unwrap();
+        asm.jz(end_equal).unwrap();
+        asm.cmp(dl, dh).unwrap();
+        asm.je(loop_start).unwrap();
+        asm.jb(end_below).unwrap();
+
+        // Strings not equal exit condition 1
+        asm.set_label(&mut end_above).unwrap();
+        asm.xor(rcx, rcx).unwrap();
+        asm.inc(rcx).unwrap();
+        asm.mov(ptr(r14 + PReg::A0.get_offset()), rcx).unwrap();
+        asm.mov(rbx, ptr(r14 + PReg::Ra.get_offset())).unwrap();
+        asm.jmp(rbx).unwrap();
+
+        // Strings not equal exit condition -1
+        asm.set_label(&mut end_below).unwrap();
+        asm.xor(rcx, rcx).unwrap();
+        asm.dec(rcx).unwrap();
+        asm.mov(ptr(r14 + PReg::A0.get_offset()), rcx).unwrap();
+        asm.mov(rbx, ptr(r14 + PReg::Ra.get_offset())).unwrap();
+        asm.jmp(rbx).unwrap();
+
+        // If both strings are at a nullbyte when this is hit, return 0
+        asm.set_label(&mut end_equal).unwrap();
+        asm.test(dh, dh).unwrap();
+        asm.jnz(end_below).unwrap();
+        asm.xor(rcx, rcx).unwrap();
+        asm.mov(ptr(r14 + PReg::A0.get_offset()), rcx).unwrap();
+        asm.mov(rbx, ptr(r14 + PReg::Ra.get_offset())).unwrap();
+        asm.jmp(rbx).unwrap();
+
+        Some(self.add_jitblock(&asm.assemble(0x0).unwrap(), Some(pc)))
+    }
+
+    // TODO permission checks
+    /// JIT-compiled strlen implementation
+    fn compile_strlen(&self, pc: usize) -> Option<usize> {
+        let mut asm = CodeAssembler::new(64).unwrap();
+        let mut loop_start = asm.create_label();
+        let mut loop_end   = asm.create_label();
+
+        let v = self.lookup(0x8d514).unwrap();
+        println!("v is: {:}", v);
+
+        asm.mov(rbx, ptr(r14 + PReg::A0.get_offset())).unwrap();
+        asm.add(rbx, r13).unwrap();
+        asm.lea(rax, ptr(rbx + 1)).unwrap();
+
+        // Main loop
+        asm.set_label(&mut loop_start).unwrap();
+        asm.mov(cl, byte_ptr(rax)).unwrap();
+        asm.inc(rax).unwrap();
+        asm.test(cl, cl).unwrap();
+        asm.jnz(loop_start).unwrap();
+
+        // Return
+        asm.int3().unwrap();
+        asm.sub(rax, rbx).unwrap();
+        asm.mov(ptr(r14 + PReg::A0.get_offset()), rax).unwrap();
+        asm.mov(rbx, ptr(r14 + PReg::Ra.get_offset())).unwrap();
+        asm.shl(rbx, 1).unwrap();
+        asm.mov(rbx, ptr(r15 + rbx)).unwrap();
+        asm.jmp(rbx).unwrap();
+
+        Some(self.add_jitblock(&asm.assemble(0x0).unwrap(), Some(pc)))
+    }
+
+    fn compile_lib(&self, pc: usize, func: LibFuncs) -> Option<usize> {
+        match func {
+            LibFuncs::STRLEN => self.compile_strlen(pc),
+            LibFuncs::STRCMP => self.compile_strcmp(pc),
+        }
     }
 }
 
@@ -853,10 +966,10 @@ mod tests {
         asm.sub(rax, rax).unwrap();
         asm.ret().unwrap();
 
-        jit.add_jitblock(&asm.assemble(0x0).unwrap(), 0x1234);
-        jit.add_jitblock(&asm.assemble(0x0).unwrap(), 0x4444);
-        jit.add_jitblock(&asm.assemble(0x0).unwrap(), 0x9055);
-        jit.add_jitblock(&asm.assemble(0x0).unwrap(), 0x1000);
+        jit.add_jitblock(&asm.assemble(0x0).unwrap(), Some(0x1234));
+        jit.add_jitblock(&asm.assemble(0x0).unwrap(), Some(0x4444));
+        jit.add_jitblock(&asm.assemble(0x0).unwrap(), Some(0x9055));
+        jit.add_jitblock(&asm.assemble(0x0).unwrap(), Some(0x1000));
 
         jit.lookup(0x1234).unwrap();
         jit.lookup(0x4444).unwrap();
