@@ -184,8 +184,6 @@ impl Jit {
         // these functions written in assembly
         if let Some(v) = custom_lib.get(&init_pc) {
             let b = self.compile_lib(init_pc, *v);
-
-            println!("{:?} compiled at: 0x{:X}", v, b.unwrap());
             return b;
         }
 
@@ -196,7 +194,7 @@ impl Jit {
                 if first {
                     first = false;
                 } else {
-                    //jit_exit1!(4, v);
+                    jit_exit1!(4, v);
                 }
                 self.add_lookup(&asm.assemble(0x0).unwrap(), v);
             }
@@ -839,6 +837,8 @@ impl Jit {
         // Load A0 into rax & A1 into rbx
         asm.mov(rax, ptr(r14 + PReg::A0.get_offset())).unwrap();
         asm.mov(rbx, ptr(r14 + PReg::A1.get_offset())).unwrap();
+        asm.add(rax, r13).unwrap();
+        asm.add(rbx, r13).unwrap();
         asm.xor(rcx, rcx).unwrap();
 
         // Main loop to compare the 2 strings
@@ -857,7 +857,10 @@ impl Jit {
         asm.xor(rcx, rcx).unwrap();
         asm.inc(rcx).unwrap();
         asm.mov(ptr(r14 + PReg::A0.get_offset()), rcx).unwrap();
+        // return
         asm.mov(rbx, ptr(r14 + PReg::Ra.get_offset())).unwrap();
+        asm.shl(rbx, 1).unwrap();
+        asm.mov(rbx, ptr(r15 + rbx)).unwrap();
         asm.jmp(rbx).unwrap();
 
         // Strings not equal exit condition -1
@@ -865,7 +868,10 @@ impl Jit {
         asm.xor(rcx, rcx).unwrap();
         asm.dec(rcx).unwrap();
         asm.mov(ptr(r14 + PReg::A0.get_offset()), rcx).unwrap();
+        // return
         asm.mov(rbx, ptr(r14 + PReg::Ra.get_offset())).unwrap();
+        asm.shl(rbx, 1).unwrap();
+        asm.mov(rbx, ptr(r15 + rbx)).unwrap();
         asm.jmp(rbx).unwrap();
 
         // If both strings are at a nullbyte when this is hit, return 0
@@ -874,7 +880,10 @@ impl Jit {
         asm.jnz(end_below).unwrap();
         asm.xor(rcx, rcx).unwrap();
         asm.mov(ptr(r14 + PReg::A0.get_offset()), rcx).unwrap();
+        // Return
         asm.mov(rbx, ptr(r14 + PReg::Ra.get_offset())).unwrap();
+        asm.shl(rbx, 1).unwrap();
+        asm.mov(rbx, ptr(r15 + rbx)).unwrap();
         asm.jmp(rbx).unwrap();
 
         Some(self.add_jitblock(&asm.assemble(0x0).unwrap(), Some(pc)))
@@ -885,10 +894,6 @@ impl Jit {
     fn compile_strlen(&self, pc: usize) -> Option<usize> {
         let mut asm = CodeAssembler::new(64).unwrap();
         let mut loop_start = asm.create_label();
-        let mut loop_end   = asm.create_label();
-
-        let v = self.lookup(0x8d514).unwrap();
-        println!("v is: {:}", v);
 
         asm.mov(rbx, ptr(r14 + PReg::A0.get_offset())).unwrap();
         asm.add(rbx, r13).unwrap();
@@ -901,10 +906,9 @@ impl Jit {
         asm.test(cl, cl).unwrap();
         asm.jnz(loop_start).unwrap();
 
-        // Return
-        asm.int3().unwrap();
         asm.sub(rax, rbx).unwrap();
         asm.mov(ptr(r14 + PReg::A0.get_offset()), rax).unwrap();
+        // Return
         asm.mov(rbx, ptr(r14 + PReg::Ra.get_offset())).unwrap();
         asm.shl(rbx, 1).unwrap();
         asm.mov(rbx, ptr(r15 + rbx)).unwrap();

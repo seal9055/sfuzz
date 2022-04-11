@@ -1,33 +1,7 @@
 use crate::mmu::Perms;
-use crate::emulator::{Emulator, Register, STDOUT, STDERR, Fault};
+use crate::emulator::{Emulator, Register, FileType::{self, STDOUT, STDERR, INVALID}, Fault};
 
 // Helper Structs for syscalls {{{
-
-//#[repr(C)]
-//#[derive(Default, Debug)]
-//struct Stat {
-//    st_dev:     u64, // dev_t
-//    st_ino:     u64, // ino_t
-//    st_rdev:    u64, // dev_t
-//    st_size:    i64, // off_t
-//    st_blocks:  u64, // st_blocks
-//
-//    st_mode:    u32, // mode_t
-//    st_uid:     u32, // uid_t
-//    st_gid:     u32, // gid_t
-//    st_blksize: u32, // blksize_t
-//    st_nlink:   u32, // nlink_t
-//    __pad0:     u32,
-//
-//    st_atime_sec: u64,
-//    st_atimensec: u64,
-//    st_mtime_sec: u64,
-//    st_mtimensec: u64,
-//    st_ctime_sec: u64,
-//    st_ctimensec: u64,
-//
-//    __glibc_reserved: [i64; 3],
-//}
 
 #[repr(C)]
 #[derive(Default, Debug)]
@@ -53,7 +27,7 @@ struct Stat {
     st_mtimensec: u64,
     st_ctime:     u64,
     st_ctimensec: u64,
-    
+
     __glibc_reserved: [i32; 2],
 }
 
@@ -64,65 +38,132 @@ pub fn exit() -> Option<Fault> {
     Some(Fault::Exit)
 }
 
-pub fn fstat(emu: &mut Emulator) -> Option<Fault> {
-    let fd = emu.get_reg(Register::A0) as usize;
-    let _statbuf = emu.get_reg(Register::A1);
-
-    let file = emu.fd_list.get(fd);
-
-    if file.is_none() {
-        emu.set_reg(Register::A0, !0);
-        return None;
-    }
-
-    let _file = file.unwrap();
-
-    // For now just return -1
-    emu.set_reg(Register::A0, 0);
-
-    None
-}
-
 //pub fn fstat(emu: &mut Emulator) -> Option<Fault> {
-//    let fd      = emu.get_reg(Register::A0) as usize;
-//    let statbuf = emu.get_reg(Register::A1);
+//    let fd = emu.get_reg(Register::A0) as usize;
+//    let _statbuf = emu.get_reg(Register::A1);
 //
-//    // Check if the FD is valid
 //    let file = emu.fd_list.get(fd);
+//
 //    if file.is_none() {
-//        // FD was not valid, return out with an error
 //        emu.set_reg(Register::A0, !0);
 //        return None;
 //    }
 //
-//    let mut stat = Stat::default();
-//    stat.st_dev = 0x803;
-//    stat.st_ino = 0x81889;
-//    stat.st_mode = 0x81a4;
-//    stat.st_nlink = 0x1;
-//    stat.st_uid = 0x3e8;
-//    stat.st_gid = 0x3e8;
-//    stat.st_rdev = 0x0;
-//    stat.st_size = 0x4444;
-//    stat.st_blksize = 0x1000;
-//    stat.st_blocks = 0x5555;
-//    stat.st_atime = 0x5f0fe246;
-//    stat.st_mtime = 0x5f0fe244;
-//    stat.st_ctime = 0x5f0fe244;
+//    let _file = file.unwrap();
 //
-//    // Cast the stat structure to raw bytes
-//    let stat = unsafe {
-//        core::slice::from_raw_parts(
-//            &stat as *const Stat as *const u8,
-//            core::mem::size_of_val(&stat))
-//    };
-//
-//    // Write in the stat data
-//    emu.memory.write_mem(statbuf as usize, stat, stat.len()).unwrap();
+//    // For now just return -1
 //    emu.set_reg(Register::A0, 0);
 //
 //    None
 //}
+
+pub fn fstat(emu: &mut Emulator) -> Option<Fault> {
+    let fd      = emu.get_reg(Register::A0) as usize;
+    let statbuf = emu.get_reg(Register::A1);
+
+    // Check if the FD is valid
+    let file = emu.fd_list.get(fd);
+    if file.is_none() {
+        // FD was not valid, return out with an error
+        emu.set_reg(Register::A0, !0);
+        return None;
+    }
+
+    if file.unwrap().ftype == FileType::FUZZINPUT {
+        let mut stat = Stat::default();
+        stat.st_dev = 0x803;
+        stat.st_ino = 0x81889;
+        stat.st_mode = 0x81a4;
+        stat.st_nlink = 0x1;
+        stat.st_uid = 0x3e8;
+        stat.st_gid = 0x3e8;
+        stat.st_rdev = 0x0;
+        stat.st_size = emu.fuzz_input.len() as i64;
+        stat.st_blksize = 0x1000;
+        stat.st_blocks = (emu.fuzz_input.len() as i64 + 511) / 512;
+        stat.st_atime = 0x5f0fe246;
+        stat.st_mtime = 0x5f0fe244;
+        stat.st_ctime = 0x5f0fe244;
+
+        // Cast the stat structure to raw bytes
+        let stat = unsafe {
+            core::slice::from_raw_parts(
+                &stat as *const Stat as *const u8,
+                core::mem::size_of_val(&stat))
+        };
+
+        // Write in the stat data
+        emu.memory.write_mem(statbuf as usize, stat, stat.len()).unwrap();
+        emu.set_reg(Register::A0, 0);
+    } else {
+        unreachable!();
+    }
+
+    None
+}
+
+pub fn lseek(emu: &mut Emulator) -> Option<Fault> {
+    let fd     = emu.get_reg(Register::A0) as usize;
+    let offset = emu.get_reg(Register::A1) as i64;
+    let whence = emu.get_reg(Register::A2) as i32;
+
+    if emu.fd_list.len() < fd || emu.fd_list[fd].ftype == FileType::INVALID {
+        emu.set_reg(Register::A0, !0);
+        return None;
+    }
+
+    if emu.fd_list[fd].ftype == FileType::FUZZINPUT {
+        let cur = emu.fd_list[fd].cursor.unwrap();
+
+        let new_pos: i64 = match whence {
+            0 => offset,                                // SEEK_SET
+            1 => cur as i64 + offset,                   // SEEK_CUR
+            2 => (emu.fuzz_input.len() as i64) + offset,         // SEEK_END
+            _ => {
+                emu.set_reg(Register::A0, !0);
+                return None;
+            }
+        };
+
+        let new_pos = core::cmp::max(0i64, new_pos);
+        let new_pos = core::cmp::min(new_pos, emu.fuzz_input.len() as i64) as usize;
+
+        emu.fd_list[fd].cursor = Some(new_pos);
+        emu.set_reg(Register::A0, new_pos);
+    } else {
+        unreachable!();
+    }
+    None
+}
+
+pub fn open(emu: &mut Emulator) -> Option<Fault> {
+    let filename = emu.get_reg(Register::A0) as usize;
+    let _flags    = emu.get_reg(Register::A1);
+    let _mode    = emu.get_reg(Register::A2);
+
+    let mut buf: Vec<u8> = Vec::new();
+    let mut cur = 0;
+    // get filename length
+    loop {
+        let c: u8 = emu.memory.read_at(filename + cur, Perms::READ).unwrap();
+        buf.push(c);
+        if c == 0 {
+            break;
+        }
+        cur += 1;
+    }
+    let s = std::str::from_utf8(&buf).unwrap();
+
+    println!("opened: {}", s);
+
+    if buf == b"fuzz_input\0" {
+        emu.alloc_file(FileType::FUZZINPUT);
+    } else {
+        emu.alloc_file(FileType::OTHER);
+    }
+
+    None
+}
 
 pub fn write(emu: &mut Emulator) -> Option<Fault> {
     let fd    = emu.get_reg(Register::A0) as usize;
@@ -138,7 +179,7 @@ pub fn write(emu: &mut Emulator) -> Option<Fault> {
 
     if true {
         let file = file.unwrap();
-        if *file == STDOUT || *file == STDERR {
+        if file.ftype == STDOUT || file.ftype == STDERR {
             let mut read_data = vec![0u8; count];
             emu.memory.read_into(buf, &mut read_data, count, Perms::READ).unwrap();
             let s = std::str::from_utf8(&read_data);
@@ -154,14 +195,9 @@ pub fn write(emu: &mut Emulator) -> Option<Fault> {
 }
 
 pub fn brk(emu: &mut Emulator) -> Option<Fault> {
-    let base = emu.get_reg(Register::A0);
-    if base != 0 {
-        //panic!("brk not implemented for non 0 base address");
-    }
+    let _base = emu.get_reg(Register::A0);
 
     emu.set_reg(Register::A0, !0);
-
-    //panic!("brk not yet implemented");
     None
 }
 
@@ -177,7 +213,7 @@ pub fn close(emu: &mut Emulator) -> Option<Fault> {
 
     let file = file.unwrap();
 
-    *file = -1;
+    file.ftype = INVALID;
 
     emu.set_reg(Register::A0, 0);
     None

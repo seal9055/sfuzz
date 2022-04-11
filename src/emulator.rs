@@ -6,6 +6,7 @@ use crate::{
     syscalls,
     error_exit,
     irgraph::{IRGraph, Flag},
+    emulator::{FileType::{STDIN, STDOUT, STDERR}},
 };
 
 use std::sync::Arc;
@@ -14,10 +15,6 @@ use std::collections::BTreeMap;
 
 use rustc_hash::FxHashMap;
 use iced_x86::code_asm::*;
-
-pub const STDIN:  isize = 0;
-pub const STDOUT: isize = 1;
-pub const STDERR: isize = 2;
 
 /// 33 RISCV Registers + 2 Extra temporary registers that the IR needs
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Ord, PartialOrd)]
@@ -132,6 +129,38 @@ impl Default for State {
     }
 }
 
+#[derive(Copy, Debug, Clone, Eq, PartialEq)]
+pub enum FileType {
+    STDIN,
+    STDOUT,
+    STDERR,
+    FUZZINPUT,
+    OTHER,
+    INVALID,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct File {
+    pub ftype:   FileType,
+    pub backing: Option<Vec<u8>>,
+    pub cursor:  Option<usize>,
+}
+
+impl File {
+    fn new(ftype: FileType) -> Self {
+        let (backing, cursor) = match ftype {
+            FileType::OTHER => (Some(Vec::new()), Some(0)),
+            FileType::FUZZINPUT => (None, Some(0)),
+            _ => (None, None),
+        };
+        File {
+            ftype,
+            backing,
+            cursor,
+        }
+    }
+}
+
 /// Emulator that runs the actual code. Each thread gets its own emulator in which everything is
 /// separate except the jit backing that all emulators share.
 pub struct Emulator {
@@ -150,13 +179,15 @@ pub struct Emulator {
     pub custom_lib: FxHashMap<usize, LibFuncs>,
 
     /// List of file descriptors that the process can use for syscalls
-    pub fd_list: Vec<isize>,
+    pub fd_list: Vec<File>,
 
     /// Mapping between function address and function size
-    pub functions: FxHashMap<usize, usize>,
+    pub functions: FxHashMap<usize, (usize, String)>,
 
     /// The actual jit compiler backing
     pub jit: Arc<Jit>,
+
+    pub fuzz_input: Vec<u8>,
 }
 
 impl Emulator {
@@ -167,9 +198,10 @@ impl Emulator {
             state:      State::default(),
             hooks:      FxHashMap::default(),
             custom_lib: FxHashMap::default(),
-            fd_list:    vec![STDIN, STDOUT, STDERR],
+            fd_list:    vec![File::new(STDIN), File::new(STDOUT), File::new(STDERR)],
             functions:  FxHashMap::default(),
             jit,
+            fuzz_input: Vec::new(),
         }
     }
 
@@ -184,6 +216,7 @@ impl Emulator {
             fd_list:    self.fd_list.clone(),
             functions:  self.functions.clone(),
             jit:        self.jit.clone(),
+            fuzz_input: self.fuzz_input.clone(),
         }
     }
 
@@ -194,6 +227,12 @@ impl Emulator {
 
         self.fd_list.clear();
         self.fd_list.extend_from_slice(&original.fd_list);
+    }
+
+    pub fn alloc_file(&mut self, ftype: FileType) -> usize {
+        let file = File::new(ftype);
+        self.fd_list.push(file);
+        self.fd_list.len() - 1
     }
 
     /// Set a register
@@ -306,9 +345,11 @@ impl Emulator {
                 Option::None => {
                     // IR instructions + labels at start of each control block
                     let irgraph = self.lift_func(pc).unwrap();
+                    println!("done");
 
                     // Compile the previously lifted function
-                    self.jit.compile(&irgraph, &self.hooks, &self.custom_lib).unwrap()
+                    self.jit.compile(&irgraph, &self.hooks, &self.custom_lib)
+                        .unwrap()
                 },
                 Some(addr) => addr
             };
@@ -356,6 +397,10 @@ impl Emulator {
                             println!("close hit");
                             syscalls::close(self);
                         },
+                        62 => {
+                            println!("lseek hit");
+                            syscalls::lseek(self);
+                        }
                         64 => {
                             println!("write hit");
                             syscalls::write(self);
@@ -372,6 +417,10 @@ impl Emulator {
                             println!("brk hit");
                             syscalls::brk(self);
                         },
+                        1024 => {
+                            println!("open hit");
+                            syscalls::open(self);
+                        }
                         _ => { panic!("Unimplemented syscall: {}", self.get_reg(Register::A7)); }
                     }
                 },
@@ -438,7 +487,7 @@ impl Emulator {
         let start_pc = pc;
 
         //println!("PC IS: {:#0X}", pc);
-        let end_pc   = start_pc + self.functions.get(&pc).unwrap();
+        let end_pc   = start_pc + self.functions.get(&pc).unwrap().0;
 
         //println!("({:#0x} : {:#0x})", start_pc, end_pc);
 
@@ -448,6 +497,10 @@ impl Emulator {
             let instr = decode_instr(opcodes).expect(&format!("Error occured at {:#0X}", pc));
             instrs.push(instr);
             pc +=4;
+        }
+
+        if let Some(v) = self.functions.get(&start_pc) {
+            println!("Lifting: {}", v.1);
         }
 
         // These are used to determine jump locations ahead of time

@@ -90,6 +90,7 @@ pub fn load_elf_segments(filename: &str, emu_inst: &mut Emulator)
 
     let symtab_hdr = symtab_hdr.unwrap();
     let strtab_off = strtab_hdr.unwrap().s_offset;
+    let mut func_names: FxHashMap<usize, String> = FxHashMap::default();
 
     // Use symbol table to extract all symbol names and addresses. Our JIT can use this
     // information to place hooks at specific function entries
@@ -116,6 +117,7 @@ pub fn load_elf_segments(filename: &str, emu_inst: &mut Emulator)
             symbol_map.insert(sym_name.to_string(), sym_entry.sym_value);
             function_listing.insert((sym_entry.sym_value, sym_entry.sym_size), 
                                     sym_entry.sym_value as isize);
+            func_names.insert(sym_entry.sym_value, sym_name.to_string());
         }
     }
 
@@ -127,7 +129,8 @@ pub fn load_elf_segments(filename: &str, emu_inst: &mut Emulator)
         if v.1 == 0 {
             v.1 = function_listing.0[i+1].0 - v.0;
         }
-        emu_inst.functions.insert(v.0, v.1);
+        // function address, size, name
+        emu_inst.functions.insert(v.0, (v.1, func_names.get(&v.0).unwrap().clone()));
     }
 
     emu_inst.set_reg(Register::Pc, elf_hdr.entry_addr);
@@ -141,12 +144,17 @@ pub fn worker(_thr_id: usize, mut emu: Emulator) {
     let mut count = 0;
 
     loop {
-        emu.reset(&original); //= original.fork();
+        emu.reset(&original);
+
+        for _ in 0..40 {
+            emu.fuzz_input.push(0x41);
+        }
+
         emu.run_jit().unwrap();
         count +=1;
         if count == BATCH_SIZE {
             count = 0;
-            emu.jit.stats.lock().unwrap().total_cases += BATCH_SIZE; 
+            //emu.jit.stats.lock().unwrap().total_cases += BATCH_SIZE; 
         }
     }
 }

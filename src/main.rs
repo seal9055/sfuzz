@@ -23,11 +23,31 @@ fn malloc_hook(emu: &mut Emulator) -> Result<(), Fault> {
     }
 }
 
+fn calloc_hook(emu: &mut Emulator) -> Result<(), Fault> {
+    let nmemb = emu.get_reg(Register::A1);
+    let size  = emu.get_reg(Register::A2);
+    let alloc_size = size * nmemb;
+
+    if let Some(addr) = emu.memory.allocate(alloc_size, Perms::READ | Perms::WRITE) {
+        emu.set_reg(Register::A0, addr);
+        emu.set_reg(Register::Pc, emu.get_reg(Register::Ra));
+        Ok(())
+    } else {
+        Err(Fault::OOM)
+    }
+}
+
 /// Hook that makes use of sfuzz's mmu to perform a memory safe free operation
 fn free_hook(emu: &mut Emulator) -> Result<(), Fault> {
     let ptr = emu.get_reg(Register::A1);
 
     emu.memory.free(ptr).unwrap();
+    emu.set_reg(Register::Pc, emu.get_reg(Register::Ra));
+    Ok(())
+}
+
+/// Hook that does nothing
+fn nop_hook(emu: &mut Emulator) -> Result<(), Fault> {
     emu.set_reg(Register::Pc, emu.get_reg(Register::Ra));
     Ok(())
 }
@@ -52,8 +72,10 @@ fn main() {
     // Allocate space for argv[0] & argv[1]
     let arg0 = emu.allocate(64, Perms::READ | Perms::WRITE).expect("Allocating argv[0] failed");
     let arg1 = emu.allocate(64, Perms::READ | Perms::WRITE).expect("Allocating argv[1] failed");
+    let arg2 = emu.allocate(64, Perms::READ | Perms::WRITE).expect("Allocating argv[2] failed");
     emu.memory.write_mem(arg0, b"target_bin\0", 11).expect("Writing to argv[0] failed");
-    emu.memory.write_mem(arg1, b"test_arg1\0", 10).expect("Writing to argv[1] failed");
+    emu.memory.write_mem(arg1, b"-x\0", 3).expect("Writing to argv[1] failed");
+    emu.memory.write_mem(arg2, b"fuzz_input\0", 11).expect("Writing to argv[2] failed");
 
     // Macro to push 64-bit integers onto the stack
     macro_rules! push {
@@ -69,27 +91,30 @@ fn main() {
     // Setup argc, argv & envp
     push!(0u64);    // Auxp
     push!(0u64);    // Envp
-    push!(0u64);    // Argv[2] (null to terminate array)
+    push!(0u64);    // Argv[3] (null to terminate array)
+    push!(arg2);    // Argv[2]
     push!(arg1);    // Argv[1]
     push!(arg0);    // Argv[0]
-    push!(2u64);    // Argc
+    push!(3u64);    // Argc
 
     // Setup hooks
     emu.hooks.insert(*sym_map.get("_malloc_r")
                      .expect("Inserting _malloc_r hook failed"), malloc_hook);
-
     emu.hooks.insert(*sym_map.get("xmalloc")
                      .expect("Inserting xmalloc hook failed"), malloc_hook);
-
+    emu.hooks.insert(*sym_map.get("malloc")
+                     .expect("Inserting malloc hook failed"), malloc_hook);
     emu.hooks.insert(*sym_map.get("_free_r")
                      .expect("Inserting _free_r hook failed"), free_hook);
-
     emu.hooks.insert(*sym_map.get("free")
                      .expect("Inserting free hook failed"), free_hook);
 
-    for v in &sym_map {
-        println!("{:?}", v);
-    }
+    emu.hooks.insert(*sym_map.get("_calloc_r")
+                     .expect("Inserting free hook failed"), calloc_hook);
+
+    emu.hooks.insert(*sym_map.get("xmalloc_set_program_name")
+                     .expect("Inserting xmalloc_set_program_name hook failed"), nop_hook);
+
     emu.custom_lib.insert(*sym_map.get("strlen")
                      .expect("Inserting strlen custom code failed"), LibFuncs::STRLEN);
     emu.custom_lib.insert(*sym_map.get("strcmp")
