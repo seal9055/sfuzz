@@ -4,16 +4,20 @@ pub mod riscv;
 pub mod jit;
 pub mod syscalls;
 pub mod irgraph;
+pub mod mutator;
 
 extern crate iced_x86;
 
 use elfparser::{self, ARCH64, ELFMAGIC, LITTLEENDIAN, TYPEEXEC, RISCV};
 use emulator::{Emulator, Register};
+use mutator::Mutator;
 use my_libs::sorted_vec::*;
 
 use std::process;
+use std::sync::Arc;
 
 use rustc_hash::FxHashMap;
+use rand::Rng;
 
 /// Small wrapper to easily handle unrecoverable errors without panicking
 pub fn error_exit(msg: &str) -> ! {
@@ -137,24 +141,43 @@ pub fn load_elf_segments(filename: &str, emu_inst: &mut Emulator)
     Some(symbol_map)
 }
 
+#[derive(Debug, Clone)]
+pub struct Input {
+    /// Raw bytes stored in this input
+    data: Vec<u8>,
+}
+
+impl Input {
+    pub fn new(data: Vec<u8>) -> Self {
+        Self {
+            data: data.to_vec(),
+        }
+    }
+}
+
 /// Wrapper function for each emulator, takes care of running the emulator, memory resets, etc
-pub fn worker(_thr_id: usize, mut emu: Emulator) {
+pub fn worker(_thr_id: usize, mut emu: Emulator, corpus: Arc<Vec<Input>>) {
     let original = emu.fork();
-    const BATCH_SIZE: usize = 10;
+    const BATCH_SIZE: usize = 100;
     let mut count = 0;
+    let mutator = Mutator::new();
+    let mut rng = rand::thread_rng();
 
     loop {
         emu.reset(&original);
+        emu.fuzz_input.clear();
 
-        for _ in 0..40 {
-            emu.fuzz_input.push(0x41);
-        }
+        // Select random seed from corpus
+        let index = rng.gen_range(0..corpus.len());
+        emu.fuzz_input.extend_from_slice(&corpus[index].data);
+
+        mutator.mutate(&mut emu.fuzz_input);
 
         emu.run_jit().unwrap();
         count +=1;
         if count == BATCH_SIZE {
             count = 0;
-            //emu.jit.stats.lock().unwrap().total_cases += BATCH_SIZE; 
+            emu.jit.stats.lock().unwrap().total_cases += BATCH_SIZE; 
         }
     }
 }

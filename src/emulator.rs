@@ -187,6 +187,7 @@ pub struct Emulator {
     /// The actual jit compiler backing
     pub jit: Arc<Jit>,
 
+    /// The fuzz input that is in use by the current case
     pub fuzz_input: Vec<u8>,
 }
 
@@ -345,7 +346,6 @@ impl Emulator {
                 Option::None => {
                     // IR instructions + labels at start of each control block
                     let irgraph = self.lift_func(pc).unwrap();
-                    println!("done");
 
                     // Compile the previously lifted function
                     self.jit.compile(&irgraph, &self.hooks, &self.custom_lib)
@@ -380,11 +380,12 @@ impl Emulator {
             self.set_reg(Register::Pc, reentry_pc);
 
 
-            //if reentry_pc == 0x0000000000010194 {
+            //if reentry_pc == 0xa265c {
             //    let v = self.state.regs[Register::A0 as usize];
-            //    println!("A0 is: {:#0X}", v);
+            //    let a = self.state.regs[Register::A2 as usize];
+            //    println!("A2 is: {:#0X}", a);
             //    for i in 0..16 {
-            //        println!("Mem is: {:?}", self.memory.memory[v+i as usize]);
+            //        println!("Mem is: {:?}", self.memory.memory[a+i as usize]);
             //    }
             //    panic!("");
             //}
@@ -394,33 +395,37 @@ impl Emulator {
                 2 => { /* SYSCALL */
                     match self.get_reg(Register::A7) {
                         57 => {
-                            println!("close hit");
+                            //println!("close hit");
                             syscalls::close(self);
                         },
                         62 => {
-                            println!("lseek hit");
+                            //println!("lseek hit");
                             syscalls::lseek(self);
-                        }
+                        },
+                        63 => {
+                            //println!("read hit");
+                            syscalls::read(self);
+                        },
                         64 => {
-                            println!("write hit");
+                            //println!("write hit");
                             syscalls::write(self);
                         },
                         80 => {
-                            println!("fstat hit");
+                            //println!("fstat hit");
                             syscalls::fstat(self);
                         },
                         93 => {
-                            println!("exit hit");
+                            //println!("exit hit");
                             return syscalls::exit();
                         },
                         214 => {
-                            println!("brk hit");
+                            //println!("brk hit");
                             syscalls::brk(self);
                         },
                         1024 => {
-                            println!("open hit");
+                            //println!("open hit");
                             syscalls::open(self);
-                        }
+                        },
                         _ => { panic!("Unimplemented syscall: {}", self.get_reg(Register::A7)); }
                     }
                 },

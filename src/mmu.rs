@@ -1,7 +1,7 @@
 use crate::emulator::Fault;
 
 /// The starting address for our memory allocator
-const FIRSTALLOCATION: usize = 0x600000 - 0x8;
+const FIRSTALLOCATION: usize = 0x700000 - 0x8;
 
 /// Used in this manner, the permissions can easily be used for bitflag permission checks
 #[non_exhaustive]
@@ -186,6 +186,10 @@ impl Mmu {
         // Set permissions to perms::WRITE to avoid errors during write_mem and perform the write
         self.set_permissions(segment.vaddr as usize, segment.memsz, Perms::WRITE)?;
         self.write_mem(segment.vaddr, data, segment.filesz as usize).ok()?;
+
+        let print_perms = vec!["", "X", "W", "WX", "R", "RX", "RW", "RWX"];
+        println!("[{:#0x} - {:#0x}] : {}", segment.vaddr, segment.vaddr + segment.memsz, 
+                 print_perms[segment.flags as usize]);
 
         // ELF files can contain padding that needs to be loaded into memory but does not exist
         // in the file on disk, we still need to fill it up in memory though

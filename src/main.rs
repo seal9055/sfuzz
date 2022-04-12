@@ -3,6 +3,7 @@ use sfuzz::{
     emulator::{Emulator, Register, Fault},
     error_exit, load_elf_segments, worker,
     jit::{Jit, LibFuncs},
+    Input,
 };
 use std::thread;
 use std::sync::Arc;
@@ -47,10 +48,10 @@ fn free_hook(emu: &mut Emulator) -> Result<(), Fault> {
 }
 
 /// Hook that does nothing
-fn nop_hook(emu: &mut Emulator) -> Result<(), Fault> {
-    emu.set_reg(Register::Pc, emu.get_reg(Register::Ra));
-    Ok(())
-}
+//fn nop_hook(emu: &mut Emulator) -> Result<(), Fault> {
+//    emu.set_reg(Register::Pc, emu.get_reg(Register::Ra));
+//    Ok(())
+//}
 
 /// Setup the root emulator's segments and stack before cloning the emulator into multiple threads
 /// to run multiple emulators at the same time
@@ -58,11 +59,21 @@ fn main() {
     // Thead-shared jit backing
     let jit = Arc::new(Jit::new(16 * 1024 * 1024));
     let mut emu = Emulator::new(64 * 1024 * 1024, jit);
+    let mut corpus: Vec<Input> = Vec::new();
 
     // Insert loadable segments into emulator address space and retrieve symbol table information
-    let sym_map = load_elf_segments("./objdump", &mut emu).unwrap_or_else(||{
+    let sym_map = load_elf_segments("./test2", &mut emu).unwrap_or_else(||{
         error_exit("Unrecoverable error while loading elf segments");
     });
+
+    // Initialize corpus
+    for filename in std::fs::read_dir("files").unwrap() {
+        let filename = filename.unwrap().path();
+        let data = std::fs::read(filename).unwrap();
+
+        // Add the corpus input to the corpus
+        corpus.push(Input::new(data));
+    }
 
     // Setup Stack
     let stack = emu.allocate(1024 * 1024, Perms::READ | Perms::WRITE)
@@ -70,12 +81,10 @@ fn main() {
     emu.set_reg(Register::Sp, (stack + (1024 * 1024)) - 8);
 
     // Allocate space for argv[0] & argv[1]
-    let arg0 = emu.allocate(64, Perms::READ | Perms::WRITE).expect("Allocating argv[0] failed");
-    let arg1 = emu.allocate(64, Perms::READ | Perms::WRITE).expect("Allocating argv[1] failed");
-    let arg2 = emu.allocate(64, Perms::READ | Perms::WRITE).expect("Allocating argv[2] failed");
-    emu.memory.write_mem(arg0, b"target_bin\0", 11).expect("Writing to argv[0] failed");
-    emu.memory.write_mem(arg1, b"-x\0", 3).expect("Writing to argv[1] failed");
-    emu.memory.write_mem(arg2, b"fuzz_input\0", 11).expect("Writing to argv[2] failed");
+    let argv0 = emu.allocate(64, Perms::READ | Perms::WRITE).expect("Allocating argv[0] failed");
+    let argv1 = emu.allocate(64, Perms::READ | Perms::WRITE).expect("Allocating argv[1] failed");
+    emu.memory.write_mem(argv0, b"test2\0", 6).expect("Writing to argv[0] failed");
+    emu.memory.write_mem(argv1, b"fuzz_input\0", 11).expect("Writing to argv[1] failed");
 
     // Macro to push 64-bit integers onto the stack
     macro_rules! push {
@@ -92,38 +101,40 @@ fn main() {
     push!(0u64);    // Auxp
     push!(0u64);    // Envp
     push!(0u64);    // Argv[3] (null to terminate array)
-    push!(arg2);    // Argv[2]
-    push!(arg1);    // Argv[1]
-    push!(arg0);    // Argv[0]
-    push!(3u64);    // Argc
+    push!(argv1);   // Argv[1]
+    push!(argv0);   // Argv[0]
+    push!(1u64);    // Argc
 
     // Setup hooks
-    emu.hooks.insert(*sym_map.get("_malloc_r")
-                     .expect("Inserting _malloc_r hook failed"), malloc_hook);
-    emu.hooks.insert(*sym_map.get("xmalloc")
-                     .expect("Inserting xmalloc hook failed"), malloc_hook);
-    emu.hooks.insert(*sym_map.get("malloc")
-                     .expect("Inserting malloc hook failed"), malloc_hook);
-    emu.hooks.insert(*sym_map.get("_free_r")
-                     .expect("Inserting _free_r hook failed"), free_hook);
-    emu.hooks.insert(*sym_map.get("free")
-                     .expect("Inserting free hook failed"), free_hook);
+    //emu.hooks.insert(*sym_map.get("_malloc_r")
+    //                 .expect("Inserting _malloc_r hook failed"), malloc_hook);
+    //emu.hooks.insert(*sym_map.get("xmalloc")
+    //                 .expect("Inserting xmalloc hook failed"), malloc_hook);
+    //emu.hooks.insert(*sym_map.get("malloc")
+    //                 .expect("Inserting malloc hook failed"), malloc_hook);
+    //emu.hooks.insert(*sym_map.get("_free_r")
+    //                 .expect("Inserting _free_r hook failed"), free_hook);
+    //emu.hooks.insert(*sym_map.get("free")
+    //                 .expect("Inserting free hook failed"), free_hook);
 
-    emu.hooks.insert(*sym_map.get("_calloc_r")
-                     .expect("Inserting free hook failed"), calloc_hook);
+    //emu.hooks.insert(*sym_map.get("_calloc_r")
+    //                 .expect("Inserting calloc hook failed"), calloc_hook);
 
-    emu.hooks.insert(*sym_map.get("xmalloc_set_program_name")
-                     .expect("Inserting xmalloc_set_program_name hook failed"), nop_hook);
+    //emu.hooks.insert(*sym_map.get("xmalloc_set_program_name")
+    //                 .expect("Inserting xmalloc_set_program_name hook failed"), nop_hook);
 
     emu.custom_lib.insert(*sym_map.get("strlen")
                      .expect("Inserting strlen custom code failed"), LibFuncs::STRLEN);
-    emu.custom_lib.insert(*sym_map.get("strcmp")
-                     .expect("Inserting strlen custom code failed"), LibFuncs::STRCMP);
+    //emu.custom_lib.insert(*sym_map.get("strcmp")
+    //                 .expect("Inserting strcmp custom code failed"), LibFuncs::STRCMP);
 
+    let corpus = Arc::new(corpus);
     // Spawn worker threads to do the actual fuzzing
     for thr_id in 0..1 {
         let emu = emu.fork();
-        thread::spawn(move || worker(thr_id, emu));
+        let corpus = corpus.clone();
+
+        thread::spawn(move || worker(thr_id, emu, corpus));
     }
 
     // Continuous statistic tracking via message passing in main thread

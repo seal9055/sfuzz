@@ -194,7 +194,7 @@ impl Jit {
                 if first {
                     first = false;
                 } else {
-                    jit_exit1!(4, v);
+                    //jit_exit1!(4, v);
                 }
                 self.add_lookup(&asm.assemble(0x0).unwrap(), v);
             }

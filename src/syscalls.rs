@@ -38,25 +38,6 @@ pub fn exit() -> Option<Fault> {
     Some(Fault::Exit)
 }
 
-//pub fn fstat(emu: &mut Emulator) -> Option<Fault> {
-//    let fd = emu.get_reg(Register::A0) as usize;
-//    let _statbuf = emu.get_reg(Register::A1);
-//
-//    let file = emu.fd_list.get(fd);
-//
-//    if file.is_none() {
-//        emu.set_reg(Register::A0, !0);
-//        return None;
-//    }
-//
-//    let _file = file.unwrap();
-//
-//    // For now just return -1
-//    emu.set_reg(Register::A0, 0);
-//
-//    None
-//}
-
 pub fn fstat(emu: &mut Emulator) -> Option<Fault> {
     let fd      = emu.get_reg(Register::A0) as usize;
     let statbuf = emu.get_reg(Register::A1);
@@ -95,6 +76,8 @@ pub fn fstat(emu: &mut Emulator) -> Option<Fault> {
         // Write in the stat data
         emu.memory.write_mem(statbuf as usize, stat, stat.len()).unwrap();
         emu.set_reg(Register::A0, 0);
+    } else if file.unwrap().ftype != FileType::OTHER {
+        emu.set_reg(Register::A0, !0);
     } else {
         unreachable!();
     }
@@ -152,14 +135,44 @@ pub fn open(emu: &mut Emulator) -> Option<Fault> {
         }
         cur += 1;
     }
-    let s = std::str::from_utf8(&buf).unwrap();
-
-    println!("opened: {}", s);
+    let _s = std::str::from_utf8(&buf).unwrap();
+    //println!("opened: {}", s);
 
     if buf == b"fuzz_input\0" {
         emu.alloc_file(FileType::FUZZINPUT);
     } else {
         emu.alloc_file(FileType::OTHER);
+    }
+
+    emu.set_reg(Register::A0, emu.fd_list.len()-1);
+    None
+}
+
+pub fn read(emu: &mut Emulator) -> Option<Fault> {
+    let fd    = emu.get_reg(Register::A0) as usize;
+    let buf   = emu.get_reg(Register::A1);
+    let count = emu.get_reg(Register::A2);
+
+    // If the fd does not exist, return an error
+    if emu.fd_list.len() < fd || emu.fd_list[fd].ftype == FileType::INVALID {
+        emu.set_reg(Register::A0, !0);
+        return None;
+    }
+
+    // Special case, reading in the fuzzinput
+    if emu.fd_list[fd].ftype == FileType::FUZZINPUT {
+
+        let offset = emu.fd_list[fd].cursor.unwrap();
+        let len = core::cmp::min(count, emu.fuzz_input.len()-offset);
+
+        emu.memory.write_mem(buf, &emu.fuzz_input[offset..offset+len], len)
+            .expect("Error occured while trying to read in fuzz-input");
+
+        emu.set_reg(Register::A0, len);
+        emu.fd_list[fd].cursor = Some(offset + len);
+    } else {
+        // Read in a different file
+        unreachable!();
     }
 
     None
