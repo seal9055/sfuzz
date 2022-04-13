@@ -3,13 +3,16 @@ use sfuzz::{
     emulator::{Emulator, Register, Fault},
     error_exit, load_elf_segments, worker,
     jit::{Jit, LibFuncs},
-    Input,
+    Input, Corpus, Statistics
 };
 use std::thread;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use std::sync::mpsc::{self, Receiver, Sender};
 
 use byteorder::{LittleEndian, WriteBytesExt};
+use num_format::{Locale, ToFormattedString};
+use rustc_hash::FxHashMap;
 
 /// Hook that makes use of sfuzz's mmu to perform a memory safe malloc operation
 fn malloc_hook(emu: &mut Emulator) -> Result<(), Fault> {
@@ -47,32 +50,87 @@ fn free_hook(emu: &mut Emulator) -> Result<(), Fault> {
     Ok(())
 }
 
-/// Hook that does nothing
-//fn nop_hook(emu: &mut Emulator) -> Result<(), Fault> {
-//    emu.set_reg(Register::Pc, emu.get_reg(Register::Ra));
-//    Ok(())
-//}
+/// Inserts various hooks into binary
+fn insert_hooks(sym_map: &FxHashMap<String, usize>, emu: &mut Emulator) {
+
+    // _free_r hook
+    match sym_map.get("_free_r") {
+        Some(v) => {
+            println!("_free_r() hooked");
+            emu.hooks.insert(*v, free_hook);
+        },
+        None => { println!("_free_r does not exist in target so it could not be hooked"); }
+    }
+
+    // _malloc_r hook
+    match sym_map.get("_malloc_r") {
+        Some(v) => {
+            println!("_malloc_r() hooked");
+            emu.hooks.insert(*v, malloc_hook);
+        },
+        None => { println!("_malloc_r does not exist in target so it could not be hooked"); }
+    }
+
+    // _calloc_r hook
+    match sym_map.get("_calloc_r") {
+        Some(v) => {
+            println!("_calloc_r() hooked");
+            emu.hooks.insert(*v, calloc_hook);
+        },
+        None => { println!("_calloc_r does not exist in target so it could not be hooked"); }
+    }
+
+    // Hooks for strlen and strcmp are required because the default libc variants go out of bounds.
+    // This is not a security issue since the functions verify that everything is properly aligned,
+    // but since this fuzzer notices byte level permission violations these are required.
+
+    // strlen hook
+    match sym_map.get("strlen") {
+        Some(v) => {
+            println!("strlen() replaced with safe implementation");
+            emu.custom_lib.insert(*v, LibFuncs::STRLEN);
+        },
+        None => { println!("strlen() does not exist in target so it could not be hooked"); }
+    }
+
+    // strcmp hook
+    match sym_map.get("strcmp") {
+        Some(v) => {
+            println!("strcmp() replaced with safe implementation");
+            emu.custom_lib.insert(*v, LibFuncs::STRCMP);
+        },
+        None => { println!("strcmp() does not exist in target so it could not be hooked"); }
+    }
+}
 
 /// Setup the root emulator's segments and stack before cloning the emulator into multiple threads
 /// to run multiple emulators at the same time
 fn main() {
     // Thead-shared jit backing
     let jit = Arc::new(Jit::new(16 * 1024 * 1024));
+
+    // Thread-shared structure that holds fuzz-inputs and coverage information
+    let mut corpus: Corpus = Corpus::default();
+
+    // Each thread gets its own forked emulator. The jit-cache is shared between them however
     let mut emu = Emulator::new(64 * 1024 * 1024, jit);
-    let mut corpus: Vec<Input> = Vec::new();
+
+    // Statistics structure. This is kept local to the main thread and updated via message passing 
+    // from the worker threads
+    let mut stats = Statistics::default();
 
     // Insert loadable segments into emulator address space and retrieve symbol table information
     let sym_map = load_elf_segments("./test2", &mut emu).unwrap_or_else(||{
         error_exit("Unrecoverable error while loading elf segments");
     });
 
-    // Initialize corpus
+    // Initialize corpus with every file in ./files
     for filename in std::fs::read_dir("files").unwrap() {
         let filename = filename.unwrap().path();
         let data = std::fs::read(filename).unwrap();
 
         // Add the corpus input to the corpus
-        corpus.push(Input::new(data));
+        corpus.inputs.push(Input::new(data));
     }
 
     // Setup Stack
@@ -105,49 +163,39 @@ fn main() {
     push!(argv0);   // Argv[0]
     push!(1u64);    // Argc
 
-    // Setup hooks
-    //emu.hooks.insert(*sym_map.get("_malloc_r")
-    //                 .expect("Inserting _malloc_r hook failed"), malloc_hook);
-    //emu.hooks.insert(*sym_map.get("xmalloc")
-    //                 .expect("Inserting xmalloc hook failed"), malloc_hook);
-    //emu.hooks.insert(*sym_map.get("malloc")
-    //                 .expect("Inserting malloc hook failed"), malloc_hook);
-    //emu.hooks.insert(*sym_map.get("_free_r")
-    //                 .expect("Inserting _free_r hook failed"), free_hook);
-    //emu.hooks.insert(*sym_map.get("free")
-    //                 .expect("Inserting free hook failed"), free_hook);
-
-    //emu.hooks.insert(*sym_map.get("_calloc_r")
-    //                 .expect("Inserting calloc hook failed"), calloc_hook);
-
-    //emu.hooks.insert(*sym_map.get("xmalloc_set_program_name")
-    //                 .expect("Inserting xmalloc_set_program_name hook failed"), nop_hook);
-
-    emu.custom_lib.insert(*sym_map.get("strlen")
-                     .expect("Inserting strlen custom code failed"), LibFuncs::STRLEN);
-    //emu.custom_lib.insert(*sym_map.get("strcmp")
-    //                 .expect("Inserting strcmp custom code failed"), LibFuncs::STRCMP);
-
+    // Insert various hooks into binary
+    insert_hooks(&sym_map, &mut emu);
+    
     let corpus = Arc::new(corpus);
-    // Spawn worker threads to do the actual fuzzing
-    for thr_id in 0..1 {
-        let emu = emu.fork();
-        let corpus = corpus.clone();
+    let emu = Arc::new(emu);
+    let (tx, rx): (Sender<Statistics>, Receiver<Statistics>) = mpsc::channel();
 
-        thread::spawn(move || worker(thr_id, emu, corpus));
+    // Spawn worker threads to do the actual fuzzing
+    for thr_id in 0..16 {
+        let emu_cp = emu.fork();
+        let corpus = corpus.clone();
+        let tx = tx.clone();
+
+        thread::spawn(move || worker(thr_id, emu_cp, corpus, tx));
     }
 
     // Continuous statistic tracking via message passing in main thread
     let start = Instant::now();
     let mut last_time = Instant::now();
-    loop {
-        std::thread::sleep(Duration::from_millis(10));
-        let stats = emu.jit.stats.lock().unwrap();
-        let elapsed = start.elapsed().as_secs_f64();
 
+    // Update stats structure whenever a thread sends a new message
+    for received in rx {
+        let elapsed_time = start.elapsed().as_secs_f64();
+        stats.total_cases += received.total_cases;
+        stats.crashes += received.crashes;
+
+        // Print out updated statistics every second
         if last_time.elapsed() >= Duration::from_millis(1000) {
-            println!("[{:8.2}] fuzz cases: {} ; fcps: {}", elapsed, stats.total_cases,
-                     stats.total_cases  as f64 / elapsed);
+            println!("[{:8.2}] fuzz cases: {:12} : fcps: {:8} : crashes: {:8}", 
+                     elapsed_time, 
+                     stats.total_cases.to_formatted_string(&Locale::en),
+                     (stats.total_cases / elapsed_time as usize).to_formatted_string(&Locale::en), 
+                     stats.crashes);
 
             last_time = Instant::now();
         }

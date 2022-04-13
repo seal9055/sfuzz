@@ -568,6 +568,24 @@ impl IRGraph {
         self.cur_pc = None;
     }
 
+    /// Return a hashmap that tracks the starting pc of each cfg block of this function
+    pub fn get_leaders(&self) -> FxHashMap<usize, usize> {
+        let mut leader_set: FxHashMap<usize, usize> = FxHashMap::default();
+
+        // First instruction is always a block-leader
+        leader_set.insert(self.instrs[0].pc.unwrap(), 0);
+
+        // Next insert all labels that indicate the start of a block
+        for i in 0..self.instrs.len() {
+            if let Some(pc) = self.instrs[i].pc {
+                if self.labels.get(&pc).is_some() {
+                    leader_set.insert(pc, 0);
+                }
+            }
+        }
+        leader_set
+    }
+
     //pub fn dump_instrs_dot(&self) {
     //    let mut graph = Graph::<_, i32>::new();
     //    let mut map: FxHashMap<usize, usize> = FxHashMap::default();

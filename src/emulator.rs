@@ -2,7 +2,7 @@ use crate::{
     mmu::{Mmu, Perms},
     elfparser,
     riscv::{decode_instr, Instr},
-    jit::{Jit, LibFuncs},
+    jit::{Jit, LibFuncs, CompileInputs},
     syscalls,
     error_exit,
     irgraph::{IRGraph, Flag},
@@ -99,6 +99,9 @@ pub enum Fault {
 
     /// Fault occurs when an attempt is made to execute an invalid instruction
     ExecFault(usize),
+
+    /// A memory request went completely out of bounds
+    OutOfBounds(usize),
 
     /// Fault occurs when some operation results in an integer overflow
     IntegerOverflow,
@@ -342,14 +345,26 @@ impl Emulator {
             // since Riscv instructions are always 4-byte aligned this is a bug
             if pc & 3 != 0 { return Some(Fault::ExecFault(pc)); }
 
+            // Determine address of the jit-backing code for the current function, either by lookup,
+            // or by compiling the function if it hasn't yet been compiled
             let jit_addr = match (*self.jit).lookup(pc) {
                 Option::None => {
+                    //self.jit.jit_backing.lock().unwrap();
+
+                    //self.jit.cur_index += 1;
+
                     // IR instructions + labels at start of each control block
                     let irgraph = self.lift_func(pc).unwrap();
 
+                    let leader_set: FxHashMap<usize, usize> = irgraph.get_leaders();
+
+                    let inputs: CompileInputs = CompileInputs {
+                        mem_size: self.memory.memory.len(),
+                        leaders: leader_set,
+                    };
+
                     // Compile the previously lifted function
-                    self.jit.compile(&irgraph, &self.hooks, &self.custom_lib)
-                        .unwrap()
+                    self.jit.compile(&irgraph, &self.hooks, &self.custom_lib, &inputs).unwrap()
                 },
                 Some(addr) => addr
             };
@@ -378,7 +393,6 @@ impl Emulator {
             }
 
             self.set_reg(Register::Pc, reentry_pc);
-
 
             //if reentry_pc == 0xa265c {
             //    let v = self.state.regs[Register::A0 as usize];
@@ -440,10 +454,15 @@ impl Emulator {
                     self.debug_jit(reentry_pc);
                 }
                 8 => { /* Attempted to read memory without read permissions */
-                    panic!("Invalid memory read: {:#0X}", reentry_pc);
+                    return Some(Fault::ReadFault(reentry_pc));
+                    //panic!("Invalid memory read: {:#0X}", reentry_pc);
                 },
                 9 => { /* Attempted to write to memory without write permissions */
-                    panic!("Invalid memory write: {:#0X}", reentry_pc);
+                    return Some(Fault::WriteFault(reentry_pc));
+                    //panic!("Invalid memory write: {:#0X}", reentry_pc);
+                },
+                10 => { /* Memory read/write request went completely out of bounds */
+                    return Some(Fault::OutOfBounds(reentry_pc));
                 },
                 _ => panic!("Invalid JIT return code: {:x}", exit_code),
             }

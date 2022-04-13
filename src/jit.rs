@@ -33,10 +33,11 @@ pub enum LibFuncs {
     STRCMP,
 }
 
-/// Holds various information related to tracking statistics for the fuzzer
-#[derive(Default, Debug)]
-pub struct Statistics {
-    pub total_cases: usize,
+#[derive(Debug, Clone)]
+pub struct CompileInputs {
+    pub mem_size: usize,
+
+    pub leaders: FxHashMap<usize, usize>,
 }
 
 /// Holds the backing that contains the just-in-time compiled code
@@ -46,8 +47,7 @@ pub struct Jit {
 
     pub lookup_arr: RwLock<Vec<usize>>,
 
-    // TODO move stats out of here and into messages
-    pub stats: Mutex<Statistics>,
+    pub cur_index: usize,
 }
 
 impl Jit {
@@ -56,7 +56,7 @@ impl Jit {
         Jit {
             jit_backing: Mutex::new((alloc_rwx(16*1024*1024), 0)),
             lookup_arr: RwLock::new(vec![0; address_space_size / 4]),
-            stats: Mutex::new(Statistics::default()),
+            cur_index: 0,
         }
     }
 
@@ -103,8 +103,12 @@ impl Jit {
     /// r13 : contains pointer to memory map
     /// r14 : contains pointer to memory mapped register array
     /// r15 : contains pointer to jit lookup array
-    pub fn compile(&self, irgraph: &IRGraph, hooks: &FxHashMap<usize, fn(&mut Emulator) 
-            -> Result<(), Fault>>, custom_lib: &FxHashMap<usize, LibFuncs>) -> Option<usize> {
+    pub fn compile(&self, 
+                   irgraph: &IRGraph, 
+                   hooks: &FxHashMap<usize, fn(&mut Emulator) -> Result<(), Fault>>, 
+                   custom_lib: &FxHashMap<usize, LibFuncs>, 
+                   compile_inputs: &CompileInputs,
+                   ) -> Option<usize> {
 
         let mut asm = CodeAssembler::new(64).unwrap();
 
@@ -117,9 +121,10 @@ impl Jit {
 
 
         //TODO early return to fix race condition bug
-        //if let Some(v) = self.lookup(init_pc) {
-        //    if v != 0 { return Some(v); }
-        //}
+        if let Some(v) = self.lookup(init_pc) {
+            println!("HIT WITH {}", v);
+            return Some(v);
+        }
 
         /// Returns the destination register for an operation
         macro_rules! get_reg_64 {
@@ -315,8 +320,13 @@ impl Jit {
                     let offset = extract_imm!(instr.i_reg[2]);
                     let mut fallthrough = asm.create_label();
                     let mut skip = asm.create_label();
+                    let mut fault = asm.create_label();
 
                     asm.add(r_in1, offset).unwrap();
+
+                    // Verify that the address is "sane"
+                    asm.cmp(r_in1, (compile_inputs.mem_size-8) as i32).unwrap();
+                    asm.ja(fault).unwrap();
 
                     // Retrieve instruction operand size and retrieve memory permission bits
                     let sz = match instr.flags {
@@ -349,6 +359,10 @@ impl Jit {
                     asm.cmp(rax, rcx).unwrap();
                     asm.je(fallthrough).unwrap();
                     jit_exit1!(9, pc as u64);
+
+                    // Fault because the access went completely out of bounds
+                    asm.set_label(&mut fault).unwrap();
+                    jit_exit1!(10, pc as u64);
 
                     // Check if the page has already been dirtied, if not set in bitmap and continue
                     asm.set_label(&mut fallthrough).unwrap();
@@ -389,8 +403,13 @@ impl Jit {
                     let r_in1  = get_reg_64!(vr_in1, 0);
                     let offset = extract_imm!(instr.i_reg[1]);
                     let mut fallthrough = asm.create_label();
+                    let mut fault = asm.create_label();
 
                     asm.add(r_in1, offset).unwrap();
+
+                    // Verify that the address is "sane"
+                    asm.cmp(r_in1, (compile_inputs.mem_size-8) as i32).unwrap();
+                    asm.ja(fault).unwrap();
 
                     // Retrieve instruction operand size and retrieve memory permission bits
                     let sz = match instr.flags {
@@ -436,6 +455,12 @@ impl Jit {
                     asm.cmp(rax, rcx).unwrap();
                     asm.je(fallthrough).unwrap();
                     jit_exit1!(8, pc as u64);
+
+                    // Fault because the access went completely out of bounds
+                    asm.set_label(&mut fault).unwrap();
+                    jit_exit1!(10, pc as u64);
+
+
                     asm.set_label(&mut fallthrough).unwrap();
 
                     // Perform load operation with varying operand sizes based on flags

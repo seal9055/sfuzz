@@ -19,6 +19,7 @@
     18. https://chao.100871.net/papers/oakland18.pdf
     19. https://link.springer.com/article/10.1007/s10664-020-09927-3
     20. https://www.usenix.org/system/files/sec20-blazytko.pdf
+    21. afl-study: https://www.s3.eurecom.fr/docs/fuzzing22_fioraldi_report.pdf
 
 ## Corpus Management
 

@@ -190,7 +190,7 @@ pub fn write(emu: &mut Emulator) -> Option<Fault> {
         return None;
     }
 
-    if true {
+    if false {
         let file = file.unwrap();
         if file.ftype == STDOUT || file.ftype == STDERR {
             let mut read_data = vec![0u8; count];

@@ -9,15 +9,17 @@ pub mod mutator;
 extern crate iced_x86;
 
 use elfparser::{self, ARCH64, ELFMAGIC, LITTLEENDIAN, TYPEEXEC, RISCV};
-use emulator::{Emulator, Register};
+use emulator::{Emulator, Register, Fault};
 use mutator::Mutator;
 use my_libs::sorted_vec::*;
 
 use std::process;
 use std::sync::Arc;
+use std::sync::mpsc::Sender;
 
 use rustc_hash::FxHashMap;
 use rand::Rng;
+use fasthash::{xx::Hash32, FastHash};
 
 /// Small wrapper to easily handle unrecoverable errors without panicking
 pub fn error_exit(msg: &str) -> ! {
@@ -141,6 +143,15 @@ pub fn load_elf_segments(filename: &str, emu_inst: &mut Emulator)
     Some(symbol_map)
 }
 
+
+/// Holds various information related to tracking statistics for the fuzzer
+#[derive(Default, Debug)]
+pub struct Statistics {
+    pub total_cases: usize,
+
+    pub crashes: usize,
+}
+
 #[derive(Debug, Clone)]
 pub struct Input {
     /// Raw bytes stored in this input
@@ -155,29 +166,92 @@ impl Input {
     }
 }
 
+/// Structure that is meant to be shared between threads. Tracks fuzz inputs and coverage
+#[derive(Debug, Default)]
+pub struct Corpus {
+    /// Actual byte-backing for the fuzz-inputs
+    pub inputs: Vec<Input>,
+
+    /// Coverage byte-map
+    pub coverage: Vec<u8>,
+}
+
 /// Wrapper function for each emulator, takes care of running the emulator, memory resets, etc
-pub fn worker(_thr_id: usize, mut emu: Emulator, corpus: Arc<Vec<Input>>) {
+pub fn worker(_thr_id: usize, mut emu: Emulator, corpus: Arc<Corpus>, tx: Sender<Statistics>) {
+    // Maintain an original copy of the passed in emulator so it can later be referenced
     let original = emu.fork();
-    const BATCH_SIZE: usize = 100;
+
+    // Data is sent to the main thread in batches to increase throughput
+    const BATCH_SIZE: usize = 10000;
+
+    // Keep track of how many cases are being executed
     let mut count = 0;
-    let mutator = Mutator::new();
+
+    // Initialize rng to be used for random seed selection and other purposes
     let mut rng = rand::thread_rng();
 
+    // Initialize a mutator that will be in charge of randomly corrupting input
+    let mut mutator = Mutator::new(rng.clone());
+
+    // Locally count the number of crashes
+    let mut local_crashes = 0;
+
     loop {
+        // Reset the emulator state
         emu.reset(&original);
         emu.fuzz_input.clear();
 
         // Select random seed from corpus
-        let index = rng.gen_range(0..corpus.len());
-        emu.fuzz_input.extend_from_slice(&corpus[index].data);
+        let index = rng.gen_range(0..corpus.inputs.len());
+        emu.fuzz_input.extend_from_slice(&corpus.inputs[index].data);
 
+        // Mutate the previously chosen seed
         mutator.mutate(&mut emu.fuzz_input);
 
-        emu.run_jit().unwrap();
+        // If a crash occured, save the input and increase crash count, otherwise just move on
+        match emu.run_jit().unwrap() {
+            Fault::ReadFault(v) => {
+                let h = Hash32::hash(&emu.fuzz_input);
+                let crash_dir = format!("crashes/read_{:x}_{}", v, h);
+                std::fs::write(&crash_dir, &emu.fuzz_input).unwrap();
+                local_crashes += 1;
+            },
+            Fault::WriteFault(v) => {
+                let h = Hash32::hash(&emu.fuzz_input);
+                let crash_dir = format!("crashes/write_{:x}_{}", v, h);
+                std::fs::write(&crash_dir, &emu.fuzz_input).unwrap();
+                local_crashes += 1;
+            },
+            Fault::OutOfBounds(v) => {
+                let h = Hash32::hash(&emu.fuzz_input);
+                let crash_dir = format!("crashes/oob_{:x}_{}", v, h);
+                std::fs::write(&crash_dir, &emu.fuzz_input).unwrap();
+                local_crashes += 1;
+            },
+            Fault::Exit => {},
+            _ => unreachable!(),
+        }
+
         count +=1;
+
+        // Once `count` reaches `BATCH_SIZE`, send statistics to main thread and reset count
         if count == BATCH_SIZE {
+            //let mut stats = emu.jit.stats.lock().unwrap();
+            //stats.total_cases += BATCH_SIZE;
+            //stats.crashes += crashes;
+
+            // Populate statistics that will be sent to the main thread
+            let stats = Statistics {
+                total_cases: BATCH_SIZE,
+                crashes: local_crashes,
+            };
+
+            // Send stats over to the main thread
+            tx.send(stats).unwrap();
+
+            // Reset local statistics
             count = 0;
-            emu.jit.stats.lock().unwrap().total_cases += BATCH_SIZE; 
+            local_crashes = 0;
         }
     }
 }
