@@ -9,6 +9,7 @@ use std::thread;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::Mutex;
 
 use byteorder::{LittleEndian, WriteBytesExt};
 use num_format::{Locale, ToFormattedString};
@@ -109,11 +110,13 @@ fn main() {
     // Thead-shared jit backing
     let jit = Arc::new(Jit::new(16 * 1024 * 1024));
 
+    let prevent_rc: Arc<Mutex<usize>> = Arc::new(Mutex::new(0));
+
     // Thread-shared structure that holds fuzz-inputs and coverage information
     let mut corpus: Corpus = Corpus::default();
 
     // Each thread gets its own forked emulator. The jit-cache is shared between them however
-    let mut emu = Emulator::new(64 * 1024 * 1024, jit);
+    let mut emu = Emulator::new(64 * 1024 * 1024, jit, prevent_rc);
 
     // Statistics structure. This is kept local to the main thread and updated via message passing 
     // from the worker threads

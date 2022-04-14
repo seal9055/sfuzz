@@ -10,6 +10,7 @@ use crate::{
 };
 
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::arch::asm;
 use std::collections::BTreeMap;
 
@@ -192,11 +193,13 @@ pub struct Emulator {
 
     /// The fuzz input that is in use by the current case
     pub fuzz_input: Vec<u8>,
+
+    pub prevent_rc: Arc<Mutex<usize>>,
 }
 
 impl Emulator {
     /// Create a new emulator that has access to the shared jit backing
-    pub fn new(size: usize, jit: Arc<Jit>) -> Self {
+    pub fn new(size: usize, jit: Arc<Jit>, tmp: Arc<Mutex<usize>>) -> Self {
         Emulator {
             memory:     Mmu::new(size),
             state:      State::default(),
@@ -206,6 +209,7 @@ impl Emulator {
             functions:  FxHashMap::default(),
             jit,
             fuzz_input: Vec::new(),
+            prevent_rc: tmp,
         }
     }
 
@@ -221,6 +225,7 @@ impl Emulator {
             functions:  self.functions.clone(),
             jit:        self.jit.clone(),
             fuzz_input: self.fuzz_input.clone(),
+            prevent_rc: self.prevent_rc.clone(),
         }
     }
 
@@ -349,9 +354,8 @@ impl Emulator {
             // or by compiling the function if it hasn't yet been compiled
             let jit_addr = match (*self.jit).lookup(pc) {
                 Option::None => {
-                    //self.jit.jit_backing.lock().unwrap();
-
                     //self.jit.cur_index += 1;
+                    let mut v = self.prevent_rc.lock().unwrap();
 
                     // IR instructions + labels at start of each control block
                     let irgraph = self.lift_func(pc).unwrap();
@@ -363,8 +367,12 @@ impl Emulator {
                         leaders: leader_set,
                     };
 
+
                     // Compile the previously lifted function
-                    self.jit.compile(&irgraph, &self.hooks, &self.custom_lib, &inputs).unwrap()
+                    let ret = self.jit.compile(&irgraph, &self.hooks, &self.custom_lib, &inputs);
+                    *v += 1;
+
+                    ret.unwrap()
                 },
                 Some(addr) => addr
             };
@@ -386,7 +394,7 @@ impl Emulator {
                 in("r12")   self.memory.permissions.as_ptr() as u64,
                 in("r13")   self.memory.memory.as_ptr() as u64,
                 in("r14")   self.state.regs.as_ptr() as u64,
-                in("r15")   self.jit.lookup_arr.read().unwrap().as_ptr() as u64,
+                in("r15")   self.jit.lookup_arr.as_ptr() as u64,
                 );
 
                 self.memory.dirty.set_len(self.memory.dirty_size as usize);
@@ -504,7 +512,7 @@ impl Emulator {
     }
 
     /// Lift a function into an intermediate representation using the lift helper function
-    fn lift_func(&mut self, mut pc: usize) -> Result<IRGraph, ()> {
+    fn lift_func(&self, mut pc: usize) -> Result<IRGraph, ()> {
         let mut irgraph = IRGraph::default();
         let mut instrs: Vec<Instr> = Vec::new();
 
@@ -539,7 +547,7 @@ impl Emulator {
     /// This function takes a set of instructions and lifts them into the intermediate
     /// representation. It uses the keys to insert labels where appropriate. These act as start
     /// markers for new code blocks.
-    fn lift(&mut self, irgraph: &mut IRGraph, instrs: &[Instr], keys: &mut BTreeMap<usize, u8>,
+    fn lift(&self, irgraph: &mut IRGraph, instrs: &[Instr], keys: &mut BTreeMap<usize, u8>,
             mut pc: usize) {
 
         // Lift instructions until we reach the end of the function

@@ -135,7 +135,7 @@ pub fn open(emu: &mut Emulator) -> Option<Fault> {
         }
         cur += 1;
     }
-    let _s = std::str::from_utf8(&buf).unwrap();
+    //let _s = std::str::from_utf8(&buf).unwrap();
     //println!("opened: {}", s);
 
     if buf == b"fuzz_input\0" {

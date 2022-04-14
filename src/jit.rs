@@ -1,14 +1,14 @@
 use crate::{
     irgraph::{IRGraph, Flag, Operation, Val},
     emulator::{Emulator, Fault, Register as PReg},
-    mmu::{Perms},
+    mmu::Perms,
 };
 
 use rustc_hash::FxHashMap;
 use iced_x86::code_asm::*;
 
 use std::sync::Mutex;
-use std::sync::RwLock;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// Allocate RWX memory for Linux systems
 #[cfg(target_os="linux")]
@@ -45,7 +45,7 @@ pub struct CompileInputs {
 pub struct Jit {
     pub jit_backing: Mutex<(&'static mut [u8], usize)>,
 
-    pub lookup_arr: RwLock<Vec<usize>>,
+    pub lookup_arr: Box<[AtomicUsize]>,
 
     pub cur_index: usize,
 }
@@ -55,7 +55,9 @@ impl Jit {
     pub fn new(address_space_size: usize) -> Self {
         Jit {
             jit_backing: Mutex::new((alloc_rwx(16*1024*1024), 0)),
-            lookup_arr: RwLock::new(vec![0; address_space_size / 4]),
+            lookup_arr: (0..(address_space_size + 3) / 4).map(|_| {
+                AtomicUsize::new(0)
+            }).collect::<Vec<_>>().into_boxed_slice(),
             cur_index: 0,
         }
     }
@@ -71,7 +73,7 @@ impl Jit {
 
         // add mapping
         if let Some(v) = pc {
-            self.lookup_arr.write().unwrap()[v / 4] = addr;
+            self.lookup_arr[v / 4].store(addr, Ordering::SeqCst);
         }
 
         jit.1 += code.len();
@@ -82,7 +84,7 @@ impl Jit {
 
     /// Look up jit address corresponding to a translated instruction
     pub fn lookup(&self, pc: usize) -> Option<usize> {
-        let addr = self.lookup_arr.read().unwrap()[pc / 4];
+        let addr = self.lookup_arr.get(pc / 4).unwrap().load(Ordering::SeqCst);
         if addr == 0 {
             Option::None
         } else {
@@ -96,7 +98,7 @@ impl Jit {
 
         let cur_jit_addr = jit.0.as_ptr() as usize + jit.1;
 
-        self.lookup_arr.write().unwrap()[pc / 4] = cur_jit_addr + code.len();
+        self.lookup_arr[pc / 4].store(cur_jit_addr + code.len(), Ordering::SeqCst);
     }
 
     /// r12 : contains pointer to permissions map
