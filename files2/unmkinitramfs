@@ -1,0 +1,174 @@
+#!/bin/sh
+
+set -eu
+
+usage()
+{
+	cat << EOF
+
+Usage: unmkinitramfs [-v] initramfs-file directory
+
+Options:
+  -v   Display verbose messages about extraction
+
+See unmkinitramfs(8) for further details.
+
+EOF
+}
+
+usage_error()
+{
+	usage >&2
+	exit 2
+}
+
+# Extract a compressed cpio archive
+xcpio()
+{
+	archive="$1"
+	dir="$2"
+	shift 2
+
+	if gzip -t "$archive" >/dev/null 2>&1 ; then
+		gzip -c -d "$archive"
+	elif zstd -q -c -t "$archive" >/dev/null 2>&1 ; then
+		zstd -q -c -d "$archive"
+	elif xzcat -t "$archive" >/dev/null 2>&1 ; then
+		xzcat "$archive"
+	elif lz4cat -t < "$archive" >/dev/null 2>&1 ; then
+		lz4cat "$archive"
+	elif bzip2 -t "$archive" >/dev/null 2>&1 ; then
+		bzip2 -c -d "$archive"
+	elif lzop -t "$archive" >/dev/null 2>&1 ; then
+		lzop -c -d "$archive"
+	# Ignoring other data, which may be garbage at the end of the file
+	fi | (
+		if [ -n "$dir" ]; then
+			mkdir -p -- "$dir"
+			cd -- "$dir"
+		fi
+		cpio "$@"
+	)
+}
+
+# Read bytes out of a file, checking that they are valid hex digits
+readhex()
+{
+	dd < "$1" bs=1 skip="$2" count="$3" 2> /dev/null | \
+		LANG=C grep -E "^[0-9A-Fa-f]{$3}\$"
+}
+
+# Check for a zero byte in a file
+checkzero()
+{
+	dd < "$1" bs=1 skip="$2" count=1 2> /dev/null | \
+		LANG=C grep -q -z '^$'
+}
+
+# Split an initramfs into archives and call xcpio on each
+splitinitramfs()
+{
+	initramfs="$1"
+	dir="$2"
+	shift 2
+
+	count=0
+	start=0
+	while true; do
+		# There may be prepended uncompressed archives.  cpio
+		# won't tell us the true size of these so we have to
+		# parse the headers and padding ourselves.  This is
+		# very roughly based on linux/lib/earlycpio.c
+		end=$start
+		while true; do
+			if checkzero "$initramfs" $end; then
+				# This is the EOF marker.  There might
+				# be more zero padding before the next
+				# archive, so read through all of it.
+				end=$((end + 4))
+				while checkzero "$initramfs" $end; do
+					end=$((end + 4))
+				done
+				break
+			fi
+			magic="$(readhex "$initramfs" $end 6)" || break
+			test "$magic" = 070701 || test "$magic" = 070702 || break
+			namesize=0x$(readhex "$initramfs" $((end + 94)) 8)
+			filesize=0x$(readhex "$initramfs" $((end + 54)) 8)
+			end=$(((end + 110)))
+			end=$(((end + namesize + 3) & ~3))
+			end=$(((end + filesize + 3) & ~3))
+		done
+		if [ $end -eq $start ]; then
+			break
+		fi
+
+		# Extract to early, early2, ... subdirectories
+		count=$((count + 1))
+		if [ $count -eq 1 ]; then
+			subdir=early
+		else
+			subdir=early$count
+		fi
+		dd < "$initramfs" skip=$start count=$((end - start)) iflag=skip_bytes 2> /dev/null |
+		(
+			if [ -n "$dir" ]; then
+				mkdir -p -- "$dir/$subdir"
+				cd -- "$dir/$subdir"
+			fi
+			cpio -i "$@"
+		)
+		start=$end
+	done
+
+	if [ $end -gt 0 ]; then
+		# Extract to main subdirectory
+		subarchive=$(mktemp "${TMPDIR:-/var/tmp}/unmkinitramfs_XXXXXX")
+		trap 'rm -f "$subarchive"' EXIT
+		dd < "$initramfs" skip=$end iflag=skip_bytes 2> /dev/null \
+			> "$subarchive"
+		xcpio "$subarchive" "${dir:+$dir/main}" -i "$@"
+	else
+		# Don't use subdirectories (for backward compatibility)
+		xcpio "$initramfs" "$dir" -i "$@"
+	fi
+}
+
+OPTIONS=$(getopt -o hv --long help,list,verbose -n "$0" -- "$@") || usage_error
+
+cpio_opts="--preserve-modification-time --no-absolute-filenames --quiet"
+expected_args=2
+eval set -- "$OPTIONS"
+
+while true; do
+	case "$1" in
+        -h|--help)
+		usage
+		exit 0
+	;;
+	--list)
+		# For lsinitramfs
+		cpio_opts="${cpio_opts:+${cpio_opts} --list}"
+		expected_args=1
+		shift
+	;;
+	-v|--verbose)
+		cpio_opts="${cpio_opts:+${cpio_opts} --verbose}"
+		shift
+	;;
+	--)
+		shift
+		break
+	;;
+	*)
+		echo "Internal error!" >&2
+		exit 1
+	esac
+done
+
+if [ $# -ne $expected_args ]; then
+	usage_error
+fi
+
+# shellcheck disable=SC2086
+splitinitramfs "$1" "${2:-}" $cpio_opts

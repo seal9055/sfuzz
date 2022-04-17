@@ -1,0 +1,300 @@
+#!/bin/sh -e
+# Input Method configuration
+# (C) 2010-2017 Osamu Aoki <osamu@debian.org>, GPL-2+
+# vim: set sts=4 expandtab:
+#############################################################
+# Common configuration functions and pre-defined variables
+# used by this im-config and its hook script.
+#############################################################
+. /usr/share/im-config/xinputrc.common
+#############################################################
+# Set configuration file used based on UID
+#############################################################
+if [ $(id -u) = 0 ]; then
+    IM_CONFIG_XINPUTRC=$IM_CONFIG_XINPUTRC_SYS
+    IM_CONFIG_XINPUTRC_TYPE="$(gettext "system configuration")"
+else
+    IM_CONFIG_XINPUTRC=$IM_CONFIG_XINPUTRC_USR
+    IM_CONFIG_XINPUTRC_TYPE="$(gettext "user configuration")"
+fi
+#############################################################
+# Configuration functions and pre-defined variables used by
+# this im-config.
+#############################################################
+IM_CONFIG_AUTOMATIC=$(automatic_im)
+IM_CONFIG_AUTOBASE=$(autobase_im)
+. /usr/share/im-config/im-config.common
+# This is used everywhere
+IM_CONFIG_MSGA="$(gettext "Explicit selection is not required to enable the automatic configuration if the active one is default/auto/cjkv/missing.")"
+IM_CONFIG_RTFM="$(gettext "If a daemon program for the previous configuration is re-started by the X session manager, you may need to kill it manually with kill(1).")"
+IM_CONFIG_RTFM="$(eval_gettext "\$IM_CONFIG_RTFM
+See im-config(8) and /usr/share/doc/im-config/README.Debian.gz for more.")"
+IM_CONFIG_ALL=false
+IM_CONFIG_DRY=false
+if [ "x$DISPLAY" != "x" ]; then
+    # X (GTK GUI) dialog with zenity
+    IM_CONFIG_DIALOG="X"
+else
+    # console dialog
+    IM_CONFIG_DIALOG="console"
+fi
+IM_CONFIG_LIST=false
+IM_CONFIG_ACTIVE0=$(IM_CONFIG_XINPUTRC=$IM_CONFIG_XINPUTRC_SYS active_im)
+IM_CONFIG_ACTIVE=$(active_im)
+#############################################################
+# Parse command line arguments
+#############################################################
+IM_CONFIG_ID="$(eval_gettext "Input Method Configuration (im-config, ver. \$IM_CONFIG_VERSION)")"
+IM_CONFIG_SETMODE="${IM_CONFIG_SETMODE:-+x}"
+set $IM_CONFIG_SETMODE
+while [ -n "$1" ]; do
+    case $1 in
+    -d)
+        # debug trace mode :-) undocumented.
+        IM_CONFIG_SETMODE="-x"
+        set $IM_CONFIG_SETMODE
+        ;;
+    -a)
+        IM_CONFIG_ALL=true
+        ;;
+    -c)
+        IM_CONFIG_DIALOG="console"
+        ;;
+    -x)
+        IM_CONFIG_DIALOG="X"
+        ;;
+    -s)
+        IM_CONFIG_DRY=true
+        ;;
+    -l)
+        IM_CONFIG_LIST=true
+        ;;
+    -m)
+        echo "$IM_CONFIG_ACTIVE0"
+        echo "$IM_CONFIG_ACTIVE"
+        echo "$IM_CONFIG_AUTOMATIC"
+        echo "$IM_CONFIG_PREFERRED"
+        echo "$IM_CONFIG_AUTOBASE"
+        exit
+        ;;
+    -n)
+        shift
+        IM_CONFIG_NAME=$1
+        write_config $IM_CONFIG_NAME $IM_CONFIG_XINPUTRC
+        exit
+        ;;
+    -o)
+        shift
+        . $IM_CONFIG_DATA/??_$1.conf
+        echo -n "$IM_CONFIG_LONG"
+        exit
+        ;;
+    *)
+        eval_gettext \
+"\$IM_CONFIG_ID
+(c) Osamu Aoki <osamu@debian.org>, GPL-2+
+See im-config(8), /usr/share/doc/im-config/README.Debian.gz." >&2
+        echo >&2
+        exit
+        ;;
+    esac
+    shift
+done
+#############################################################
+# Check number of installed input methods (10-89)
+#############################################################
+IM_CONFIG_NUMBER=0
+IM_CONFIG_AVAIL=""
+for IM_CONFIG_PATH in $IM_CONFIG_DATA/[12345678][0123456789]_*.rc ; do
+    IM_CONFIG_NAME=$(name_im $IM_CONFIG_PATH)
+    if ( $IM_CONFIG_ALL || avail_menu $IM_CONFIG_NAME ) && [ $IM_CONFIG_NAME != "none" ]; then
+        IM_CONFIG_NUMBER="$(($IM_CONFIG_NUMBER + 1))"
+        IM_CONFIG_AVAIL="$IM_CONFIG_AVAIL $IM_CONFIG_NAME"
+    fi
+done
+#############################################################
+# Report installed input methods and exit.  (NO-GUI needed)
+#############################################################
+if $IM_CONFIG_LIST ; then
+echo "$IM_CONFIG_AVAIL"
+exit
+fi
+#############################################################
+# Sanity check (GUI)
+#############################################################
+if [ $IM_CONFIG_DIALOG = "X" ]; then
+    kdialog_found=1
+    if [ "$KDE_FULL_SESSION" = true ] && [ -x /usr/bin/kdialog ]; then
+        kdialog_found=0
+    fi
+
+    if [ $kdialog_found -ne 0 ] && [ ! -x /usr/bin/zenity ]; then
+        eval_gettext "E: zenity must be installed." >&2
+        echo >&2
+        exit 1
+    fi
+    if [ "x$DISPLAY" = "x" ]; then
+        eval_gettext "E: X server must be available." >&2
+        echo >&2
+        exit 1
+    fi
+else
+    if [ ! -x /usr/bin/whiptail ]; then
+        eval_gettext "E: whiptail must be installed." >&2
+        echo >&2
+        exit 1
+    fi
+fi
+#############################################################
+# Do not run im-config if "$IM_CONFIG_ACTIVE" = "custom"
+#############################################################
+if [ "$IM_CONFIG_ACTIVE" = "custom" ]; then
+    msgbox "$(eval_gettext "The \$IM_CONFIG_XINPUTRC_TYPE has been manually modified.
+Remove the \$IM_CONFIG_XINPUTRC_TYPE \$IM_CONFIG_XINPUTRC manually to use im-config.
+\$IM_CONFIG_RTFM")"
+    exit
+fi
+#############################################################
+# UI dialogue for im-config
+#############################################################
+IM_CONFIG_MSG="$(eval_gettext "Current configuration for the input method:
+ * Active configuration: \$IM_CONFIG_ACTIVE (normally missing)
+ * Normal automatic choice: \$IM_CONFIG_AUTOBASE (normally ibus or fcitx or uim)
+ * Override rule: \$IM_CONFIG_PREFERRED_RULE
+ * Current override choice: \$IM_CONFIG_PREFERRED (\$IM_CONFIG_LC_CTYPE)
+ * Current automatic choice: \$IM_CONFIG_AUTOMATIC
+ * Number of valid choices: \$IM_CONFIG_NUMBER (normally 1)
+The override rule is defined in /etc/default/im-config.
+The configuration set by im-config is activated by re-starting X.")"
+
+if [ $IM_CONFIG_NUMBER = 0 ]; then
+    # no input method installed, make a simple recommendation
+    IM_CONFIG_MSG="$(eval_gettext "\$IM_CONFIG_MSG
+In order to enter non-ASCII native characters, you must install one set of input method tools:
+ * ibus and its associated packages (recommended)
+   * multilingual support
+   * GUI configuration
+ * fcitx and its associated packages
+   * multilingual support with focus on Chinese
+   * GUI configuration
+ * uim and its associated packages
+   * multilingual support
+   * manual configuration with the Scheme code
+   * text terminal support even under non-X environments
+ * any set of packages which depend on im-config
+\$IM_CONFIG_MSGA")"
+
+elif [ $IM_CONFIG_NUMBER = 1 ]; then
+    # one input method installed
+    IM_CONFIG_MSG="$(eval_gettext "\$IM_CONFIG_MSG
+\$IM_CONFIG_MSGA")"
+
+else
+    IM_CONFIG_MSG="$(eval_gettext "\$IM_CONFIG_MSG
+\$IM_CONFIG_MSGA
+  Available input methods:\$IM_CONFIG_AVAIL
+Unless you really need them all, please make sure to install only one input method tool.")"
+
+fi
+msgbox "$IM_CONFIG_MSG"
+
+IM_CONFIG_YNQ="$(eval_gettext "Do you explicitly select the \${IM_CONFIG_XINPUTRC_TYPE}?
+
+ * Select NO, if you do not wish to update it. (recommended)
+ * Select YES, if you wish to update it.")"
+
+if yesno "$IM_CONFIG_YNQ" ; then
+    # If you wish to update configuration explicitly
+    IM_CONFIG_MENULIST="$(menulist_init \
+        "$(eval_gettext "Select \$IM_CONFIG_XINPUTRC_TYPE. The user configuration supersedes the system one.")" \
+        "$(gettext "select")" \
+        "$(gettext "name")" \
+        "$(gettext "description")" )"
+
+    # Make selection menu list (00-89)
+    for IM_CONFIG_PATH in $IM_CONFIG_DATA/[012345678][0123456789]_*.rc ; do
+        IM_CONFIG_NAME=$(name_im $IM_CONFIG_PATH)
+        IM_CONFIG_NAME_SHORT="$(dsc_short $IM_CONFIG_NAME)"
+        if $IM_CONFIG_ALL || avail_menu $IM_CONFIG_NAME ; then
+            if [ "$IM_CONFIG_NAME" = "$IM_CONFIG_ACTIVE" ]; then
+                IM_CONFIG_MENULIST="$IM_CONFIG_MENULIST $(menulist_add $IM_CONFIG_NAME "$IM_CONFIG_NAME_SHORT" on)"
+            else
+                IM_CONFIG_MENULIST="$IM_CONFIG_MENULIST $(menulist_add $IM_CONFIG_NAME "$IM_CONFIG_NAME_SHORT" off)"
+            fi
+        fi
+    done
+
+    IM_CONFIG_TMPFILE=$(mktemp --tmpdir im-config.XXXXXXXX)
+    set +x
+    menulist_eval "$IM_CONFIG_MENULIST" 2>$IM_CONFIG_TMPFILE
+    IM_CONFIG_NAME=$(cat $IM_CONFIG_TMPFILE)
+    set $IM_CONFIG_SETMODE
+    rm $IM_CONFIG_TMPFILE
+
+    if [ "x$IM_CONFIG_NAME" = "xREMOVE" ]; then
+        # remove configuration file
+        if ! $IM_CONFIG_DRY ; then
+            rm -f $IM_CONFIG_XINPUTRC
+        fi
+        IM_CONFIG_ACTIVE="missing"
+        IM_CONFIG_MSG="$(eval_gettext "Removing the \$IM_CONFIG_XINPUTRC_TYPE \$IM_CONFIG_XINPUTRC.")"
+        IM_CONFIG_RTFM="$(eval_gettext "
+The \$IM_CONFIG_XINPUTRC_TYPE is modified by im-config.
+
+Restart the X session to activate the new \$IM_CONFIG_XINPUTRC_TYPE.
+\$IM_CONFIG_RTFM")"
+    elif [ -z "$IM_CONFIG_NAME" ]; then
+        # keep configuration file
+        if [ "x$IM_CONFIG_ACTIVE" = "xmissing" ]; then
+            IM_CONFIG_MSG="$(eval_gettext "Keeping the \$IM_CONFIG_XINPUTRC_TYPE \$IM_CONFIG_XINPUTRC as missing.")"
+        else
+            IM_CONFIG_MSG="$(eval_gettext "Keeping the \$IM_CONFIG_XINPUTRC_TYPE \$IM_CONFIG_XINPUTRC unchanged as \$IM_CONFIG_ACTIVE.")"
+        fi
+    else
+        # update configuration file
+        if ! $IM_CONFIG_DRY ; then
+            write_config $IM_CONFIG_NAME $IM_CONFIG_XINPUTRC
+        fi
+        IM_CONFIG_ACTIVE="$IM_CONFIG_NAME"
+        IM_CONFIG_MSG="$(eval_gettext "Setting the \$IM_CONFIG_XINPUTRC_TYPE \$IM_CONFIG_XINPUTRC to \$IM_CONFIG_ACTIVE.")"
+        IM_CONFIG_RTFM="$(eval_gettext "
+The \$IM_CONFIG_XINPUTRC_TYPE is modified by im-config.
+
+Restart the X session to activate the new \$IM_CONFIG_XINPUTRC_TYPE.
+\$IM_CONFIG_RTFM")"
+    fi
+    if $IM_CONFIG_DRY ; then
+        # dry-run
+        IM_CONFIG_MSG="$(eval_gettext "*** This is merely a simulated run and no changes are made. ***
+
+\$IM_CONFIG_MSG")"
+
+    fi
+else
+    # keep configuration file
+    if [ "x$IM_CONFIG_ACTIVE" = "xmissing" ]; then
+        IM_CONFIG_MSG="$(eval_gettext "Keeping the \$IM_CONFIG_XINPUTRC_TYPE \$IM_CONFIG_XINPUTRC as missing.")"
+    else
+        IM_CONFIG_MSG="$(eval_gettext "Keeping the \$IM_CONFIG_XINPUTRC_TYPE \$IM_CONFIG_XINPUTRC unchanged as \$IM_CONFIG_ACTIVE.")"
+    fi
+fi
+
+if [ "x$IM_CONFIG_ACTIVE" = "xmissing" ] || \
+   [ "x$IM_CONFIG_ACTIVE" = "xdefault" ] || \
+   [ "x$IM_CONFIG_ACTIVE" = "xauto" ] || \
+   [ "x$IM_CONFIG_ACTIVE" = "xcjkv" ] ; then
+    IM_CONFIG_AUTOMATIC_LONG=$(dsc_long $IM_CONFIG_AUTOMATIC)
+    msgbox "$(eval_gettext "\$IM_CONFIG_MSG
+Automatic configuration selects: \$IM_CONFIG_AUTOMATIC
+\$IM_CONFIG_AUTOMATIC_LONG
+\$IM_CONFIG_RTFM")"
+
+else
+    IM_CONFIG_ACTIVE_LONG=$(dsc_long $IM_CONFIG_ACTIVE)
+    msgbox "$(eval_gettext "\$IM_CONFIG_MSG
+Manual configuration selects: \$IM_CONFIG_ACTIVE
+\$IM_CONFIG_ACTIVE_LONG
+\$IM_CONFIG_RTFM")"
+
+fi
+

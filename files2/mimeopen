@@ -1,0 +1,361 @@
+#!/usr/bin/perl
+
+use strict;
+our $VERSION = '0.29';
+$|++;
+
+# ########## #
+# Parse ARGV #
+# ########## #
+my %args = ();
+my %opts = (
+	# name	=> [char, expect_arg_bit ]
+	'help'		=> ['h'],
+	'usage'		=> ['u'],
+	'version'	=> ['v'],
+	'stdin'		=> [''],
+	'dereference'	=> ['L'],
+	'debug'		=> ['D'],
+	'database'	=> ['', 1],
+	'magic-only'	=> ['M'],
+	'ask'		=> ['a'],
+	'ask-default'	=> ['d'],
+	'no-ask'	=> ['n'],
+);
+
+while ((@ARGV) && ($ARGV[0] =~ /^-/)) {
+	my $opt = shift @ARGV;
+	if ($opt =~ /^--?$/) {
+		last;
+	}
+	elsif ($opt =~ s/^--([\w-]+)(?:=(.*))?/$1/) {
+		if (exists $opts{$opt}) {
+			if ($opts{$opt}[1]) {
+				my $arg = $2 || shift @ARGV;
+				complain('--'.$opt, 2) unless defined $arg;
+				$args{$opt} .= ( $args{$opt} ? ' ' : '' ) . $arg;
+			}
+			else { $args{$opt}++ }
+		}
+		else { complain('--'.$opt) }
+	}
+	elsif ($opt =~ s/^-(?!-)//) {
+		foreach my $o (split //, $opt) {
+			my ($key) = grep { $opts{$_}[0] eq $o } keys %opts;
+			complain($o) unless $key;
+
+			if ($opts{$key}[1]) {
+				my $arg = shift @ARGV;
+				complain('-'.$o, 2) unless defined $arg;
+				$args{$key} .= ( $args{$key} ? ' ' : '' ).$arg; # join with whitespace
+			}
+			else { $args{$key}++; }
+		}
+	}
+	else { complain($opt) }
+}
+
+if ($args{help} || $args{usage}) {
+	eval 'use Pod::Usage';
+	die "Could not find perl module Pod::Usage\n" if $@;
+	pod2usage( {
+		-verbose => 1,
+		-exitval => 0,
+	} );
+}
+
+if ($args{version}) {
+	print "mimeopen $VERSION\n\n", << 'EOV';
+Copyright (c) 2005, 2012 Jaap G Karssenberg. All rights reserved.
+This program is free software; you can redistribute it and/or
+modify it under the same terms as Perl.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+EOV
+	exit 0;
+}
+
+complain(undef, 4) unless scalar(@ARGV);
+
+# ############# #
+# prepare stuff #
+# ############# #
+
+# --database
+@File::MimeInfo::DIRS = split /:/, $args{database} if $args{database};
+
+## Actually use our modules ##
+eval 'use File::MimeInfo::Magic qw/mimetype magic/;';
+die $@ if $@;
+eval 'use File::MimeInfo::Applications;';
+die $@ if $@;
+
+*default = \&File::MimeInfo::default;
+
+# --debug
+if ($args{debug}) {
+	$File::MimeInfo::DEBUG++;
+	$File::MimeInfo::Magic::DEBUG++;
+	print	'> Data dirs are: ', join( ', ',
+			$args{database}
+				? ( split /:/, $args{database} )
+				: (
+					File::BaseDir::xdg_data_home(),
+					File::BaseDir::xdg_data_dirs()
+				)
+		), "\n";
+}
+
+# --dereference ## deprecated - so always true
+$args{dereference} = 1;
+if ($args{dereference}) {
+	eval 'use File::Spec';
+	die "Could not find perl module File::Spec\n" if $@;
+}
+
+# ######## #
+# do stuff #
+# ######## #
+
+my $mimetype;
+
+my $file = $ARGV[0];
+# --dereference
+my $f = ($args{dereference} && -l $file) ? resolvelink($file) : $file;
+# --magic-only
+$mimetype = $args{'magic-only'}
+	? (magic($f) || default($f))
+	: mimetype($f) ;
+
+unless (length $mimetype) {
+	print STDERR "Could not determine mimetype for file: $file\n";
+	exit 5;
+}
+
+my ($default, @other) = mime_applications_all($mimetype);
+
+## Removed this because user should always be able to select "Other..."
+#unless($default or @other) {
+#	print STDERR "No applications found for mimetype: $mimetype\n";
+#	exit 6;
+#}
+##
+
+if    ($args{'no-ask'}) {
+	$default = defined($default) ? $default : $other[0];
+}
+elsif ($args{'ask'}) {
+	$default = choose($mimetype, 0, grep defined($_), $default, @other);
+}
+elsif ($args{'ask-default'}) {
+	$default = choose($mimetype, 1, grep defined($_), $default, @other);
+}
+elsif (! defined $default) {
+	($default) = (@other == 1) ? (@other) : choose($mimetype, 1, @other);
+}
+
+print 'Opening '.join(', ', map qq{"$_"}, @ARGV)
+	. ' with '.$default->get_value('Name')."  ($mimetype)\n";
+#print STDERR "exec string: ".$default->parse_Exec(@ARGV)."\n";
+if (@ARGV == 1 or $default->wants_list) {
+	$default->exec(@ARGV);
+}
+else {
+	my $last = pop @ARGV;
+	fork or $default->exec($_) for @ARGV;
+	$default->exec($last);
+}
+
+exit 7; # something went wrong in the exec
+
+# ########### #
+# Subroutines #
+# ########### #
+
+sub choose {
+	my ($mime, $set_default, @app) = @_;
+	print $set_default ?
+		"Please choose a default application for files of type $mime\n\n" :
+		"Please choose an application\n\n" ;
+	my @done;
+	for my $i (0 .. $#app) {
+		my (undef, undef, $file) =
+			File::Spec->splitpath( $app[$i]->{file} );
+		$file =~ s/\.desktop$//;
+		if (grep {$_ eq $file} @done) {
+			$app[$i] = undef;
+		}
+		else {
+			push @done, $file;
+			print "\t", scalar(@done), ") ",
+				$app[$i]->get_value('Name'), "  ($file)\n";
+		}
+	}
+	@app = grep defined($_), @app;
+	print "\t", scalar(@done)+1, ") Other...\n" if $set_default;
+	print "\nuse application #";
+	my $c = <STDIN>;
+	chomp $c;
+
+	unless ($c =~ /^\d+$/) {
+		print STDERR "Cancelled\n";
+		exit 8;
+	}
+	$c--; # base-1 => base-0
+
+	if ($set_default and $c == scalar(@done)) {
+		# ask for custom command
+		print "use command: ";
+		my $cmd = <STDIN>;
+		chomp $cmd;
+		push @app,
+			eval { mime_applications_set_custom($mime => $cmd) };
+		warn $@ if $@;
+	}
+	elsif ($c > scalar(@app)) {
+		print STDERR "Cancelled\n";
+		exit 8;
+	}
+	elsif ($set_default) {
+		eval { mime_applications_set_default($mime => $app[$c]) };
+		warn $@ if $@;
+	}
+
+	return $app[$c];
+}
+
+sub complain { # Error messages
+	my $opt = shift;
+	my $m = shift || 1;
+
+	my $bn = $0;
+	$bn =~ s|^(.*/)*||;
+	if ($m == 1) { print STDERR "$bn: unrecognized option '$opt'" }
+	elsif ($m == 2) { print STDERR "$bn: option '$opt' requires an argument" }
+	elsif ($m == 3) { print STDERR "$bn: $opt: No such file or directory\n" }
+	elsif ($m == 4) { print STDERR "usage: $bn [options] files" }
+
+	print "\nTry '$bn --help' for more information.\n" unless $m == 3;
+	exit $m;
+}
+
+sub resolvelink { # --dereference
+	my $file = shift;
+	my $link = readlink($file) || return $file;
+	my (undef, $dir, undef) = File::Spec->splitpath($file);
+	$link = File::Spec->rel2abs($link, $dir);
+	$link = resolvelink($link) if -l $link; # recurs
+	return $link;
+}
+
+__END__
+
+=head1 NAME
+
+mimeopen - Open files by mimetype
+
+=head1 SYNOPSIS
+
+mimeopen [options] [-] files
+
+=head1 DESCRIPTION
+
+This script tries to determine the mimetype of a file and open it with the
+default desktop application. If no default application is configured the
+user is prompted with an "open with" menu in the terminal.
+
+To use this script you need the freedesktop mime-info database and the
+freedesktop desktop-file-utils package. See L<File::MimeInfo::Applications(3)>
+for more details.
+
+=head1 OPTIONS
+
+=over 4
+
+=item B<-a>, B<--ask>
+
+Do not execute the default application but ask which application to run.
+This does not change the default application.
+
+=item B<-d>, B<--ask-default>
+
+Let the user choose a new default program for given files.
+
+=item B<-n>, B<--no-ask>
+
+Don't ask the user which program to use. Choose the default program or the
+first program known to handle the file mimetype. This does not set the
+default application.
+
+=item B<-M>, B<--magic-only>
+
+Do not check for extensions, globs or inode type, only look at the content
+of the file. This is particularly useful if for some reason you don't trust
+the name or the extension a file has.
+
+=item B<--database>=I<mimedir>:I<mimedir>:...
+
+Force the program to look in these directories for the shared mime-info
+database. The directories specified by the basedir specification
+are ignored.
+
+=item B<-D>, B<--debug>
+
+Print debug information about how the mimetype was determined.
+
+=item B<-h>, B<--help>
+
+=item B<-u>, B<--usage>
+
+Print a help message and exits.
+
+=item B<-v>, B<--version>
+
+Print the version of the program and exit.
+
+=back
+
+=head1 DEPRECATED OPTIONS
+
+=over 4
+
+=item B<-L>, B<--dereference>
+
+Follow symbolic links.
+Deprecated because this is the logical default for this command.
+Ignored silently.
+
+=back
+
+=head1 BUGS
+
+If you find bugs, please file them in our Github
+issue tracker at L<https://github.com/mbeijen/File-MimeInfo/issues>.
+
+See File::MimeInfo::Applications(3) and File::DesktopEntry(3)
+for some limitations.
+
+=head1 AUTHOR
+
+Jaap Karssenberg E<lt>pardus@cpan.orgE<gt>
+Maintained by Michiel Beijen E<lt>michiel.beijen@gmail.comE<gt>
+
+=head1 COPYRIGHT
+
+Copyright (c) 2002, 2012 Jaap G Karssenberg. All rights reserved.
+This program is free software; you can redistribute it and/or
+modify it under the same terms as Perl.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+
+=head1 SEE ALSO
+
+L<mimetype(1)>,
+L<update-mime-database(1)>,
+L<update-desktop-database(1)>,
+L<File::MimeInfo(3)>,
+L<File::MimeInfo::Applications(3)>

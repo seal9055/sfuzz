@@ -1,0 +1,272 @@
+#!/usr/bin/python3
+#
+# Orca
+#
+# Copyright 2010-2012 The Orca Team
+# Copyright 2012 Igalia, S.L.
+#
+# This library is free software; you can redistribute it and/or
+# modify it under the terms of the GNU Lesser General Public
+# License as published by the Free Software Foundation; either
+# version 2.1 of the License, or (at your option) any later version.
+#
+# This library is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+# Lesser General Public License for more details.
+#
+# You should have received a copy of the GNU Lesser General Public
+# License along with this library; if not, write to the
+# Free Software Foundation, Inc., Franklin Street, Fifth Floor,
+# Boston MA  02110-1301 USA.
+
+__id__        = "$Id$"
+__version__   = "$Revision$"
+__date__      = "$Date$"
+__copyright__ = "Copyright (c) 2010-2012 The Orca Team" \
+                "Copyright (c) 2012 Igalia, S.L."
+__license__   = "LGPL"
+
+import argparse
+import os
+import pyatspi
+import signal
+import subprocess
+import sys
+import time
+
+sys.prefix = '/usr'
+pythondir = '${prefix}/lib/python3.8/site-packages'.replace('${prefix}', '/usr')
+sys.path.insert(1, pythondir)
+
+from orca import debug
+from orca import messages
+from orca import orca
+from orca import settings
+from orca.orca_platform import version
+
+class ListApps(argparse.Action):
+    def __call__(self, parser, namespace, values, option_string=None):
+        desktop = pyatspi.Registry.getDesktop(0)
+        for app in desktop:
+            if app is None:
+                continue
+
+            pid = app.get_process_id()
+            try:
+                name = app.name or "(none)"
+            except:
+                name = "[DEAD]"
+
+            try:
+                cmdline = subprocess.getoutput('cat /proc/%s/cmdline' % pid)
+            except:
+                cmdline = '(exception encountered)'
+            else:
+                cmdline = cmdline.replace('\x00', ' ')
+
+            print(time.strftime('%H:%M:%S', time.localtime()),
+                  '  pid: %5s   %-25s  %s' % (pid, name, cmdline))
+
+        parser.exit()
+
+class Settings(argparse.Action):
+    def __call__(self, parser, namespace, values, option_string=None):
+        settingsDict = getattr(namespace, 'settings', {})
+        invalid = getattr(namespace, 'invalid', [])
+        for value in values.split(','):
+            item = str.title(value).replace('-', '')
+            try:
+                test = 'enable%s' % item
+                eval('settings.%s' % test)
+            except AttributeError:
+                try:
+                    test = 'show%s' % item
+                    eval('settings.%s' % test)
+                except AttributeError:
+                    invalid.append(value)
+                    continue
+            settingsDict[test] = self.const
+        setattr(namespace, 'settings', settingsDict)
+        setattr(namespace, 'invalid', invalid)
+
+class HelpFormatter(argparse.HelpFormatter):
+    def __init__(self, prog, indent_increment=2, max_help_position=32,
+                 width=None):
+
+        super().__init__(prog, indent_increment, max_help_position, width)
+
+    def add_usage(self, usage, actions, groups, prefix=None):
+        super().add_usage(usage, actions, groups, messages.CLI_USAGE)
+
+class Parser(argparse.ArgumentParser):
+    def __init__(self, *args, **kwargs):
+        super(Parser, self).__init__(
+            epilog=messages.CLI_EPILOG, formatter_class=HelpFormatter, add_help=False)
+        self.add_argument(
+            "-h", "--help", action="help", help=messages.CLI_HELP)
+        self.add_argument(
+            "-v", "--version", action="version", version=version, help=version)
+        self.add_argument(
+            "-r", "--replace", action="store_true", help=messages.CLI_REPLACE)
+        self.add_argument(
+            "-s", "--setup", action="store_true", help=messages.CLI_GUI_SETUP)
+        self.add_argument(
+            "-l", "--list-apps", action=ListApps, nargs=0,
+            help=messages.CLI_LIST_APPS)
+        self.add_argument(
+            "-e", "--enable", action=Settings, const=True,
+            help=messages.CLI_ENABLE_OPTION, metavar=messages.CLI_OPTION)
+        self.add_argument(
+            "-d", "--disable", action=Settings, const=False,
+            help=messages.CLI_DISABLE_OPTION, metavar=messages.CLI_OPTION)
+        self.add_argument(
+            "-p", "--profile", action="store",
+            help=messages.CLI_LOAD_PROFILE, metavar=messages.CLI_PROFILE_NAME)
+        self.add_argument(
+            "-u", "--user-prefs", action="store",
+            help=messages.CLI_LOAD_PREFS, metavar=messages.CLI_PREFS_DIR)
+        self.add_argument(
+            "--debug-file", action="store",
+            help=messages.CLI_DEBUG_FILE, metavar=messages.CLI_DEBUG_FILE_NAME)
+        self.add_argument(
+            "--debug", action="store_true", help=messages.CLI_ENABLE_DEBUG)
+
+        self._optionals.title = messages.CLI_OPTIONAL_ARGUMENTS
+
+    def parse_known_args(self, *args, **kwargs):
+        opts, invalid = super(Parser, self).parse_known_args(*args, **kwargs)
+        try:
+            invalid.extend(opts.invalid)
+        except:
+            pass
+        if invalid:
+            print((messages.CLI_INVALID_OPTIONS + " ".join(invalid)))
+
+        if opts.debug_file:
+            opts.debug = True
+        elif opts.debug:
+            opts.debug_file = time.strftime('debug-%Y-%m-%d-%H:%M:%S.out')
+
+        return opts, invalid
+
+def setProcessName(name):
+    """Attempts to set the process name to the specified name."""
+
+    sys.argv[0] = name
+
+    # Disabling the import error of setproctitle.
+    # pylint: disable-msg=F0401
+    try:
+        from setproctitle import setproctitle
+    except ImportError:
+        pass
+    else:
+        setproctitle(name)
+        return True
+
+    try:
+        from ctypes import cdll, byref, create_string_buffer
+        libc = cdll.LoadLibrary('libc.so.6')
+        stringBuffer = create_string_buffer(len(name) + 1)
+        stringBuffer.value = bytes(name, 'UTF-8')
+        libc.prctl(15, byref(stringBuffer), 0, 0, 0)
+        return True
+    except:
+        pass
+
+    return False
+
+def inGraphicalDesktop():
+    """Returns True if we are in a graphical desktop."""
+
+    # TODO - JD: Make this desktop environment agnostic
+    try:
+        from gi.repository import Gdk
+        display = Gdk.Display.get_default()
+    except:
+        return False
+
+    return display is not None
+
+def otherOrcas():
+    """Returns the pid of any other instances of Orca owned by this user."""
+
+    openFile = subprocess.Popen('pgrep -u %s orca' % os.getuid(),
+                                shell=True,
+                                stdout=subprocess.PIPE).stdout
+    pids = openFile.read()
+    openFile.close()
+    orcas = [int(p) for p in pids.split()]
+
+    pid = os.getpid()
+    return [p for p in orcas if p != pid]
+
+def cleanup(sigval):
+    """Tries to clean up any other running Orca instances owned by this user."""
+
+    orcasToKill = otherOrcas()
+    debug.println(
+        debug.LEVEL_INFO, "INFO: Cleaning up these PIDs: %s" % orcasToKill)
+
+    def onTimeout(signum, frame):
+        orcasToKill = otherOrcas()
+        debug.println(
+            debug.LEVEL_INFO, "INFO: Timeout cleaning up: %s" % orcasToKill)
+        for pid in orcasToKill:
+            os.kill(pid, signal.SIGKILL)
+
+    for pid in orcasToKill:
+        os.kill(pid, sigval)
+    signal.signal(signal.SIGALRM, onTimeout)
+    signal.alarm(2)
+    while otherOrcas():
+        time.sleep(0.5)
+
+def main():
+    setProcessName('orca')
+
+    parser = Parser()
+    args, invalid = parser.parse_known_args()
+
+    if args.debug:
+        debug.debugLevel = debug.LEVEL_ALL
+        debug.eventDebugLevel = debug.LEVEL_OFF
+        debug.debugFile = open(args.debug_file, 'w')
+
+    if args.replace:
+        cleanup(signal.SIGKILL)
+
+    settingsDict = getattr(args, 'settings', {})
+
+    if not inGraphicalDesktop():
+        print(messages.CLI_NO_DESKTOP_ERROR)
+        return 1
+
+    manager = orca.getSettingsManager()
+    if not manager:
+        print(messages.CLI_SETTINGS_MANAGER_ERROR)
+        return 1
+
+    manager.activate(args.user_prefs, settingsDict)
+    sys.path.insert(0, manager.getPrefsDir())
+
+    if args.profile:
+        try:
+            manager.setProfile(args.profile)
+        except:
+            print(messages.CLI_LOAD_PROFILE_ERROR % args.profile)
+            manager.setProfile()
+
+    if args.setup:
+        cleanup(signal.SIGKILL)
+        orca.showPreferencesGUI()
+
+    if otherOrcas():
+        print(messages.CLI_OTHER_ORCAS_ERROR)
+        return 1
+
+    return orca.main()
+
+if __name__ == "__main__":
+    sys.exit(main())

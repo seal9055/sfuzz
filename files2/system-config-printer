@@ -1,0 +1,3 @@
+#!/bin/sh
+prefix=/usr
+exec ${prefix}/share/system-config-printer/system-config-printer.py "$@"

@@ -1,0 +1,131 @@
+#!/bin/sh
+#
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 2 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+
+set -e
+
+TMPFILE=
+
+cleanup() {
+  if [ -n "$TMPFILE" ]; then
+    rm -f "$TMPFILE"
+  fi
+}
+
+trap cleanup EXIT
+
+case "$1" in
+  -h | --h | --he | --hel | --help)
+    cat <<EOF
+Usage:
+  $0 XML-FILE [SCHEMA-NAME]
+  $0 OPTION
+
+Options:
+  -h | --help        Display program help
+  -V | --version     Display program version
+EOF
+    exit ;;
+  -V | --v | --ve | --ver | --vers | --versi | --versio | --version)
+    cat <<EOF
+$0 (libvirt) 6.0.0
+EOF
+    exit ;;
+  --) shift ;;
+  -?*)
+    echo "$0: unrecognized option '$1'" >&2
+    exit 1 ;;
+esac
+
+XMLFILE="$1"
+TYPE="$2"
+
+if [ "$XMLFILE" = "-" ]; then
+  TMPFILE=`mktemp --tmpdir virt-xml.XXXX`
+  cat > "$TMPFILE"
+else
+  if [ -z "$XMLFILE" ]; then
+    echo "syntax: $0 XMLFILE [TYPE]" >&2
+    exit 1
+  fi
+
+  if [ ! -f "$XMLFILE" ]; then
+    echo "$0: document $XMLFILE does not exist" >&2
+    exit 2
+  fi
+fi
+
+if [ -z "$TYPE" ]; then
+  if [ -n "$TMPFILE" ]; then
+    ROOT=`xmllint --stream --debug - < "$TMPFILE" 2>/dev/null | grep "^0 1 " | awk '{ print $3 }'`
+  else
+    ROOT=`xmllint --stream --debug "$XMLFILE" 2>/dev/null | grep "^0 1 " | awk '{ print $3 }'`
+  fi
+  case "$ROOT" in
+     *domainsnapshot*) # Must come first, since *domain* is a substring
+        TYPE="domainsnapshot"
+        ;;
+     *domain*)
+        TYPE="domain"
+        ;;
+     *networkport*)
+        TYPE="networkport"
+        ;;
+     *network*)
+        TYPE="network"
+        ;;
+     *pool*)
+        TYPE="storagepool"
+        ;;
+     *volume*)
+        TYPE="storagevol"
+        ;;
+     *capabilities*)
+        TYPE="capability"
+        ;;
+     *device*)
+        TYPE="nodedev"
+        ;;
+     *filterbinding*)
+        TYPE="nwfilterbinding"
+        ;;
+     *filter*)
+        TYPE="nwfilter"
+        ;;
+     *secret*)
+        TYPE="secret"
+        ;;
+     *interface*)
+        TYPE="interface"
+        ;;
+     *)
+       echo "$0: cannot determine schema type for $XMLFILE" >&2
+       exit 3
+  esac
+fi
+
+SCHEMA="/usr/share/libvirt/schemas/${TYPE}.rng"
+
+if [ ! -f "$SCHEMA" ]; then
+  echo "$0: schema $SCHEMA does not exist" >&2
+  exit 4
+fi
+
+if [ -n "$TMPFILE" ]; then
+  xmllint --noout --relaxng "$SCHEMA" - < "$TMPFILE"
+else
+  xmllint --noout --relaxng "$SCHEMA" "$XMLFILE"
+fi
+exit

@@ -1,0 +1,58 @@
+#!/bin/sh
+
+while [ $# -ge 1 ]; do
+case "$1" in
+  --quick|-q)
+    QUICK=true
+    shift
+    ;;
+  -*)
+    echo "\
+Usage: pon [OPTIONS] [provider] [arguments]
+  -q|--quick           pppd hangs up after all ip-up scripts are run
+
+If pon is invoked without arguments, /etc/ppp/ppp_on_boot file will be
+run, presuming it exists and is executable. Otherwise, a PPP connection
+will be started using settings from /etc/ppp/peers/provider.
+If you specify one argument, a PPP connection will be started using
+settings from the appropriate file in the /etc/ppp/peers/ directory, and
+any additional arguments supplied will be passed as extra arguments to
+pppd.
+"
+    exit 0
+    ;;
+  *)
+    break
+    ;;
+esac
+done
+
+if [ ! -r /etc/ppp/peers/ ]; then
+  echo "Error: only members of the 'dip' group can use this command."
+  exit 1
+fi
+
+if [ "$1" ]; then
+  PROVIDER=$1
+  shift
+fi
+
+if [ -z "$PROVIDER" ]; then
+  if [ -x /etc/ppp/ppp_on_boot ]; then
+    [ "$QUICK" ] && touch /var/run/ppp-quick
+    exec /etc/ppp/ppp_on_boot
+  fi
+  # try the default script
+  PROVIDER=provider
+fi
+
+if [ ! -e "/etc/ppp/peers/$PROVIDER" ]; then
+  echo "\
+The file /etc/ppp/peers/$PROVIDER does not exist. Please create it or use
+a command line argument to use another file in the /etc/ppp/peers/ directory."
+  exit 1
+fi
+
+[ "$QUICK" ] && touch /var/run/ppp-quick
+exec /usr/sbin/pppd call $PROVIDER "$@"
+

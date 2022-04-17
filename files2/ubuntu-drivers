@@ -1,0 +1,490 @@
+#! /usr/bin/python3
+
+'''Driver package query/installation tool for Ubuntu'''
+
+# (C) 2012 Canonical Ltd.
+# Author: Martin Pitt <martin.pitt@ubuntu.com>
+#
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 2 of the License, or
+# (at your option) any later version.
+
+import click
+import subprocess
+import fnmatch
+import sys
+import os
+import logging
+import apt
+
+import UbuntuDrivers.detect
+
+sys_path = os.environ.get('UBUNTU_DRIVERS_SYS_DIR')
+
+# Make sure that the PATH environment variable is set
+# See LP: #1854472
+if not os.environ.get('PATH'):
+    os.environ['PATH'] = '/sbin:/usr/sbin:/bin:/usr/bin'
+
+logger = logging.getLogger()
+logger.setLevel(logging.WARNING)
+
+CONTEXT_SETTINGS = dict(help_option_names=['-h', '--help'])
+
+class Config(object):
+    def __init__(self):
+        self.gpgpu = False
+        self.free_only = False
+        self.package_list = ''
+        self.install_oem_meta = True
+        self.driver_string = ''
+
+pass_config = click.make_pass_decorator(Config, ensure=True)
+
+def command_list(args):
+    '''Show all driver packages which apply to the current system.'''
+
+    packages = UbuntuDrivers.detect.system_driver_packages(
+        sys_path=sys_path, freeonly=args.free_only, include_oem=args.install_oem_meta)
+
+    try:
+        cache = apt.Cache()
+    except Exception as ex:
+        print(ex)
+        return 1
+
+    for package in packages:
+        try:
+            linux_modules = UbuntuDrivers.detect.get_linux_modules_metapackage(cache, package)
+            if (not linux_modules and package.find('dkms') != -1):
+                linux_modules = package
+
+            if linux_modules:
+                print('%s, (kernel modules provided by %s)' % (package, linux_modules))
+            else:
+                print(package)
+        except KeyError:
+            print(package)
+
+    return 0
+
+def command_list_oem(args):
+    '''Show all OEM enablement packages which apply to this system'''
+
+    if not args.install_oem_meta:
+        return 0
+
+    packages = UbuntuDrivers.detect.system_device_specific_metapackages(
+        sys_path=sys_path, include_oem=args.install_oem_meta)
+
+    if packages:
+        print('\n'.join(packages))
+
+        if args.package_list:
+            with open(args.package_list, 'a') as f:
+                f.write('\n'.join(packages))
+                f.write('\n')
+
+    return 0
+
+def list_gpgpu(args):
+    '''Show all GPGPU driver packages which apply to the current system.'''
+    found = False
+    try:
+        cache = apt.Cache()
+    except Exception as ex:
+        print(ex)
+        return 1
+    packages = UbuntuDrivers.detect.system_gpgpu_driver_packages(cache, sys_path)
+    for package in packages:
+        candidate = packages[package]['metapackage']
+        if candidate:
+            print('%s, (kernel modules provided by %s)' % (candidate, UbuntuDrivers.detect.get_linux_modules_metapackage(cache, candidate)))
+
+    return 0
+
+def command_devices(args):
+    '''Show all devices which need drivers, and which packages apply to them.'''
+
+    drivers = UbuntuDrivers.detect.system_device_drivers(
+        sys_path=sys_path, freeonly=args.free_only)
+    for device, info in drivers.items():
+        print('== %s ==' % device)
+        for k, v in info.items():
+            if k == 'drivers':
+                continue
+            print('%-9s: %s' % (k, v))
+
+        for pkg, pkginfo in info['drivers'].items():
+            info_str = ''
+            if pkginfo['from_distro']:
+                info_str += ' distro'
+            else:
+                info_str += ' third-party'
+            if pkginfo['free']:
+                info_str += ' free'
+            else:
+                info_str += ' non-free'
+            if pkginfo.get('builtin'):
+                info_str += ' builtin'
+            if pkginfo.get('recommended'):
+                info_str += ' recommended'
+            print('%-9s: %s -%s' % ('driver', pkg, info_str))
+        print('')
+
+def command_install(args):
+    '''Install drivers that are appropriate for your hardware.'''
+    try:
+        cache = apt.Cache()
+    except Exception as ex:
+        print(ex)
+        return 1
+
+    packages = UbuntuDrivers.detect.system_driver_packages(
+        cache, sys_path, freeonly=args.free_only,
+        include_oem=args.install_oem_meta)
+    packages = UbuntuDrivers.detect.auto_install_filter(packages, args.driver_string)
+    if not packages:
+        print('No drivers found for installation.')
+        return
+
+    # ignore packages which are already installed
+    to_install = []
+    for p in packages:
+        if not cache[p].installed:
+            to_install.append(p)
+            # See if runtimepm is supported
+            if packages[p].get('runtimepm'):
+                # Create a file for nvidia-prime
+                try:
+                    pm_fd = open('/run/nvidia_runtimepm_supported', 'w')
+                    pm_fd.write('\n')
+                    pm_fd.close()
+                except PermissionError:
+                    # No need to error out here, since package
+                    # installation will fail
+                    pass
+            # Add the matching linux modules package when available
+            try:
+                modules_package = UbuntuDrivers.detect.get_linux_modules_metapackage(cache, p)
+                if modules_package and not cache[modules_package].installed:
+                    to_install.append(modules_package)
+            except KeyError:
+                pass
+
+    if not packages:
+        print('All the available drivers are already installed.')
+        return
+
+    ret = subprocess.call(['apt-get', 'install', '-o',
+        'DPkg::options::=--force-confnew', '-y'] + to_install)
+
+    oem_meta_to_install = fnmatch.filter(to_install, 'oem-*-meta')
+
+    # create package list
+    if ret == 0 and args.package_list:
+        with open(args.package_list, 'a') as f:
+            f.write('\n'.join(to_install))
+            f.write('\n')
+    elif ret != 0:
+        return ret
+
+    for package_to_install in oem_meta_to_install:
+        sources_list_path = os.path.join(os.path.sep,
+                                         'etc',
+                                         'apt',
+                                         'sources.list.d',
+                                         F'{package_to_install}.list')
+
+        update_ret = subprocess.call(['apt',
+                                      '-o', F'Dir::Etc::SourceList={sources_list_path}',
+                                      '-o', 'Dir::Etc::SourceParts=/dev/null',
+                                      '--no-list-cleanup',
+                                      'update'])
+
+        if update_ret != 0:
+            return update_ret
+
+    # If we are dealing with NVIDIA PRIME, and runtimepm
+    # is supported, enable it
+    if (os.path.isfile('/run/nvidia_runtimepm_supported') and
+        os.path.isfile('/usr/bin/prime-select')):
+        print('Trying to select the on-demand PRIME profile')
+        try:
+            subprocess.call(['prime-select', 'on-demand'])
+        except:
+            pass
+
+        # Create the override file for gpu-manager
+        with open('/etc/u-d-c-nvidia-runtimepm-override', 'w') as f:
+            f.write('# File created by ubuntu-drivers\n')
+
+    # All updates completed successfully, now let's upgrade the packages
+    if oem_meta_to_install:
+        ret = subprocess.call(['apt',
+                               'install',
+                               '-o', 'DPkg::Options::=--force-confnew',
+                               '-y'] + oem_meta_to_install)
+
+    return ret
+
+def command_autoinstall(args):
+    '''Install drivers that are appropriate for automatic installation. [DEPRECATED]'''
+    return command_install(args)
+
+def install_gpgpu(args):
+    '''Install GPGPU drivers that are appropriate for your hardware.'''
+    candidate = ''
+    if args.driver_string:
+        # Just one driver
+        # e.g. --gpgpu 390
+        #      --gpgpu nvidia:390
+        #
+        # Or Multiple drivers
+        # e.g. --gpgpu nvidia:390,amdgpu
+        not_found_exit_status = 1
+    else:
+        # No args, just --gpgpu
+        not_found_exit_status = 0
+
+    try:
+        cache = apt.Cache()
+    except Exception as ex:
+        print(ex)
+        return 1
+
+    packages = UbuntuDrivers.detect.system_gpgpu_driver_packages(cache, sys_path)
+    packages = UbuntuDrivers.detect.gpgpu_install_filter(packages, args.driver_string)
+    if not packages:
+        print('No drivers found for installation.')
+        return not_found_exit_status
+
+    # ignore packages which are already installed
+    to_install = []
+    for p in packages:
+        candidate = packages[p].get('metapackage')
+        print(candidate)
+        if candidate and not cache[candidate].installed:
+            to_install.append(candidate)
+
+    if candidate:
+        # Add the matching linux modules package
+        modules_package = UbuntuDrivers.detect.get_linux_modules_metapackage(cache, candidate)
+        print(modules_package)
+        if modules_package and not cache[modules_package].installed:
+            to_install.append(modules_package)
+
+    if not to_install:
+        print('All the available drivers are already installed.')
+        return 0
+
+    ret = subprocess.call(['apt-get', 'install', '-o',
+        'DPkg::options::=--force-confnew',
+        '--no-install-recommends', '-y'] + to_install)
+
+    # create package list
+    if ret == 0 and args.package_list:
+        with open(args.package_list, 'a') as f:
+            f.write('\n'.join(to_install))
+            f.write('\n')
+
+    return ret
+
+def command_debug(args):
+    '''Print all available information and debug data about drivers.'''
+
+    logger = logging.basicConfig(level=logging.DEBUG, stream=sys.stdout)
+
+    print('=== log messages from detection ===')
+    aliases = UbuntuDrivers.detect.system_modaliases()
+
+    try:
+        cache = apt.Cache()
+    except Exception as ex:
+        print(ex)
+        return 1
+
+    packages = UbuntuDrivers.detect.system_driver_packages(
+        cache, sys_path, freeonly=args.free_only, include_oem=args.install_oem_meta)
+    auto_packages = UbuntuDrivers.detect.auto_install_filter(packages)
+
+    print('=== modaliases in the system ===')
+    for alias in aliases:
+        print(alias)
+
+    print('=== matching driver packages ===')
+    for package, info in packages.items():
+        p = cache[package]
+        try:
+            inst = p.installed.version
+        except AttributeError:
+            inst = '<none>'
+        try:
+            cand = p.candidate.version
+        except AttributeError:
+            cand = '<none>'
+        if package in auto_packages:
+            auto = ' (auto-install)'
+        else:
+            auto = ''
+
+        support = info.get('support')
+
+        info_str = ''
+        if info['from_distro']:
+            info_str += '  [distro]'
+        else:
+            info_str += '  [third party]'
+        if info['free']:
+            info_str += '  free'
+        else:
+            info_str += '  non-free'
+        if 'modalias' in info:
+            info_str += '  modalias: ' + info['modalias']
+        if 'syspath' in info:
+            info_str += '  path: ' + info['syspath']
+        if 'vendor' in info:
+            info_str += '  vendor: ' + info['vendor']
+        if 'model' in info:
+            info_str += '  model: ' + info['model']
+        if support:
+            info_str += '  support level: ' + info['support']
+
+        print('%s: installed: %s   available: %s%s%s ' % (package, inst, cand, auto,  info_str))
+
+#
+# main
+#
+
+
+@click.group(context_settings=CONTEXT_SETTINGS)
+@click.option('--gpgpu', is_flag=True, help='gpgpu drivers')
+@click.option('--free-only', is_flag=True, help='Only consider free packages')
+@click.option('--package-list', nargs=1, metavar='PATH', help='Create file with list of installed packages (in install mode)')
+@click.option('--no-oem', is_flag=True, default=False, show_default=True, metavar='install_oem_meta', help='Do not include OEM enablement packages (these enable an external archive)')
+@pass_config
+def greet(config, gpgpu, free_only, package_list, no_oem, **kwargs):
+    if gpgpu:
+        click.echo('This is gpgpu mode')
+        config.gpu = True
+    if free_only:
+        config.free_only = True
+    if package_list:
+        config.package_list = package_list
+    if no_oem:
+        config.no_oem = install_oem_meta
+
+@greet.command()
+@click.argument('driver', nargs=-1)  # add the name argument
+@click.option('--gpgpu', is_flag=True, help='gpgpu drivers')
+@click.option('--free-only', is_flag=True, help='Only consider free packages')
+@click.option('--package-list', nargs=1, metavar='PATH', help='Create file with list of installed packages (in install mode)')
+@click.option('--no-oem', is_flag=True, metavar='install_oem_meta', help='Do not include OEM enablement packages (these enable an external archive)')
+@pass_config
+def install(config, **kwargs):
+    '''Install a driver [driver[:version][,driver[:version]]]'''
+    if kwargs.get('gpgpu'):
+        config.gpgpu = True
+    if kwargs.get('free_only'):
+        config.free_only = True
+
+    # if kwargs.get('package_list'):
+    #     config.package_list = kwargs.get('package_list')
+    if kwargs.get('package_list'):
+        config.package_list = ''.join(kwargs.get('package_list'))
+    if kwargs.get('no_oem'):
+        config.no_oem = kwargs.get('no_oem')
+
+    if kwargs.get('driver'):
+        config.driver_string = ''.join(kwargs.get('driver'))
+
+    if config.gpgpu:
+        install_gpgpu(config)
+    else:
+        command_install(config)
+
+@greet.command()
+@click.argument('driver', nargs=-1)  # add the name argument
+@pass_config
+def autoinstall(config, **kwargs):
+    '''Deprecated, please use "install" instead'''
+    #print('install, {0}'.format(kwargs['driver']))
+
+    if kwargs.get('free_only'):
+        config.free_only = True
+    # if kwargs.get('package_list'):
+    #     config.package_list = kwargs.get('package_list')
+    if kwargs.get('package_list'):
+        config.package_list = ''.join(kwargs.get('package_list'))
+
+    if kwargs.get('driver'):
+        config.driver_string = ''.join(kwargs.get('driver'))
+
+    command_install(config)
+
+@greet.command()
+@click.argument('list', nargs=-1)
+@click.option('--gpgpu', is_flag=True, help='gpgpu drivers')
+@click.option('--free-only', is_flag=True, help='Only consider free packages')
+@pass_config
+def list(config, **kwargs):
+    '''Show all driver packages which apply to the current system.'''
+    try:
+        cache = apt.Cache()
+    except Exception as ex:
+        print(ex)
+        return 1
+
+    if kwargs.get('gpgpu'):
+        packages = UbuntuDrivers.detect.system_gpgpu_driver_packages(cache, sys_path)
+    else:
+        packages = UbuntuDrivers.detect.system_driver_packages(
+            sys_path=sys_path, freeonly=config.free_only, include_oem=config.install_oem_meta)
+
+    for package in packages:
+        try:
+            linux_modules = UbuntuDrivers.detect.get_linux_modules_metapackage(cache, package)
+            if (not linux_modules and package.find('dkms') != -1):
+                linux_modules = package
+
+            if linux_modules:
+                print('%s, (kernel modules provided by %s)' % (package, linux_modules))
+            else:
+                print(package)
+        except KeyError:
+            print(package)
+
+    return 0
+
+@greet.command()
+@click.argument('list-oem', nargs=-1)
+@click.option('--package-list', nargs=1, metavar='PATH', help='Create file with a list of the available packages')
+@pass_config
+def list_oem(config, **kwargs):
+    '''Show all OEM enablement packages which apply to this system'''
+    if kwargs.get('package_list'):
+        config.package_list = ''.join(kwargs.get('package_list'))
+
+    command_list_oem(config)
+
+@greet.command()
+@click.argument('debug', nargs=-1)  # add the name argument
+@pass_config
+def debug(config, **kwargs):
+    '''Print all available information and debug data about drivers.'''
+    command_debug(config)
+
+@greet.command()
+@click.argument('devices', nargs=-1)  # add the name argument
+@click.option('--free-only', is_flag=True, help='Only consider free packages')
+@pass_config
+def devices(config, **kwargs):
+    '''Show all devices which need drivers, and which packages apply to them.'''
+    if kwargs.get('free_only'):
+        config.free_only = True
+    command_devices(config)
+
+
+if __name__ == '__main__':
+    greet()

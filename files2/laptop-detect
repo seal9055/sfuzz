@@ -1,0 +1,134 @@
+#!/bin/sh -e
+
+usage () {
+    echo "Usage: $0 [-h|--help|-v|--verbose]"
+    echo ""
+    echo "  -h | --help      print this help"
+    echo "  -v | --verbose   be verbose (messages go to STDOUT)"
+    echo "  -V | --version   print version information"
+    echo "  -D | --debug     debug mode"
+    echo ""
+    echo " Possible return values:"
+    echo "  0  most likely running on a laptop"
+    echo "  1  most likely NOT running on a laptop"
+    echo "  2  called with unknown option, -h, --help, -V, --version, -D or --debug"
+}
+
+PRINTIT="/bin/true" # /bin/true accepts any option but never prints anything
+EXIT="exit" # replaced in debug mode by /bin/true
+
+# Check wether we were asked to be verbose
+
+if [ "$1" != "" ]; then
+    case "$1" in
+        "-v"|"--verbose")
+            PRINTIT="echo"
+            ;;
+        "-V"|"--version")
+            echo "Version: 0.16"
+            exit 2
+            ;;
+        "-h"|"--help")
+            usage
+            exit 2
+            ;;
+        "-D"|"--debug")
+            EXIT="/bin/true"
+            set -x
+            ;;
+        *)
+            echo "UNKNOWN OPTION: $1"
+            usage
+            exit 2
+            ;;
+    esac
+fi
+
+# Are we a mac?
+if test -d /proc/pmu; then
+        batteries=$(grep Battery /proc/pmu/info | cut -f2 -d:)
+        if test "$batteries" -ne 0; then
+            $PRINTIT "We're a laptop (Mac: batteries found)" >&2;
+            $EXIT 0
+        fi
+        exit 1
+fi
+
+if dmidecode="$(command -v dmidecode)" && [ -r /dev/mem -a -x "$dmidecode" ]
+then
+        # dmidecode to grab the Chassis type
+        dmitype=$("$dmidecode" --string chassis-type)
+
+        if test "$dmitype" = "Notebook" || \
+           test "$dmitype" = "Portable" || \
+           test "$dmitype" = "Laptop"   || \
+           test "$dmitype" = "Hand Held"; then
+            $PRINTIT "We're a laptop (dmidecode returned \"$dmitype\")" >&2
+            $EXIT 0
+        fi
+
+        # turn back on for debugging
+        #echo "$dmitype"
+fi
+
+if [ -e /sys/devices/virtual/dmi/id/chassis_type ] ; then
+    chassis_type="$(cat /sys/devices/virtual/dmi/id/chassis_type)"
+    case "$chassis_type" in
+        8) # Portable
+            $PRINTIT "We're a portable (chassis_type is $chassis_type)" >&2
+            $EXIT 0
+            ;;
+        9) # Laptop
+            $PRINTIT "We're a laptop (chassis_type is $chassis_type)" >&2
+            $EXIT 0
+            ;;
+        10) # Notebook
+            $PRINTIT "We're a notebook (chassis_type is $chassis_type)" >&2
+            $EXIT 0
+            ;;
+        11) # Hand Held
+            $PRINTIT "We're a hand held (chassis_type is $chassis_type)" >&2
+            $EXIT 0
+            ;;
+    esac
+fi
+
+# check for non device ACPI batteries
+/sbin/modprobe battery 2> /dev/null || true
+sysfs_power_supply=/sys/class/power_supply
+if [ -d $sysfs_power_supply ]; then
+	for power_supply in $(ls $sysfs_power_supply)
+	do
+		if (
+			grep -q Battery $sysfs_power_supply/$power_supply/type 2>/dev/null
+		) && (
+			! grep -q Device $sysfs_power_supply/$power_supply/scope 2>/dev/null
+		)
+		then
+			$PRINTIT "We're a laptop (non device ACPI batteries found)" >&2
+			$EXIT 0
+		fi
+	done
+fi
+# old interface:
+if [ -d /proc/acpi/battery ]; then
+        results=`find /proc/acpi/battery -mindepth 1 -type d`
+        if [ ! -z "$results" ]; then
+            $PRINTIT "We're a laptop (ACPI batteries found)" >&2
+            $EXIT 0
+        fi
+fi
+
+
+# check for APM batteries. This sucks, because we'll only get a valid response
+# if the laptop has a battery fitted at the time
+if [ -f /proc/apm ]; then
+    battery=`awk '{print $6}' </proc/apm`
+    if [ "$battery" != "0xff" ] && [ "$battery" != "0x80" ]; then
+        $PRINTIT "We're a laptop (APM batteries found)" >&2
+        $EXIT 0
+    fi
+fi
+
+$PRINTIT "We're not on a laptop (no relevant hint found)" >&2
+$EXIT 1

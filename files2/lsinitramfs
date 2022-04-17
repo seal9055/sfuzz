@@ -1,0 +1,57 @@
+#!/bin/sh
+
+set -eu
+
+usage()
+{
+	cat << EOF
+
+Usage: lsinitramfs [-l] initramfs-file...
+
+Options:
+  -l   Display long and more verbose listing of initramfs content
+
+See lsinitramfs(8) for further details.
+
+EOF
+}
+
+usage_error()
+{
+	usage >&2
+	exit 2
+}
+
+umi_opts="--list"
+
+OPTIONS=$(getopt -o hl --long help,long -n "$0" -- "$@") || usage_error
+
+eval set -- "$OPTIONS"
+
+while true; do
+        case "$1" in
+        -h|--help)
+		usage
+		exit 0
+	;;
+	-l|--long)
+		umi_opts="${umi_opts:+${umi_opts} --verbose}"
+		shift
+	;;
+	--)
+		shift
+		break
+	;;
+	*)
+		echo "Internal error!" >&2
+		exit 1
+	esac
+done
+
+if [ "$#" -eq 0 ] ; then
+	usage_error
+fi
+
+for initramfs in "$@" ; do
+	unmkinitramfs $umi_opts -- "$initramfs"
+done

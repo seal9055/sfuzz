@@ -3,16 +3,15 @@ use crate::{
     elfparser,
     riscv::{decode_instr, Instr},
     jit::{Jit, LibFuncs, CompileInputs},
-    syscalls,
-    error_exit,
     irgraph::{IRGraph, Flag},
-    emulator::{FileType::{STDIN, STDOUT, STDERR}},
+    emulator::FileType::{STDIN, STDOUT, STDERR},
+    syscalls, Corpus, error_exit,
 };
 
 use std::sync::Arc;
-use std::sync::Mutex;
 use std::arch::asm;
 use std::collections::BTreeMap;
+use std::ptr::write_volatile;
 
 use rustc_hash::FxHashMap;
 use iced_x86::code_asm::*;
@@ -193,13 +192,11 @@ pub struct Emulator {
 
     /// The fuzz input that is in use by the current case
     pub fuzz_input: Vec<u8>,
-
-    pub prevent_rc: Arc<Mutex<usize>>,
 }
 
 impl Emulator {
     /// Create a new emulator that has access to the shared jit backing
-    pub fn new(size: usize, jit: Arc<Jit>, tmp: Arc<Mutex<usize>>) -> Self {
+    pub fn new(size: usize, jit: Arc<Jit>) -> Self {
         Emulator {
             memory:     Mmu::new(size),
             state:      State::default(),
@@ -209,7 +206,6 @@ impl Emulator {
             functions:  FxHashMap::default(),
             jit,
             fuzz_input: Vec::new(),
-            prevent_rc: tmp,
         }
     }
 
@@ -225,7 +221,6 @@ impl Emulator {
             functions:  self.functions.clone(),
             jit:        self.jit.clone(),
             fuzz_input: self.fuzz_input.clone(),
-            prevent_rc: self.prevent_rc.clone(),
         }
     }
 
@@ -342,20 +337,23 @@ impl Emulator {
     /// Once the jit exits it collects the reentry_pc (where to continue execution), and the exit
     /// code. It performs an appropriate operation based on the exit code and then continues with
     /// the loop to reenter the jit.
-    pub fn run_jit(&mut self) -> Option<Fault> {
+    pub fn run_jit(&mut self, corpus: &mut Arc<Corpus>) -> (Option<Fault>, bool) {
+        let mut tmp_cov: Vec<u64> = Vec::with_capacity(500);
+        let mut found_new_cov: bool = false;
+
         loop {
             let pc = self.get_reg(Register::Pc);
 
             // Error out if code was unaligned.
             // since Riscv instructions are always 4-byte aligned this is a bug
-            if pc & 3 != 0 { return Some(Fault::ExecFault(pc)); }
+            if pc & 3 != 0 { return (Some(Fault::ExecFault(pc)), found_new_cov); }
 
             // Determine address of the jit-backing code for the current function, either by lookup,
             // or by compiling the function if it hasn't yet been compiled
             let jit_addr = match (*self.jit).lookup(pc) {
                 Option::None => {
                     //self.jit.cur_index += 1;
-                    let mut v = self.prevent_rc.lock().unwrap();
+                    //let mut v = self.prevent_rc.lock().unwrap();
 
                     // IR instructions + labels at start of each control block
                     let irgraph = self.lift_func(pc).unwrap();
@@ -367,10 +365,9 @@ impl Emulator {
                         leaders: leader_set,
                     };
 
-
                     // Compile the previously lifted function
                     let ret = self.jit.compile(&irgraph, &self.hooks, &self.custom_lib, &inputs);
-                    *v += 1;
+                    //*v += 1;
 
                     ret.unwrap()
                 },
@@ -379,6 +376,9 @@ impl Emulator {
 
             let exit_code:  usize;
             let reentry_pc: usize;
+            tmp_cov.clear();
+            let mut cov_len: usize = 0;
+
             unsafe {
                 let func = *(&jit_addr as *const usize as *const fn());
 
@@ -386,21 +386,42 @@ impl Emulator {
                     call {call_dest}
                 "#,
                 call_dest = in(reg) func,
-                out("rax") exit_code,
-                out("rcx") reentry_pc,
-                inout("r9") self.memory.dirty_size,
-                in("r10")   self.memory.dirty.as_ptr() as u64,
-                in("r11")   self.memory.dirty_bitmap.as_ptr() as u64,
-                in("r12")   self.memory.permissions.as_ptr() as u64,
-                in("r13")   self.memory.memory.as_ptr() as u64,
-                in("r14")   self.state.regs.as_ptr() as u64,
-                in("r15")   self.jit.lookup_arr.as_ptr() as u64,
+                out("rax")   exit_code,
+                out("rcx")   reentry_pc,
+                inout("rsi") cov_len,
+                in("r8")     tmp_cov.as_ptr() as u64,
+                inout("r9")  self.memory.dirty_size,
+                in("r10")    self.memory.dirty.as_ptr() as u64,
+                in("r11")    self.memory.dirty_bitmap.as_ptr() as u64,
+                in("r12")    self.memory.permissions.as_ptr() as u64,
+                in("r13")    self.memory.memory.as_ptr() as u64,
+                in("r14")    self.state.regs.as_ptr() as u64,
+                in("r15")    self.jit.lookup_arr.as_ptr() as u64,
                 );
 
                 self.memory.dirty.set_len(self.memory.dirty_size as usize);
+                tmp_cov.set_len(cov_len as usize);
             }
 
             self.set_reg(Register::Pc, reentry_pc);
+
+            // This means we found new coverage in this input
+            if tmp_cov.len() > 0 {
+                found_new_cov = true;
+
+                for v in tmp_cov.pop() {
+                    unsafe {
+                        // Track each new coverage in map
+                        let cov_index: *mut u64 = ((corpus.coverage.as_ptr() as u64) + 
+                                                   (v as u64)) as *mut u64;
+                        write_volatile(cov_index, 1);
+
+                        // Overwrite the jit_coverage instructions with nop-instructions
+                        let addr = self.jit.lookup(v as usize).unwrap();
+                        self.jit.nop_coverage(addr);
+                    }
+                }
+            }
 
             //if reentry_pc == 0xa265c {
             //    let v = self.state.regs[Register::A0 as usize];
@@ -417,35 +438,30 @@ impl Emulator {
                 2 => { /* SYSCALL */
                     match self.get_reg(Register::A7) {
                         57 => {
-                            //println!("close hit");
                             syscalls::close(self);
                         },
                         62 => {
-                            //println!("lseek hit");
                             syscalls::lseek(self);
                         },
                         63 => {
-                            //println!("read hit");
                             syscalls::read(self);
                         },
                         64 => {
-                            //println!("write hit");
                             syscalls::write(self);
                         },
                         80 => {
-                            //println!("fstat hit");
                             syscalls::fstat(self);
                         },
                         93 => {
-                            //println!("exit hit");
-                            return syscalls::exit();
+                            return (syscalls::exit(), found_new_cov);
+                        },
+                        169 => {
+                            syscalls::gettimeofday(self);
                         },
                         214 => {
-                            //println!("brk hit");
                             syscalls::brk(self);
                         },
                         1024 => {
-                            //println!("open hit");
                             syscalls::open(self);
                         },
                         _ => { panic!("Unimplemented syscall: {}", self.get_reg(Register::A7)); }
@@ -462,15 +478,13 @@ impl Emulator {
                     self.debug_jit(reentry_pc);
                 }
                 8 => { /* Attempted to read memory without read permissions */
-                    return Some(Fault::ReadFault(reentry_pc));
-                    //panic!("Invalid memory read: {:#0X}", reentry_pc);
+                    return (Some(Fault::ReadFault(reentry_pc)), found_new_cov);
                 },
                 9 => { /* Attempted to write to memory without write permissions */
-                    return Some(Fault::WriteFault(reentry_pc));
-                    //panic!("Invalid memory write: {:#0X}", reentry_pc);
+                    return (Some(Fault::WriteFault(reentry_pc)), found_new_cov);
                 },
                 10 => { /* Memory read/write request went completely out of bounds */
-                    return Some(Fault::OutOfBounds(reentry_pc));
+                    return (Some(Fault::OutOfBounds(reentry_pc)), found_new_cov);
                 },
                 _ => panic!("Invalid JIT return code: {:x}", exit_code),
             }

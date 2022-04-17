@@ -1,0 +1,122 @@
+#! /usr/bin/perl -w
+
+my $login=0;
+
+sub exists_in_path {
+    my $command = shift;
+    my @path = split ':', $ENV{PATH};
+
+    foreach my $dir (@path) {
+	if (-x "$dir/$command") {
+	    return 1;
+	}
+    }
+
+    return 0;
+}
+
+while ($opt = shift(@ARGV))
+{
+    if ($opt eq '-display')
+    {
+	$ENV{'DISPLAY'} = shift(@ARGV);
+    }
+    elsif ($opt eq '-name')
+    {
+	$arg = shift(@ARGV);
+	push(@args, "--window-with-profile=$arg");
+    }
+    elsif ($opt eq '-n')
+    {
+	# Accept but ignore
+	print STDERR "$0: to set an icon, please use -name <profile> and set a profile icon\n"
+    }
+    elsif ($opt eq '-T' || $opt eq '-title')
+    {
+	push(@args, '-t', shift(@ARGV));
+    }
+    elsif ($opt eq '-ls')
+    {
+	$login = 1;
+    }
+    elsif ($opt eq '+ls')
+    {
+	$login = 0;
+    }
+    elsif ($opt eq '-geometry')
+    {
+	$arg = shift(@ARGV);
+	push(@args, "--geometry=$arg");
+    }
+    elsif ($opt eq '-fn')
+    {
+	$arg = shift(@ARGV);
+	push(@args, "--font=$arg");
+    }
+    elsif ($opt eq '-fg')
+    {
+	$arg = shift(@ARGV);
+	push(@args, "--foreground=$arg");
+    }
+    elsif ($opt eq '-bg')
+    {
+	$arg = shift(@ARGV);
+	push(@args, "--background=$arg");
+    }
+    elsif ($opt eq '-tn')
+    {
+	$arg = shift(@ARGV);
+	push(@args, "--termname=$arg");
+    }
+    elsif ($opt eq '-e')
+    {
+	# Debian Policy says we would be free to translate this into:
+	# push(@args, '--', @ARGV);
+	# but let's be nice to people with local scripts that rely on
+	# xterm -e having a special case for a singular argument.
+	$arg = shift(@ARGV);
+	if (@ARGV)
+	{
+	    push(@args, '--', $arg, @ARGV);
+	    last;
+	}
+	else
+	{
+	    # Emulate xterm's special case for a single argument: if it
+	    # isn't something we can execute directly, pass it to a shell
+	    my $executable;
+
+	    if ($arg =~ m{/})
+	    {
+		$executable = -x $arg;
+	    }
+	    else
+	    {
+		$executable = exists_in_path($arg);
+	    }
+
+	    if ($executable)
+	    {
+		push(@args, '--', $arg);
+	    }
+	    else
+	    {
+		# Historically, we used the now-deprecated gnome-terminal -e
+		# for this case, which would split the command line up as if
+		# by a shell, but didn't support shell constructs like "if"
+		# and pipes. But this is easier, and matches what xterm does.
+		push(@args, '--', 'sh', '-c', $arg);
+	    }
+	}
+	last;
+    }
+    elsif ($opt eq '-h' || $opt eq '--help')
+    {
+	push(@args, '--help');
+    }
+}
+if ($login == 1)
+{
+    @args = ('--login', @args);
+}
+exec('gnome-terminal',@args);

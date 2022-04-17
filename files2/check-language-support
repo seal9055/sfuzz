@@ -1,0 +1,73 @@
+#! /usr/bin/python3
+
+from __future__ import print_function
+
+import sys
+import re
+import os.path
+import locale
+from optparse import OptionParser
+from gettext import gettext as _
+
+import language_support_pkgs
+
+if __name__ == "__main__":
+    try:
+        locale.setlocale(locale.LC_ALL, '')
+    except locale.Error:
+        # We might well be running from the installer before locales have
+        # been properly configured.
+        pass
+
+    parser = OptionParser()
+    parser.add_option("-l", "--language",
+            help=_("target language code"))
+    parser.add_option("-d", "--datadir",
+            default="/usr/share/language-selector/",
+            help=_("alternative datadir"))
+    parser.add_option("-p", "--package", default=None, help=_("check for the given package(s) only -- separate packagenames by comma"))
+    parser.add_option("-a", "--all", action='store_true', default=False,
+                      help=_("output all available language support packages for all languages"))
+    parser.add_option("--show-installed",
+            action='store_true', default=False,
+            help=_("show installed packages as well as missing ones"))
+    (options, args) = parser.parse_args()
+
+    # sanity check for language code
+    if (options.language and 
+            not re.match('^([a-z]{2,3}(_[A-Z]{2})?(@[a-z]+)?|(zh-han[st]))$', options.language)):
+        print("Error: Unsupported language code format.\n\
+               Supported formats: 'll' or 'lll'\n\
+               'll_CC' or 'lll_CC'\n\
+               'll@variant' or 'lll@variant'\n\
+               'll_CC@variant' or 'lll_CC@variant'\n\
+               Also supported are 'zh-hans' and 'zh-hant'.",
+               file=sys.stderr)
+        sys.exit(1)
+
+    if options.datadir:
+        pkg_depends = os.path.join(options.datadir, 'data', 'pkg_depends')
+    else:
+        pkg_depends = None
+
+    ls = language_support_pkgs.LanguageSupport(None, pkg_depends)
+
+    if options.all:
+        missing = set()
+        ls._countries_for_lang('de') # initialize cache
+        for lang, countries in ls.lang_country_map.items():
+            for country in countries:
+                missing.update(ls.by_locale('%s_%s' % (lang, country), options.show_installed))
+    elif options.package:
+        missing = set()
+        for package in options.package.split(','):
+            if options.language:
+                missing.update(ls.by_package_and_locale(package, options.language, options.show_installed))
+            else:
+                missing.update(ls.by_package(package, options.show_installed))
+    elif options.language:
+        missing = set(ls.by_locale(options.language, options.show_installed))
+    else:
+        missing = ls.missing(options.show_installed)
+
+    print(' '.join(sorted(missing)))

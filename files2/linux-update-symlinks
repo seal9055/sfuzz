@@ -1,0 +1,206 @@
+#!/usr/bin/perl
+
+# Copyright 2016 Ben Hutchings
+#
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 2 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program; if not, write to the Free Software
+# Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
+
+use strict;
+use warnings;
+use File::Spec;
+use POSIX ();
+
+use DebianLinux qw(image_stem image_list read_kernelimg_conf version_cmp);
+
+sub usage {
+    my $fh = shift;
+    print $fh (<< "EOT");
+Usage: $0 {install|upgrade|remove} VERSION IMAGE-PATH
+
+This command is intended to be called from the postinst and postrm
+maintainer scripts of Linux kernel packages.  The postinst script must
+pass the first argument 'install' or 'upgrade' depending on whether a
+fresh installation or an upgrade has taken place.
+
+The VERSION argument must be the kernel version string as shown by
+'uname -r' and used in filenames.
+
+The IMAGE-PATH argument must be the absolute filename of the kernel
+image.
+EOT
+}
+
+sub usage_error {
+    usage(*STDERR{IO});
+    exit 2;
+}
+
+sub update_symlink {
+    my ($source, $dest) = @_;
+
+    $source = File::Spec->abs2rel($source, (File::Spec->splitpath($dest))[1]);
+
+    # Don't make unnecessary changes
+    my $old_source = readlink($dest);
+    if (defined($old_source) && $old_source eq $source) {
+	return;
+    }
+
+    # Create a symlink with a temporary name
+    my $rand;
+    while (($rand = int(rand(1000000))) && !symlink($source, "$dest.$rand")) {
+	if ($! != POSIX::EEXIST) {
+	    die "Failed to create symlink to $source: $!";
+	}
+    }
+
+    # Move it into place atomically
+    if (!rename("$dest.$rand", $dest)) {
+	my $err = "$!";
+	unlink("$dest.$rand");
+	die "Failed to create or replace $dest: $err";
+    }
+
+    print "I: $dest is now a symlink to $source\n";
+}
+
+sub promote_default {
+    my ($sorted_images, $link) = @_;
+
+    # Get the absolute path
+    my $image_path = readlink($link);
+    if (!defined($image_path)) {
+	return;
+    }
+    $image_path = File::Spec->rel2abs($image_path,
+				      (File::Spec->splitpath($link))[1]);
+
+    # If it's already on the list, move it to the end.  (If it's not,
+    # presumably the symlink is broken.)
+    for my $i (0..$#$sorted_images) {
+	if ($sorted_images->[$i]->[1] eq $image_path) {
+	    my $tmp = $sorted_images->[$i];
+	    splice @$sorted_images, $i, 1;
+	    push @$sorted_images, $tmp;
+	    last;
+	}
+    }
+}
+
+sub update_all {
+    my ($change, $version, $image_path) = @_;
+    my $conf = read_kernelimg_conf();
+
+    # Check whether symlinks are actually wanted
+    if (!$conf->{do_symlinks}) {
+	exit 0;
+    }
+
+    my $default_dir = $conf->{image_dest};
+    $default_dir =~ s|/*$|/|; # tidy up
+
+    my $image_stem = image_stem();
+
+    # We build a list of [version, image_path, initrd_path] in
+    # ascending priority order, then update the symlinks to match it.
+
+    # Start with a list of existing images sorted by version, adding any
+    # existing initrds.
+    my @sorted_images = sort({version_cmp($a->[0], $b->[0])} image_list());
+    for my $i (0..$#sorted_images) {
+	my $exist_version = $sorted_images[$i]->[0];
+	if (-f "/boot/initrd.img-$exist_version") {
+	    $sorted_images[$i]->[2] = "/boot/initrd.img-$exist_version";
+	}
+    }
+
+    # The files for this version may not actually have been
+    # installed/removed yet (e.g. on installation the initrd will
+    # probably be built later).  Also, on installation this version
+    # should have the highest priority, not dependent on version
+    # ordering.  So ensure that this version is included (for
+    # for upgrade) or excluded (otherwise).
+    my $initrd_path = ((exists($ENV{INITRD}) && $ENV{INITRD} eq 'No') ?
+		       undef : "/boot/initrd.img-$version");
+    for my $i (0..@sorted_images) {
+	my $diff = ($i < @sorted_images ?
+		    version_cmp($version, $sorted_images[$i]->[0]) : -1);
+	if ($diff == 0) {
+	    if ($change eq 'upgrade') {
+		$sorted_images[$i] = [$version, $image_path, $initrd_path];
+	    } else {
+		splice @sorted_images, $i, 1;
+	    }
+	    last;
+	} elsif ($diff < 0) {
+	    if ($change eq 'upgrade') {
+		splice @sorted_images, $i, 0,
+		    [$version, $image_path, $initrd_path];
+	    }
+	    last;
+	}
+    }
+
+    # Any existing non-broken symlinks have higher priority.
+    promote_default(\@sorted_images, "${default_dir}${image_stem}.old");
+    promote_default(\@sorted_images, "${default_dir}${image_stem}");
+
+    # In case of installation, this version has highest priority.
+    if ($change eq 'install') {
+	push @sorted_images, [$version, $image_path, $initrd_path];
+    }
+
+    if (@sorted_images) {
+	# Take the two highest priority entries on the list.  In case there
+	# is only one entry, use it twice!
+	my ($old_version, $old_image_path, $old_initrd_path) =
+	    @{$sorted_images[@sorted_images >= 2 ? -2 : -1]};
+	my ($cur_version, $cur_image_path, $cur_initrd_path) =
+	    @{$sorted_images[-1]};
+
+	update_symlink($old_image_path, "${default_dir}${image_stem}.old");
+	if (defined($old_initrd_path)) {
+	    update_symlink($old_initrd_path, "${default_dir}initrd.img.old");
+	} else {
+	    unlink("${default_dir}initrd.img.old");
+	}
+	update_symlink($cur_image_path, "${default_dir}${image_stem}");
+	if (defined($cur_initrd_path)) {
+	    update_symlink($cur_initrd_path, "${default_dir}initrd.img");
+	} else {
+	    unlink("${default_dir}initrd.img");
+	}
+    } else {
+	print STDERR "W: Last kernel image has been removed, so removing the default symlinks\n";
+	unlink("${default_dir}${image_stem}.old");
+	unlink("${default_dir}initrd.img.old");
+	unlink("${default_dir}${image_stem}");
+	unlink("${default_dir}initrd.img");
+    }
+
+    exit 0;
+}
+
+if (@ARGV == 0) {
+    usage_error();
+}
+
+my $change = $ARGV[0];
+if ($change eq 'help' or grep({$_ eq '--help'} @ARGV)) {
+    usage(*STDOUT{IO});
+    exit 0;
+} elsif ($change =~ /^(?:install|upgrade|remove)$/ && @ARGV == 3) {
+    update_all(@ARGV);
+}
+usage_error();

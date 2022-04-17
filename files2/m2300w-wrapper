@@ -1,0 +1,493 @@
+#!/bin/sh
+#
+# $Header: /cvsroot/m2300w/m2300w/src/m2300w-wrapper.in,v 1.7 2005/10/06 19:55:04 gfuer Exp $
+#
+# Copyright (C) 2003 Rick Richardson
+#               2004 Leif Birkenfeld
+#               2005 Gerhard Fuernkranz
+#
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 2 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program; if not, write to the Free Software
+# Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+#
+# Authors: Rick Richardson <rickr@mn.rr.com>
+#          Leif Birkenfeld <leif@birkenfeld-home.de>
+#          Gerhard Fuernkranz <gfuer@users.sourceforge.net>
+
+#*********************************************************************
+# This Version of the wrapper-script for the Minolta Magicolor 2300W
+# is heavy based on the Script from Rick's 'foo2zjs-wrapper' for the
+# Minolta Magiccolor 2300DL.
+# So i will leave his copyright on it.
+#*********************************************************************
+
+cat >> /tmp/m2300w.log <<EOF
+#### new print job ####
+
+Wrapper was called with command line:
+$0 $@
+
+EOF
+
+PROGNAME="$0"
+BASENAME=`basename $PROGNAME`
+
+PACKAGE_NAME="m2300w"
+PACKAGE_VERSION="0.51"
+PREFIX="/usr"
+BINDIR="$PREFIX/bin"
+SHARE="$PREFIX/share/$PACKAGE_NAME/$PACKAGE_VERSION"
+PSFILES="$SHARE/psfiles"
+DRIVER="$BINDIR/m2300w"
+DRIVER_DEBUG=
+
+testmode=0
+
+usage() {
+	cat <<EOF
+
+Usage:
+$BASENAME [options] [ps-file]
+
+Foomatic wrapper script for the m2300w printer driver.
+This script reads a Postscript ps-file or standard input
+and converts it to the Konica Minolta magicolor 2300W/2400W
+proprietary raster format.
+
+Version $PACKAGE_VERSION
+
+Options:
+
+-M model	  Choose printer model [$MODEL]
+		    2300W
+		    2400W
+
+-d		  Increase debug level.
+		  Can be specified more than once.
+
+-r resolution     Set device resolution [$RESCODE]
+		    1=600x600dpi (not implemented yet !)
+		    2=1200x600dpi
+		    3=2400x600dpi (2400W only)
+
+-m media          Media code to send to printer [$MEDIA]
+		    0=standard, 1=carton (heavy paper),
+		    2=transparency, 3=envelope, 4=letterhead,
+		    5=postcard, 6=labels
+
+-p paper          Paper code [$PAPER]
+                    4=A4, 6=B5 JIS, 8=A5, 18=Folio,25=Legal,
+		    26=Government Legal, 27=Letter, 31=Executive,
+                    33=Statement, 36=Kuvert Monarch, 37=Kuver #10,
+		    38=Kuvert DL, 39=Kuvert C5, 40=Kuvert C6, 
+		    41=B5 ISO
+
+-2 / -4           2-up, 4-up (uses psnup)
+
+-s		  save Toner
+                    Discards every second pixel in a chequerboard 
+		    order to save 50 percent toner. 
+		    It works fine for text and graphic, but it dosn't 
+		    for photos.
+
+-P printoutMode	  Shortcut for specifying PrintoutMode (see below)
+
+-o option=value   Spefify long options:
+
+		  PrintoutMode [$PrintoutMode]
+		    Auto ............ Print pages with only black
+				      text in B/W, otherwise in color
+		    Gray ............ Force printing in grayscale
+		    Photo ........... Print in color using the "Photo"
+		    		      color profile.
+		    Draft ........... Economy mode to save toner,
+		    		      approx. newspaper quality
+		    Draft.Gray ...... Grayscale economy mode
+
+		  Quality [$Quality]
+		    @PrintoutMode ... Derived from PrintoutMode
+		    Normal .......... Normal print quality
+		    Draft ........... Economy mode to save toner
+
+		  ColorMode [$ColorMode]
+		    @PrintoutMode ... Derived from PrintoutMode
+		    Gray ............ Force printing in grayscale
+		    Color ........... Print in color
+
+		  ColorProfile [$ColorProfile]
+		    @PrintoutMode ... Derived from PrintoutMode
+		    AutoColor ....... Prints black color with black toner
+		    		      only (but slightly impacts the
+				      darkness of black and dark colors)
+		    Photo ........... Optimized for printing photos,
+				      produces deep, dark colors.
+		    Photo-kh ........ Optimized for printing photos,
+				      uses less black toner than 'Photo'
+		    None ............ Turn off CIE-based color matching
+		    User[1-5] ....... User defined CRD #1-5
+
+		  DeftRGB or
+		  DefaultRGB [$DefaultRGB]
+		    sRGB ............ sRGB
+		    AdobeRGB ........ AdobeRGB
+		    gimp-print ...... Use this setting if you are printing
+		    		      an image from gimp's File -> Print menu
+		    builtin ......... Ghostscript's builtin default
+EOF
+
+exit 1
+}
+
+##############################################################################
+#	N-up-ify the job.  Requires psnup from psutils package
+##############################################################################
+
+nup2() {
+    tr '\r' '\n' | psnup -d2 $nPC -2 -m.2in -q 
+}
+
+nup4() {
+    tr '\r' '\n' | psnup -d2 $nPC -4 -m.3in -q 
+}
+
+error() {
+    echo "$BASENAME: $1" >&2
+    exit 1
+}
+
+##############################################################################
+#	M A I N
+##############################################################################
+
+CMDLINE="$*"
+MODEL=2300W
+MEDIA=0
+PAPER=4
+RESCODE=2
+NUP=
+BOOK=
+OVLPI=0
+GSOPT=
+DEBUG=0
+
+# long options
+PrintoutMode=Auto
+Quality="@PrintoutMode"
+ColorMode="@PrintoutMode"
+ColorProfile="@PrintoutMode"
+DefaultRGB=sRGB
+
+# Process the options
+while getopts "24dm:M:n:o:p:P:r:R:sg:h?" opt
+do
+    case $opt in
+    M)	MODEL="$OPTARG" ;;
+    d)	DEBUG=`expr $DEBUG + 1` ;;
+    m)	MEDIA="$OPTARG" ;;
+    p)	PAPER="$OPTARG" ;;
+    r)	RESCODE="$OPTARG" ;;
+    R)	RENDERFILES="$OPTARG" ;;
+    s)	SAVETONER="-s" ;;
+    g)	GSOPT="$OPTARG" ;;
+    2)	NUP="2" ;;
+    4)	NUP="4" ;;
+    P)	PrintoutMode="$OPTARG" ;;
+    o)	case "$OPTARG" in
+	PrintoutMode=* | Quality=* | ColorMode=* | \
+	ColorProfile=* | DefaultRGB=* | DefRGB=* )
+	    KEY=`echo "$OPTARG" | sed 's/=.*$//'`
+	    VAL=`echo "$OPTARG" | sed 's/^[a-zA-Z]*=//'`
+	    test "$KEY" = DefRGB && KEY=DefaultRGB
+	    eval "$KEY='$VAL'"
+	    ;;
+	*)
+	    usage ;;
+	esac
+	;;
+    h|\?)
+	if [ "$CMDLINE" != "-?" -a "$CMDLINE" != -h ]; then
+	    echo "Illegal command:"
+	    echo "$0 $CMDLINE"
+	    echo
+	fi
+	usage ;;
+    esac
+done
+
+shift `expr $OPTIND - 1`
+
+##############################################################################
+#	model
+##############################################################################
+
+case "$MODEL" in
+2300W) DRIVER="$BINDIR/m2300w" ;;
+2400W) DRIVER="$BINDIR/m2400w" ;;
+*)     error "Unknown model $MODEL" ;;
+esac
+
+##############################################################################
+#	resolution
+##############################################################################
+
+# limit 2400 DPI to 1200 DPI on 2300W
+if [ "$RESCODE" = 3 -a "$MODEL" = 2300W ]; then
+    RESCODE=2
+fi
+
+case "$RESCODE" in
+#1) RESMUL=1; RESCP="600";  RESSCR="600";  RES="-r600x600"  ;; //coming soon
+2)  RESMUL=2; RESCP="1200"; RESSCR="1200"; RES="-r1200x600" ;;
+3)  RESMUL=4; RESCP="1200"; RESSCR="2400"; RES="-r2400x600" ;;
+*)  error "Unknown resolution code $RESCODE";;
+esac
+
+RESCODESTR="-r $RESCODE";
+
+##############################################################################
+#	PrintoutMode
+##############################################################################
+
+case "$PrintoutMode" in
+Auto | Gray | Photo | Draft | Draft.Gray) ;;
+*) usage ;;
+esac
+
+##############################################################################
+#	Quality
+##############################################################################
+
+if [ "$Quality" = "@PrintoutMode" ] ; then
+    case "$PrintoutMode" in
+    *Draft*) Quality=Draft ;;
+    *)       Quality=Normal ;;
+    esac
+fi
+
+case "$Quality" in
+Normal | Draft) ;;
+*)              usage ;;
+esac
+
+##############################################################################
+#	ColorMode
+##############################################################################
+
+if [ "$ColorMode" = "@PrintoutMode" ] ; then
+    case "$PrintoutMode" in
+    *Gray*) ColorMode=Gray ;;
+    *)      ColorMode=Color ;;
+    esac
+fi
+
+case "$ColorMode" in
+Gray)	GSDEV=-sDEVICE=pbmraw; COLOR="-c 1" ;;
+Color)	GSDEV=-sDEVICE=pksmraw; COLOR="-c 2" ;;
+*) usage ;;
+esac
+
+##############################################################################
+#	ColorProfile
+##############################################################################
+
+# currently only this paper suported
+PAPERBRAND=CHP410
+
+case "$ColorProfile" in
+None)
+    CRDFILE=""
+    ;;
+User*)
+    CRDFILE="$PSFILES/${ColorProfile}.crd"
+    ;;
+*)
+    if [ "$Quality" = Draft ] ; then
+	CRDFILE="$PSFILES/${PAPERBRAND}-${RESCP}-Draft.crd"
+    elif [ "$ColorMode" = Gray ] ; then
+	CRDFILE="$PSFILES/${PAPERBRAND}-${RESCP}-AutoColor.crd"
+    elif [ "$ColorProfile" = "@PrintoutMode" ] ; then
+	case "$PrintoutMode" in
+	Photo) CRDFILE="$PSFILES/${PAPERBRAND}-${RESCP}-Photo.crd" ;;
+	*)     CRDFILE="$PSFILES/${PAPERBRAND}-${RESCP}-AutoColor.crd" ;;
+	esac
+    else
+	CRDFILE="$PSFILES/${PAPERBRAND}-${RESCP}-${ColorProfile}.crd"
+    fi ;;
+esac
+
+if [ -n "$CRDFILE" -a ! -f "$CRDFILE" ]; then
+    error "$CRDFILE does not exist"
+    exit 1
+fi
+
+##############################################################################
+#	DefaultRGB
+
+DEFRGB="$PSFILES/defrgb-${DefaultRGB}.csa"
+
+if [ ! -f "$DEFRGB" ]; then
+    error "DefaultRGB=${DefaultRGB} not supported"
+    exit 1
+fi
+
+##############################################################################
+#	prologue files
+##############################################################################
+
+PROLOG="$PSFILES/prolog.ps" 
+EPILOGUE="$PSFILES/epilogue.ps" 
+SCREEN="$PSFILES/screen${RESSCR}.ps"
+
+if [ -z "$RENDERFILES" ] ; then
+    RENDERFILES="$PROLOG $DEFRGB $CRDFILE $SCREEN $EPILOGUE"
+fi
+
+##############################################################################
+#	paper
+##############################################################################
+
+case "$PAPER" in
+4|A4|a4) 				nPC="-pa4"; 	gsPaperCode="-sPAPERSIZE=a4";	paper="4"; 	resX="4752"; resY="6808"; expMedia="-1";;
+6|B5JIS|b5jis) 				nPC=""; 	gsPaperCode=""	;	paper="6"; 	resX="4088"; resY="5856"; expMedia="-1";;
+8|A5|a5)				nPC="-pa5"; 	gsPaperCode="-sPAPERSIZE=a5";	paper="8"; 	resX="3288"; resY="4752"; expMedia="-1";;
+18|FOLIO|folio|Folio)			nPC="-pfolio"; 	gsPaperCode=""	;	paper="18"; 	resX="4752"; resY="7584"; expMedia="-1";;
+25|legal|LEGAL|Legal)			nPC="-plegal"; 	gsPaperCode="-sPAPERSIZE=legal";	paper="25";	resX="4896"; resY="8136"; expMedia="-1";;
+26)					nPC=""; 	gsPaperCode="-sPAPERSIZE=a4";	paper="26";	resX="4896"; resY="7592"; expMedia="-1";;
+27|Letter|letter|LETTER)		nPC="-pletter"; 	gsPaperCode="-sPAPERSIZE=letter";	paper="27";	resX="4896"; resY="6392"; expMedia="-1";;
+31|Executive|EXECUTIVE|executive)	nPC=""; 	gsPaperCode=""	;	paper="31";	resX="6096"; resY="4144"; expMedia="-1";;
+33|Statement|statement|STATEMENT)	nPC=""; 	gsPaperCode=""	;	paper="33";	resX="3096"; resY="4896"; expMedia="-1";;
+36)					nPC=""; 	gsPaperCode=""	;	paper="36";	resX="2120"; resY="4296"; expMedia="3";;
+37)					nPC=""; 	gsPaperCode=""	;	paper="37";	resX="2272"; resY="5496"; expMedia="3";;
+38)					nPC=""; 	gsPaperCode=""	;	paper="38";	resX="2392"; resY="4992"; expMedia="3";;
+39)					nPC=""; 	gsPaperCode=""	;	paper="39";	resX="3616"; resY="5200"; expMedia="3";;
+40)					nPC=""; 	gsPaperCode=""	;	paper="40";	resX="2480"; resY="3616"; expMedia="3";;
+41)					nPC=""; 	gsPaperCode=""	;	paper="41";	resX="3944"; resY="5696"; expMedia="3";;
+*) error "Unknown paper code $PAPER";;
+esac
+
+$((resX*=$RESMUL));
+PAPERSIZE="-g$resX"x"$resY";
+PAPERCODE="-p $paper";
+
+##############################################################################
+#	media code
+##############################################################################
+
+case "$MEDIA" in
+0|standard)	MEDIA="0" ;;
+1|carton)	MEDIA="1" ;;
+2|transparency)	MEDIA="2" ;;
+3|envelope)	MEDIA="3" ;;
+4|letterhead)	MEDIA="4" ;;
+5|postcard)	MEDIA="5" ;;
+6|labels)	MEDIA="6" ;;
+[0-9]*)         ;;
+*)              error "Unknown media code $MEDIA" ;;
+esac
+
+# overwrite mediacode if the selected paper requires
+# special media (according to the original windows driver)
+
+case "$expMedia" in
+-1)					MEDIA="$MEDIA";;
+*)					MEDIA="$expMedia";;
+esac
+
+MEDIACODE="-m $MEDIA";
+
+##############################################################################
+#	If there is an argument left, take it as the file to print.
+#	Otherwise, the input comes from stdin.
+##############################################################################
+
+if [ $# -ge 1 ]; then
+    if [ "$LPJOB" = "" ]; then
+: # LPJOB="$1"
+    fi
+    exec < $1
+fi
+
+##############################################################################
+#	Filter thru psnup if N-up printing has been requested
+##############################################################################
+
+case $NUP in
+2) PREFILTER="nup2";;
+4) PREFILTER="nup4";;
+*) PREFILTER=cat;;
+esac
+
+##############################################################################
+#	debugging stuff
+##############################################################################
+
+tee_prn() {
+    if [ $DEBUG -ge 2 ] ; then
+    	tee /tmp/m2300w.prn
+    else
+    	cat
+    fi
+}
+
+tee_pbm() {
+    if [ $DEBUG -ge 2 ] ; then
+    	tee /tmp/m2300w_gsout.pbm
+    else
+    	cat
+    fi
+}
+
+if [ $DEBUG -ge 1 ] ; then
+    DRIVER_DEBUG="-v2"
+fi
+if [ $DEBUG -ge 2 ] ; then
+    DRIVER_DEBUG="-v5"
+fi
+
+##############################################################################
+#	Run ghostscript and m2300w
+##############################################################################
+
+# use pre-packaged ghostscript 8.xx, if available
+if test -f $PREFIX/share/$PACKAGE_NAME/gs/bin/gs-m2300w; then
+    GSBIN=$PREFIX/share/$PACKAGE_NAME/gs/bin/gs-m2300w
+else
+    GSBIN=gs
+fi
+
+GS="$GSBIN -q -dBATCH -dSAFER -dQUIET -dNOPAUSE -dNOINTERPOLATE -dMaxBitmap=134217728"
+
+cat >> /tmp/m2300w.log <<EOF
+
+Prologue files: $RENDERFILES
+
+Calling GS and m2300w:
+
+$PREFILTER |
+($GS $gsPaperCode $RES $GSDEV $GSOPT \
+     -sOutputFile="|cat 1>&3" $RENDERFILES - >>/tmp/m2300w.log) 3>&1 |
+tee /tmp/m2300w_gsout.pbm |
+$DRIVER $DRIVER_DEBUG $M2300WUCR $SAVETONER $PAPERCODE $MEDIACODE \
+    -i - -o - $COLOR $RESCODESTR |
+tee /tmp/m2300w.prn
+
+EOF
+
+$PREFILTER |
+($GS $gsPaperCode $RES $GSDEV $GSOPT \
+     -sOutputFile="|cat 1>&3" $RENDERFILES - >>/tmp/m2300w.log) 3>&1 |
+tee_pbm |
+$DRIVER $DRIVER_DEBUG $M2300WUCR $SAVETONER $PAPERCODE $MEDIACODE \
+	-i - -o - $COLOR $RESCODESTR |
+tee_prn
+

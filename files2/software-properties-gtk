@@ -1,0 +1,102 @@
+#!/usr/bin/python3
+#  software-properties - graphical abstraction of the sources.list
+#  
+#  Copyright (c) 2004,2005 Canonical
+#                2004,2005 Michiel Sikkes
+#  
+#  Author: Michiel Sikkes <michiel@eyesopened.nl>
+#          Michael Vogt <mvo@debian.org>
+# 
+#  This program is free software; you can redistribute it and/or 
+#  modify it under the terms of the GNU General Public License as 
+#  published by the Free Software Foundation; either version 2 of the
+#  License, or (at your option) any later version.
+# 
+#  This program is distributed in the hope that it will be useful,
+#  but WITHOUT ANY WARRANTY; without even the implied warranty of
+#  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#  GNU General Public License for more details.
+# 
+#  You should have received a copy of the GNU General Public License
+#  along with this program; if not, write to the Free Software
+#  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307
+#  USA
+
+import gettext
+import os
+import sys
+import locale
+
+from optparse import OptionParser
+
+import aptsources
+from aptsources.sourceslist import SourcesList
+
+#sys.path.append("@prefix@/share/update-manager/python")
+
+from softwareproperties.gtk.SoftwarePropertiesGtk import SoftwarePropertiesGtk
+
+if __name__ == "__main__":
+  _ = gettext.gettext
+ 
+  # Begin parsing of options
+  parser = OptionParser()
+  parser.add_option ("-d", "--debug", action="store_true",
+                     dest="debug", default=False,
+                     help="Print some debug information to the command line")
+  parser.add_option ("-m", "--massive-debug", action="store_true",
+                     dest="massive_debug", default=False,
+                     help="Print a lot of debug information to the "
+                          "command line")
+  parser.add_option ("-n", "--no-update", action="store_true",
+                     dest="no_update", default=False,
+                     help="No update on repository change (useful if called "\
+                     "from an external program).")
+  parser.add_option("-t", "--toplevel", 
+                    action="store", type="string", dest="toplevel",
+                    help="Set x-window-id of the toplevel parent for the "\
+                    "dialog (useful for embedding)")
+  parser.add_option("-e", "--enable-component",
+                    action="store", type="string", dest="enable_component",
+                    help="Enable the specified component of the distro's "\
+                    "repositories")
+  parser.add_option("--open-tab", "",
+                    action="store", type="string", default=None,
+                    help="Open specific tab number on startup")
+  parser.add_option("--enable-ppa", "",
+                    action="store", type="string", default=None,
+                    help="Enable PPA with the given name")
+  parser.add_option("-k", "--keyserver",
+                    dest="keyserver", default="",
+                    help="Legacy option, unused")
+  parser.add_option("--data-dir", "",
+                    action="store", type="string", default="/usr/share/software-properties/",
+                    help="Use data files (UI) from the given directory")
+  
+  (options, args) = parser.parse_args()
+                     
+  try:
+      locale.setlocale(locale.LC_ALL, '')
+  except locale.Error as e:
+      sys.stderr.write('Cannot set locale: %s\n' % str(e))
+  localesApp="software-properties"
+  gettext.textdomain(localesApp)
+
+  # force new files to be 644 (LP: #497778)
+  os.umask(0o022)
+
+  file = None
+  if len(args) > 0:
+    file = args[0]
+  if options.enable_ppa:
+    app = SoftwarePropertiesGtk(datadir=options.data_dir, options=options, file=file)
+    app.add_source_from_line("ppa:%s" % options.enable_ppa)
+    app.sourceslist.save()
+  elif options.enable_component:
+    print(_("The --enable-component/-e command-line switch has been deprecated. "
+            "Instead of 'software-properties-gtk -e multiverse' you can use \n'add-apt-repository multiverse'"))
+    sys.exit(1)
+  else:
+    app = SoftwarePropertiesGtk(datadir=options.data_dir, options=options, file=file)
+    app.run()
+    sys.exit(app.modified_sourceslist)

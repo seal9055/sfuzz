@@ -1,0 +1,11 @@
+#!/bin/sh
+
+if [ "$KDE_FULL_SESSION" = "true" ] && [ -x /usr/bin/apturl-kde ]; then
+    apturl-kde $@
+elif [ -x /usr/bin/apturl-gtk ]; then
+    apturl-gtk $@
+elif [ -x /usr/bin/apturl-kde ]; then
+    apturl-kde $@
+else
+    echo "Please install apturl-gtk or apturl-kde."
+fi

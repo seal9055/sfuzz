@@ -1,0 +1,143 @@
+#!/usr/bin/perl
+
+# Copyright 1996-2006 Manoj Srivastava
+# Copyright 2016 Ben Hutchings
+#
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 2 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program; if not, write to the Free Software
+# Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
+
+use strict;
+use warnings;
+use FileHandle;
+use POSIX ();
+
+sub usage {
+    my $fh = shift;
+    print $fh (<< "EOT");
+Usage: $0 VERSION
+
+This command is intended to be called from the prerm maintainer scripts
+of Linux kernel packages.
+
+The VERSION argument must be the kernel version string as shown by
+'uname -r' and used in filenames.
+
+If the currently running kernel matches VERSION, linux-check-removal
+will normally prompt the user to confirm this potentially dangerous
+action and will fail if the user chooses to abort.  However, if the
+current environment is in a chroot or container, or if debconf
+prompts are disabled, it will always succeed without prompting.
+EOT
+}
+
+sub usage_error {
+    usage(*STDERR{IO});
+    exit 2;
+}
+
+# Check usage early, before Debconf::Client::ConfModule initialises and
+# adds its complaints about permissions
+BEGIN {
+    if (@ARGV != 1) {
+	usage_error();
+    }
+    if ($ARGV[0] eq 'help' or grep({$_ eq '--help'} @ARGV)) {
+	usage(*STDOUT{IO});
+	exit 0;
+    }
+}
+
+# Are we in a container?  Check for $container in pid 1's environment.
+sub in_container {
+    my $res = 0;
+    if (my $fh = new FileHandle('/proc/1/environ', 'r')) {
+	local $/ = "\0";
+	$res = grep(/^container=/, <$fh>);
+	close($fh);
+    }
+    return $res;
+}
+
+# Are we in in a chroot?  Compare root device and inode numbers with pid 1.
+sub in_chroot {
+    my @my_root_st = stat('/');
+    my @pid1_root_st = stat('/proc/1/root');
+
+    return @my_root_st && @pid1_root_st &&
+	($my_root_st[0] != $pid1_root_st[0] || $my_root_st[1] != $pid1_root_st[1]);
+}
+
+sub check {
+    my ($version) = @_;
+    my (undef, undef, $running, undef, undef) = POSIX::uname();
+
+    if ($running ne $version || in_chroot() || in_container()) {
+	exit 0;
+    }
+
+    if (!exists($ENV{'DEBIAN_FRONTEND'}) ||
+	$ENV{'DEBIAN_FRONTEND'} ne 'noninteractive') {
+	use Debconf::Client::ConfModule qw(:all);
+
+	my $title = 'linux-base/removing-title';
+	my $question = "linux-base/removing-running-kernel";
+	my ($ret, $seen, $answer);
+
+	# debconf only generates a title automatically when used directly
+	# from a maintainer script.  Also, the automatic title says we are
+	# 'configuring' a package but we're not.
+	($ret) = subst($title, 'package', $ENV{DPKG_MAINTSCRIPT_PACKAGE});
+	if ($ret) {
+	    die "Failed to substitute package name in title: $ret";
+	}
+	($ret) = settitle($title);
+	if ($ret) {
+	    die "Failed to set title: $ret";
+	}
+	($ret) = fset($question, 'seen', 'false');
+	if ($ret) {
+	    die "Failed to reset seen flag for $question: $ret";
+	}
+	($ret) = reset($question);
+	if ($ret) {
+	    die "Failed to reset answer for $question: $ret";
+	}
+	($ret) = subst($question, 'running', $running);
+	if ($ret) {
+	    die "Failed to substitute version in $question: $ret";
+	}
+	($ret, $seen) = input('critical', $question);
+	if ($ret && $ret != 30) {
+	    die "Failed to prepare question $question: $ret $seen";
+	}
+	($ret, $seen) = go();
+	if ($ret && $ret != 30) {
+	    die "Failed to ask question $question: $ret $seen";
+	}
+	($ret, $answer) = get($question);
+	if ($ret) {
+	    die "Failed to retrieve answer for $question: $ret $answer";
+	}
+
+	if ($answer eq 'true') {
+	    print STDERR "E: Aborting removal of the running kernel\n";
+	    exit 1;
+	}
+    }
+
+    print STDERR "W: Removing the running kernel\n";
+    exit 0;
+}
+
+check(@ARGV);

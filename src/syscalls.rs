@@ -172,7 +172,8 @@ pub fn read(emu: &mut Emulator) -> Option<Fault> {
         emu.fd_list[fd].cursor = Some(offset + len);
     } else {
         // Read in a different file
-        unreachable!();
+        //unreachable!();
+        emu.set_reg(Register::A0, count);
     }
 
     None
@@ -190,14 +191,14 @@ pub fn write(emu: &mut Emulator) -> Option<Fault> {
         return None;
     }
 
-    if false {
+    if true {
         let file = file.unwrap();
         if file.ftype == STDOUT || file.ftype == STDERR {
             let mut read_data = vec![0u8; count];
             emu.memory.read_into(buf, &mut read_data, count, Perms::READ).unwrap();
-            let s = std::str::from_utf8(&read_data);
-
-            print!("{}", s.unwrap());
+            println!("len is: {}", count);
+            //let s = std::str::from_utf8(&read_data);
+            //print!("{:?}", read_data);
         } else {
             panic!("Write to unsupported file occured");
         }
@@ -211,6 +212,11 @@ pub fn brk(emu: &mut Emulator) -> Option<Fault> {
     let _base = emu.get_reg(Register::A0);
 
     emu.set_reg(Register::A0, !0);
+    None
+}
+
+pub fn gettimeofday(emu: &mut Emulator) -> Option<Fault> {
+    emu.set_reg(Register::A0, 20);
     None
 }
 

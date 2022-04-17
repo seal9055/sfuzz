@@ -1,0 +1,228 @@
+#!/usr/bin/python3
+
+from __future__ import print_function
+
+import warnings
+warnings.filterwarnings("ignore", "apt API not stable yet", FutureWarning)
+
+from DistUpgrade.DistUpgradeVersion import VERSION
+from DistUpgrade.DistUpgradeGettext import gettext as _
+
+from UpdateManager.Core.MetaRelease import MetaReleaseCore
+from optparse import OptionParser
+import locale
+import gettext
+
+import apt
+import os
+import subprocess
+import sys
+import time
+from UpdateManager.Core.utils import init_proxy
+
+RELEASE_AVAILABLE=0
+NO_RELEASE_AVAILABLE=1
+
+
+def get_fetcher(frontend, new_dist, datadir):
+    if frontend == "DistUpgradeViewGtk3":
+        from DistUpgrade.DistUpgradeFetcher import DistUpgradeFetcherGtk
+        from DistUpgrade.GtkProgress import GtkAcquireProgress
+        progress = GtkAcquireProgress(
+            None,
+            datadir,
+            _("Downloading the release upgrade tool"))
+        return DistUpgradeFetcherGtk(new_dist=new_dist,
+                                     progress=progress,
+                                     parent=None,
+                                     datadir=datadir)
+    elif frontend == "DistUpgradeViewKDE":
+        print("kde")
+        from DistUpgrade.DistUpgradeFetcherKDE import DistUpgradeFetcherKDE
+        from DistUpgrade.DistUpgradeFetcherKDE import KDEAcquireProgressAdapter
+        progress = KDEAcquireProgressAdapter(
+            parent=None,
+            datadir=datadir,
+            label=_("Downloading the release upgrade tool"))
+        return DistUpgradeFetcherKDE(new_dist=new_dist,
+                                     progress=progress,
+                                     parent=None,
+                                     datadir=datadir)
+    else:
+        from DistUpgrade.DistUpgradeFetcherCore import DistUpgradeFetcherCore
+        import apt
+        progress = apt.progress.text.AcquireProgress()
+        return DistUpgradeFetcherCore(new_dist, progress)
+
+
+if __name__ == "__main__":
+
+  #FIXME: Workaround a bug in optparser which doesn't handle unicode/str
+  #       correctly, see http://bugs.python.org/issue4391
+  #       Should be resolved by Python3
+  gettext.bindtextdomain("ubuntu-release-upgrader", "/usr/share/locale")
+  gettext.textdomain("ubuntu-release-upgrader")
+  translation = gettext.translation("ubuntu-release-upgrader", fallback=True)
+
+  try:
+    locale.setlocale(locale.LC_ALL, "")
+  except:
+    pass
+
+  init_proxy()
+
+  # when run as "check-new-release" we go into "check only" mode
+  check_only = sys.argv[0].endswith("check-new-release")
+
+  parser = OptionParser()
+  parser.add_option ("-V", "--version", action="store_true",
+                     dest="show_version", default=False,
+                     help=_("Show version and exit"))
+  parser.add_option ("-d", "--devel-release", action="store_true",
+                     dest="devel_release", default=False,
+                     help=_("If using the latest supported release, "
+                            "upgrade to the development release"))
+  parser.add_option ("--data-dir", "",
+                     default="/usr/share/ubuntu-release-upgrader/",
+                     help=_("Directory that contains the data files"))
+  parser.add_option ("-p", "--proposed", action="store_true",
+                     dest="proposed_release", default=False,
+                     help=_("Try upgrading to the latest release using "
+                            "the upgrader from $distro-proposed"))
+  parser.add_option ("-m", "--mode", default="server",
+                     dest="mode", 
+                     help=_("Run in a special upgrade mode.\n"
+                            "Currently 'desktop' for regular upgrades of "
+                            "a desktop system and 'server' for server "
+                            "systems are supported."))
+  parser.add_option ("-f", "--frontend", default="DistUpgradeViewText",
+                     dest="frontend", 
+                     help=_("Run the specified frontend"))
+  parser.add_option ("-c", "--check-dist-upgrade-only", action="store_true",
+                     default=check_only,
+                     help=_("Check only if a new distribution release is "
+                            "available and report the result via the "
+                            "exit code"))
+  parser.add_option ("--allow-third-party", default=False,
+                     action="store_true", dest="allow_third_party",
+                     help=_("Try the upgrade with third party "
+                            "mirrors and repositories enabled "
+                            "instead of commenting them out."))
+  parser.add_option ("-q", "--quiet", default=False, action="store_true",
+                     dest="quiet")
+
+  (options, args) = parser.parse_args()
+
+
+  if options.show_version:
+    print("%s: version %s" % (os.path.basename(sys.argv[0]), VERSION))
+    sys.exit(0)
+
+  if options.devel_release and options.proposed_release:
+    print(_("The options --devel-release and --proposed are"))
+    print(_("mutually exclusive. Please use only one of them."))
+    sys.exit(1)
+
+  if not options.quiet:
+    print(_("Checking for a new Ubuntu release"))
+
+  m = MetaReleaseCore(useDevelopmentRelease=options.devel_release,
+                      useProposed=options.proposed_release)
+  # this will timeout eventually
+  m.downloaded.wait()
+
+  # make sure to inform the user if his distro is no longer supported
+  # this will make it appear in motd (that calls do-release-upgrade in
+  #  check-new-release mode)
+  if m.no_longer_supported is not None:
+    url = "http://www.ubuntu.com/releaseendoflife"
+    print(_("Your Ubuntu release is not supported anymore."))
+    print(_("For upgrade information, please visit:\n"
+            "%(url)s\n") % { 'url' : url })
+
+  # now inform about a new release
+  if m.new_dist is None:
+    if not options.quiet:
+      if m.prompt == 'never':
+        print(_("In /etc/update-manager/release-upgrades Prompt "))
+        print(_("is set to never so upgrading is not possible."))
+      elif m.prompt == 'lts':
+        print(_("There is no development version of an LTS available."))
+        print(_("To upgrade to the latest non-LTS development release "))
+        print(_("set Prompt=normal in /etc/update-manager/release-upgrades."))
+      elif options.devel_release:
+        print(_("Upgrades to the development release are only "))
+        print(_("available from the latest supported release."))
+      else:
+        print(_("No new release found."))
+    sys.exit(NO_RELEASE_AVAILABLE)
+
+  if m.new_dist.upgrade_broken:
+    if not options.quiet:
+      print(_("Release upgrade not possible right now"))
+      print(_("The release upgrade can not be performed currently, "
+              "please try again later. The server reported: '%s'") % m.new_dist.upgrade_broken)
+    sys.exit(NO_RELEASE_AVAILABLE)
+
+  # we have a new dist
+  if options.check_dist_upgrade_only:
+    print(_("New release '%s' available.") % m.new_dist.version)
+    print(_("Run 'do-release-upgrade' to upgrade to it."))
+    sys.exit(RELEASE_AVAILABLE)
+
+  cache = apt.Cache()
+  cache.open()
+  install_count = 0
+  upgradable = [pkg for pkg in cache if pkg.is_upgradable]
+  for pkg in upgradable:
+    if 'Phased-Update-Percentage' in pkg.candidate.record:
+      # P-U-P does not exist if it is fully phased
+      continue
+    else:
+      install_count += 1
+      # one upgradeable package is enough to stop the dist-upgrade
+      break
+  if install_count > 0:
+    if not options.quiet:
+      print(_("Please install all available updates "
+              "for your release before upgrading."))
+    sys.exit(1)
+  if os.path.exists('/var/run/reboot-required.pkgs'):
+    reboot = False
+    with open('/var/run/reboot-required.pkgs', 'rb') as f:
+        for line in f:
+            # In certain cases, we need to reboot the system before proceeding
+            # with the dist upgrade after the kernel is upgraded as otherwise
+            # building of some dkms modules can fail.
+            if (line == b'libc6\n' or line == b'linux-base\n' or
+                    line.startswith(b'linux-image-')):
+                reboot = True
+                break
+    if reboot:
+      if not options.quiet:
+        print(_("You have not rebooted after updating a package which "
+                "requires a reboot. Please reboot before upgrading."))
+      sys.exit(1)
+
+  if options.allow_third_party:
+    # the env variable is used by code in the dist-upgrader tarball
+    os.environ["RELEASE_UPGRADER_ALLOW_THIRD_PARTY"] = "True"
+
+  # GTK 3 fetcher starts setting up the the GUI and KDE GUI needs to start GUI
+  # later, too.
+  if (options.frontend in {"DistUpgradeViewGtk3", "DistUpgradeViewKDE"} and
+      os.getuid() != 0):
+    if 'WAYLAND_DISPLAY' in os.environ:
+        subprocess.run(['xhost', '+si:localuser:root'])
+    # this is needed because pkexec doesn't pass on the env
+    if 'RELEASE_UPGRADER_ALLOW_THIRD_PARTY' in os.environ:
+        sys.argv.append('--allow-third-party')
+    os.execv("/usr/bin/pkexec", ["pkexec"] + sys.argv)
+
+  fetcher = get_fetcher(options.frontend, m.new_dist, options.data_dir)
+  fetcher.run_options += ["--mode=%s" % options.mode,
+                          "--frontend=%s" % options.frontend,
+                          ]
+  if options.devel_release:
+    fetcher.run_options.append("--devel-release")
+  fetcher.run()

@@ -1,0 +1,5 @@
+#!/bin/sh
+
+set -e
+
+ps -C vsftpd -o user,pid,stime,cmd

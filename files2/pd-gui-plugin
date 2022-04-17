@@ -1,0 +1,223 @@
+#!/usr/bin/python3
+
+# enable/disable pd-gui plugins
+#
+# features
+# - enables and disables pd-gui-plugins installed by Debian
+# - per-user OR per-site configuration
+# - lists available plugins
+# - list enabled plugins
+
+# flags
+# * --user: act on per-user configuration  (install into / list only plugins
+#                                           enabled in "~/pd-externals")
+# * --system: act on site-wide configuration (install into / list only plugins
+#                                           enabled in "/usr/lib/pd/extra")
+# if no flag is given, we try to install into /usr/lib/pd/extra and if that
+#                      fails into ~/pd-externals we list all enabled plugins
+#
+# commands
+# * enable <plugin>: enable given plugin
+# * disable <plugin>: disable given plugin
+# * enabled: list enabled plugins
+# * enabled <plugin>: returns 0 is plugin is enabled, 1 otherwise
+# * available: list available plugins
+# * available <plugin>: returns 0 is plugin is available, 1 otherwise
+
+import os
+import sys
+
+availablepaths = ['/usr/share/pd-gui/plugins-available',
+                  '/etc/pd/plugins-available']
+# sitepath = ['/usr/local/lib/pd-externals',
+#             '/usr/lib/pd/extra',
+#             '/usr/lib/puredata/extra']
+sitepath = ['/etc/pd/plugins-enabled', ]
+userpath = ['~/pd-externals', ]
+additionalpaths = []
+
+
+def stripSuffix(s, suffix):
+    """strips a <suffix> (if present) from the string <s>"""
+    if s.endswith(suffix):
+        return s[:-len(suffix)]
+    return s
+
+
+def basename(p):
+    return os.path.basename(os.path.normpath(p))
+
+
+def getPluginPaths(site=True, user=True):
+    paths = []
+    if additionalpaths:
+        paths += additionalpaths
+    if site:
+        paths += sitepath
+    if user:
+        paths += userpath
+    return [os.path.expanduser(x) for x in paths]
+
+
+def getWriteablePath(paths):
+    # first check if any of the paths are existing and writable
+    for p in paths:
+        if os.access(p, os.W_OK):
+            return p
+    # if none was writeable, check if we can create one
+    for p in paths:
+        try:
+            os.mkdir(p)
+            if os.access(p, os.W_OK):
+                return p
+        except (PermissionError, FileExistsError, FileNotFoundError):
+            continue
+    return None
+
+
+def isPlugin(path, name):
+    fullpath = os.path.join(path, name)
+    if fullpath.endswith("-plugin") and os.path.isdir(fullpath):
+        return fullpath
+    if fullpath.endswith("-plugin.tcl") and os.path.isfile(fullpath):
+        return fullpath
+    return None
+
+
+def printAvailable(paths):
+    for p in paths:
+        if not os.path.isdir(p):
+            continue
+        for plugin in [stripSuffix(stripSuffix(x, ".tcl"), "-plugin")
+                       for x in os.listdir(p)
+                       if isPlugin(p, x)]:
+            print(plugin)
+
+
+def findPlugin(paths, plugin):
+    for p in paths:
+        for suffix in ["-plugin", "-plugin.tcl", ""]:
+            plug = isPlugin(p, plugin+suffix)
+            if plug:
+                return plug
+    return False
+
+
+def cmd_enable(pluginpaths, plugin):
+    # check if plugin is already enabled
+    if findPlugin(getPluginPaths(), plugin):
+        sys.exit("plugin '%s' seems to be already enabled!" % (plugin,))
+    # check if the plugin is available
+    plug = findPlugin(availablepaths, plugin)
+    if not plug:
+        sys.exit("plugin '%s' seems to be not available!" % (plugin,))
+    p = getWriteablePath(pluginpaths)
+    if not p:
+        sys.exit("unable to enable plugin in one of these paths:\n\t" +
+                 "\n\t".join(pluginpaths))
+    pluglink = os.path.join(p, basename(plug))
+    try:
+        os.symlink(plug, pluglink)
+    except FileExistsError:
+        sys.exit("unable to enable '%s' as '%s'" % (plugin, pluglink))
+
+
+def cmd_disable(pluginpath, plugin):
+    plug = findPlugin(getPluginPaths(), plugin)
+    if not plug:
+        sys.exit("plugin '%s' seems not to be enabled!" % (plugin,))
+    if not os.path.islink(plug):
+        sys.exit("Cannot disable non-symlinked plugin '%s'" % (plugin,))
+    try:
+        os.unlink(plug)
+    except (PermissionError, FileNotFoundError) as e:
+        sys.exit("Could not disable plugin '%s': %s" % (plugin, e))
+
+
+def cmd_enabled(pluginpath, plugin=None):
+    if plugin:
+        result = findPlugin(pluginpath, plugin)
+        if result:
+            print(result)
+        sys.exit(not result)
+    else:
+        printAvailable(pluginpath)
+
+
+def cmd_available(pluginpath, plugin=None):
+    cmd_enabled(availablepaths, plugin)
+
+
+def parseCmdlineArgs():
+    import argparse
+    parser = argparse.ArgumentParser(description="""
+    This is a Debian specific tool that allows you to
+    selectively enable or disable Pd GUI plugins,
+    either for a single user (yourself),
+    or for all users of the system
+    (if you have the administrative privileges to do so).
+    """,
+                                     )
+    parser.add_argument('-u', '--user', action='store_true',
+                        help="""per-user operation
+                        (e.g. install to ~/pd-externals/)""")
+    parser.add_argument('-s', '--system', action='store_true',
+                        help="""site-wide operation
+                        (requires supercow powers)""")
+    parser.add_argument('--pool-dir', action='append',
+                        metavar="POOL-DIRECTORY",
+                        help="""alternative directory
+                        holding available plugins""")
+    parser.add_argument('--install-dir', action='append',
+                        metavar="INSTALL-DIRECTORY",
+                        help="""alternative directory
+                        to install enabled plugins""")
+    parser.add_argument('-v', '--version',
+                        action='version', version='%(prog)s 0.1')
+    subparsers = parser.add_subparsers(dest='command', metavar="<command>")
+
+    sparser = subparsers.add_parser('enable', help='enable a plugin')
+    sparser.add_argument('plugin', metavar='PLUGIN', help='plugin to enable')
+
+    sparser = subparsers.add_parser('disable', help='disable a plugin')
+    sparser.add_argument('plugin', metavar='PLUGIN', help='plugin to disable')
+
+    sparser = subparsers.add_parser('enabled', help='list enabled plugins')
+    sparser.add_argument('plugin', metavar='PLUGIN', nargs='?',
+                         help='if present, check if plugin is enabled')
+
+    sparser = subparsers.add_parser('available', help='list available plugins')
+    sparser.add_argument('plugin', metavar='PLUGIN', nargs='?',
+                         help='if present, check if plugin is available')
+
+    args = parser.parse_args()
+
+    if not args.command:
+        parser.print_help()
+
+    return args
+
+
+if __name__ == '__main__':
+    cmds = {
+        'enable': cmd_enable,
+        'disable': cmd_disable,
+        'enabled': cmd_enabled,
+        'available': cmd_available,
+        }
+
+    args = parseCmdlineArgs()
+    if not args.install_dir and not args.user and not args.system:
+        args.user = True
+        args.system = True
+    additionalpaths = args.install_dir
+    pluginpaths = getPluginPaths(args.system, args.user)
+
+    if args.pool_dir:
+        availablepaths = [x for x in args.pool_dir if os.path.isdir(x)]
+        if not availablepaths:
+            sys.exit("None of these paths are valid;\n\t" +
+                     "\n\t".join(args.pool_dir))
+
+    if args.command in cmds:
+        cmds[args.command](pluginpaths, args.plugin)

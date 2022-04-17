@@ -1,0 +1,33 @@
+#!/usr/bin/perl -w
+
+use Debian::DictionariesCommon q(setuserdefault);
+
+setuserdefault ();
+
+__END__
+
+
+=head1 NAME
+
+B<select-default-iwrap> - Selects the user default ispell dictionary for use
+with ispell-wrapper
+
+=head1 SYNOPSIS
+
+ select-default-iwrap
+
+=head1 DESCRIPTION
+
+Selects the user default ispell dictionary for use
+with ispell-wrapper, putting the selected value
+in F<~/.ispell-default>.
+
+=head1 SEE ALSO
+
+ispell-wrapper(1)
+
+=head1 AUTHORS
+
+Rafael Laboissiere
+
+=cut

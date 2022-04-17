@@ -1,0 +1,178 @@
+#!/bin/sh
+set -e
+
+. /usr/share/os-prober/common.sh
+
+newns "$@"
+require_tmpdir
+
+log_output () {
+	if type log-output >/dev/null 2>&1; then
+		log-output -t os-prober --pass-stdout $@
+	else
+		$@
+	fi
+}
+
+: >"$OS_PROBER_TMP/dmraid-map"
+DMRAID=$(type dmraid >/dev/null 2>&1 || true)
+if [ "$DMRAID" ]; then
+	dmraid -r -c >"$OS_PROBER_TMP/dmraid-map"
+fi
+
+on_sataraid () {
+	local parent="${1%/*}"
+	local device="/dev/${parent##*/}"
+	if grep -q "$device" "$OS_PROBER_TMP/dmraid-map"; then
+		return 0
+	fi
+	return 1
+}
+
+partitions () {
+	os_name="$(uname -s)"
+	# Exclude partitions that have whole_disk sysfs attribute set.
+	if [ -d /sys/block ]; then
+		# Exclude partitions on physical disks that are part of a
+		# Serial ATA RAID disk.
+		for part in /sys/block/*/*[0-9]; do
+			if [ -f "$part/start" ] && \
+			   [ ! -f "$part/whole_disk" ] && ! on_sataraid $part; then
+				name="$(echo "${part##*/}" | sed 's,[!.],/,g')"
+				if [ -e "/dev/$name" ]; then
+					echo "/dev/$name"
+				fi
+			fi
+		done
+
+		# Add Serial ATA RAID devices
+		if type dmraid >/dev/null 2>&1 && \
+		   dmraid -s -c >/dev/null 2>&1; then
+			for raidset in $(dmraid -sa -c); do
+				for part in /dev/mapper/"$raidset"*[0-9]; do
+					echo "$part"
+				done
+			done
+		fi
+	elif [ "$os_name" = Linux ]; then
+		echo "Cannot find list of partitions!  (Try mounting /sys.)" >&2
+		exit 1
+	elif [ "$os_name" = GNU ]; then
+		for part in /dev/hd*s*[0-9] /dev/sd*s*[0-9]; do
+			if [ -s "$part" ]; then
+				echo "$part"
+			fi
+		done
+	else
+		# We don't know how to probe OSes on non-Linux and non-GNU kernels.
+		# For now, just don't get in the way.
+		exit 0
+	fi
+
+	# Also detect OSes on LVM volumes (assumes LVM is active)
+	if type lvs >/dev/null 2>&1; then
+		echo "$(LVM_SUPPRESS_FD_WARNINGS=1 log_output lvs --noheadings --separator : -o vg_name,lv_name |
+			sed "s|-|--|g;s|^[[:space:]]*\(.*\):\(.*\)$|/dev/mapper/\1-\2|")"
+	fi
+}
+
+parse_proc_swaps () {
+	while read line; do
+		set -f
+		set -- $line
+		set +f
+		echo "$(mapdevfs $1) swap"
+	done
+}
+
+parse_proc_mdstat () {
+	if type udevadm >/dev/null 2>&1; then
+		udevinfo () {
+			udevadm info "$@"
+		}
+	fi
+	while read line; do
+		for word in $line; do
+			dev="${word%%\[*}"
+			# TODO: factor this out to something in di-utils if
+			# it's needed elsewhere
+			if [ -d /sys/block ] && type udevinfo >/dev/null 2>&1; then
+				if ! udevinfo -q path -n "/dev/$dev" 2>/dev/null | \
+				     grep -q '/.*/.*/'; then
+					continue
+				fi
+			elif ! echo "$dev" | grep -q "/part"; then
+				continue
+			fi
+			raidpart="/dev/$dev"
+			echo "$(mapdevfs "$raidpart")"
+		done
+	done
+}
+
+# Needed for idempotency
+rm -f /var/lib/os-prober/labels
+
+for prog in /usr/lib/os-probes/init/*; do
+	if [ -x "$prog" ] && [ -f "$prog" ]; then
+		"$prog" || true
+	fi
+done
+
+# We need to properly canonicalize partitions with mount points and partitions
+# used in RAID
+grep "^/dev/" /proc/mounts | parse_proc_mounts >"$OS_PROBER_TMP/mounted-map" || true
+: >"$OS_PROBER_TMP/swaps-map"
+if [ -f /proc/swaps ]; then
+	grep "^/dev/" /proc/swaps | parse_proc_swaps >"$OS_PROBER_TMP/swaps-map" || true
+fi
+: >"$OS_PROBER_TMP/raided-map"
+if [ -f /proc/mdstat ] ; then
+	grep "^md" /proc/mdstat | parse_proc_mdstat >"$OS_PROBER_TMP/raided-map" || true
+fi
+
+for partition in $(partitions); do
+	if ! mapped="$(mapdevfs "$partition")"; then
+		log "Device '$partition' does not exist; skipping"
+		continue
+	fi
+
+	# Skip partitions used in software RAID arrays
+	if grep -q "^$mapped" "$OS_PROBER_TMP/raided-map" ; then
+		debug "$partition: part of software raid array"
+		continue
+	fi
+
+	# Skip partitions used as active swap
+	if grep -q "^$mapped " "$OS_PROBER_TMP/swaps-map" ; then
+		debug "$partition: is active swap"
+		continue
+	fi
+
+	if ! grep -q "^$mapped " "$OS_PROBER_TMP/mounted-map" ; then
+		for test in /usr/lib/os-probes/*; do
+			if [ -f "$test" ] && [ -x "$test" ]; then
+				debug "running $test on $partition"
+				if "$test" "$partition"; then
+					debug "os detected by $test"
+			   		break
+				fi
+			fi
+		done
+	else
+		mpoint=$(grep "^$mapped " "$OS_PROBER_TMP/mounted-map" | head -n1 | cut -d " " -f 2)
+		mpoint="$(unescape_mount "$mpoint")"
+		if [ "$mpoint" != "/target/boot" ] && [ "$mpoint" != "/target" ] && [ "$mpoint" != "/" ]; then
+			type=$(grep "^$mapped " "$OS_PROBER_TMP/mounted-map" | head -n1 | cut -d " " -f 3)
+			for test in /usr/lib/os-probes/mounted/*; do
+				if [ -f "$test" ] && [ -x "$test" ]; then
+					debug "running $test on mounted $partition"
+					if "$test" "$partition" "$mpoint" "$type"; then
+						debug "os detected by $test"
+						break
+					fi
+				fi
+			done
+		fi
+	fi
+done

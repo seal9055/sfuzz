@@ -1,0 +1,55 @@
+#!/bin/sh
+# vim: set sts=4 expandtab:
+# Copyright (C) 2012 Osamu Aoki <osamu@debian.org>
+# Copyright (C) 2012 Aron Xu <aron@debian.org>
+# GNU General Public License version 2 or later.
+#
+# Launch input method configuration script for X, GNOME, KDE, ...
+# see im-launch(1).
+
+if [ "x$1" = "x-h" ] || [ "x$1" = "x--help" ] || [ "x$1" = "x" ]; then
+    echo "Unknown option: $1"
+    echo "Usage: $0 SESSION-PROGRAM"
+    exit 1
+fi
+
+if [ "$IM_CONFIG_CHECK_ENV" = 1 ] && \
+   [ "$IM_CONFIG_PHASE" = 1 ]; then
+    # If tweaked, keep hands off :-)
+    if ! env -i \
+        HOME="$HOME" \
+        IM_CONFIG_SET_XMODIFIERS="$XMODIFIERS" \
+        IM_CONFIG_SET_GTK_IM_MODULE="$GTK_IM_MODULE" \
+        IM_CONFIG_SET_QT_IM_MODULE="$QT_IM_MODULE" \
+        IM_CONFIG_SET_QT4_IM_MODULE="$QT4_IM_MODULE" \
+        IM_CONFIG_SET_CLUTTER_IM_MODULE="$CLUTTER_IM_MODULE" \
+        sh -c '. /etc/X11/Xsession.d/70im-config_launch
+        [ "$IM_CONFIG_SET_XMODIFIERS" = "$XMODIFIERS" ] &&
+        [ "$IM_CONFIG_SET_GTK_IM_MODULE" = "$GTK_IM_MODULE" ] && \
+        [ "$IM_CONFIG_SET_QT_IM_MODULE" = "$QT_IM_MODULE" ] && \
+        [ "$IM_CONFIG_SET_QT4_IM_MODULE" = "$QT4_IM_MODULE" ] && \
+        [ "$IM_CONFIG_SET_CLUTTER_IM_MODULE" = "$CLUTTER_IM_MODULE" ]'; then
+        unset IM_CONFIG_PHASE
+    fi
+    unset IM_CONFIG_CHECK_ENV
+fi
+
+IM_START_SESSION="$@"
+
+# If already tweaked, keep hands off :-)
+# If im-config is removed but not purged, keep hands off :-)
+if [ "$IM_CONFIG_PHASE" = 1 ]; then
+    IM_CONFIG_PHASE=2
+    # initialize all im-config common functions and parameters
+    . /usr/share/im-config/xinputrc.common
+    unset TEXTDOMAIN
+    unset TEXTDOMAINDIR
+    # source the first found configuration file
+    if [ -r "$IM_CONFIG_XINPUTRC_USR" ]; then
+        . $IM_CONFIG_XINPUTRC_USR
+    elif [ -r "$IM_CONFIG_XINPUTRC_SYS" ]; then
+        . $IM_CONFIG_XINPUTRC_SYS
+    fi
+    unset IM_CONFIG_PHASE
+fi
+exec $IM_START_SESSION

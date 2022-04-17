@@ -1,0 +1,67 @@
+#!/usr/bin/perl -w
+
+=head1 NAME
+
+dh_autotools-dev_restoreconfig - restore B<config.sub> and B<config.guess>
+
+=cut
+
+use strict;
+use Debian::Debhelper::Dh_Lib;
+
+=head1 SYNOPSIS
+
+B<dh_autotools-dev_restoreconfig> [S<I<debhelper options>>]
+
+=head1 DESCRIPTION
+
+B<Deprecated>: dh_autotools-dev_updateconfig and
+dh_autotools-dev_restoreconfig are deprecated and replaced by
+L<dh_update_autotools_config(1)> and L<dh_clean(1)> from debhelper.
+Please replace all uses of dh_autotools-dev_updateconfig with
+dh_update_autotools_config and then remove any use of
+dh_autotools-dev_restoreconfig.
+
+dh_autotools-dev_restoreconfig restores the original B<config.sub> and B<config.guess>
+files that have been backed up by dh_autotools-dev_updateconfig under the names
+B<config.sub.dh-orig> and B<config.guess.dh-orig>.
+
+=head1 EXAMPLES
+
+dh_autotools-dev_restoreconfig is usually called indirectly in a rules file via the
+dh command.
+
+	%:
+		dh $@ --with autotools_dev
+
+It can also be direcly called in the clean rule.
+
+	clean:
+		dh_testdir
+		dh_testroot
+		[ ! -f Makefile ] || $(MAKE) clean
+		dh_autotools-dev_restoreconfig
+		dh_clean
+
+=cut
+
+init();
+
+deprecated_functionality('dh_autotools-dev_restoreconfig is deprecated; please see dh_autotools-dev_restoreconfig(1) for a replacement', 12);
+
+complex_doit('for c_g in `find . -type f -name config.guess` ; do if test -e "$c_g.dh-orig" ; then mv -f "$c_g.dh-orig" "$c_g" ; fi ; done');
+complex_doit('for c_s in `find . -type f -name config.sub`   ; do if test -e "$c_s.dh-orig" ; then mv -f "$c_s.dh-orig" "$c_s" ; fi ; done');
+complex_doit('find . -type f \( -name config.guess.dh-orig -o -name config.sub.dh-orig \) -delete');
+
+=head1 SEE ALSO
+
+L<debhelper(7)>, L<dh(1)>.
+
+This program is meant to be used together with debhelper.
+
+=head1 AUTHOR
+
+Fabian Greffrath <fabian+debian@greffrath.com>
+
+=cut
+

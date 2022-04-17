@@ -1,0 +1,27 @@
+#!/bin/zsh -f
+
+# This wrapper's sole purpose is to ease the migration of zsh's binary
+# location from /bin/zsh5 to /bin/zsh between Debian Jessie and
+# Stretch since zsh no more uses the alternatives system as there is
+# only one version of zsh left in Debian since Jessie.
+#
+# Related bug report: https://bugs.debian.org/768079
+
+if [[ "$0" == *zsh5* ]]; then
+    static=''
+    if [[ "$0" == *static* ]]; then
+        static=-static
+    fi
+
+    echo ""
+    echo "    ####"
+    echo "    ####  $0 is deprecated, please switch to /bin/zsh${static} (or /usr/bin/zsh)"
+    if [[ "$1" == "-l" || "$0" == -* ]]; then
+        echo '    ####  Use "chsh -s '"/bin/zsh${static}"'" to change your login shell'
+    fi
+    echo "    ####  This command ($0) will disappear eventually!"
+    echo "    ####"
+    echo ""
+fi 1>&2
+
+exec "/bin/zsh${static}" "$@"

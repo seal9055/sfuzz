@@ -1,0 +1,298 @@
+#!/usr/bin/python3
+
+from __future__ import print_function
+
+import optparse
+import datetime
+import distro_info
+import os
+import re
+import subprocess
+import sys
+
+import apt
+from UpdateManager.Core.utils import twrap, get_dist
+
+# set locale early so that the subsequent imports have localized
+# strings
+import locale
+try:
+    locale.setlocale(locale.LC_ALL, "")
+except:
+    pass
+
+from gettext import gettext as _
+import gettext
+gettext.textdomain("update-manager")
+
+
+from HweSupportStatus.consts import (
+    Messages,
+    LTS_EOL_DATE,
+    HWE_EOL_DATE,
+    NEXT_LTS_DOT1_DATE,
+)
+
+
+# HWE stack with a short support period
+HWE_UNSUPPORTED_BACKPORTS = (
+    "-lts-utopic",
+    "-lts-vivid",
+    "-lts-wily"
+)
+# from https://wiki.ubuntu.com/Kernel/LTSEnablementStack
+UNSUPPORTED_KERNEL_IMAGE_REGEX = \
+    r'linux-image.*-(3\.16|3\.19|4\.2)(\.[0-9]+)?-.*'
+
+# HWE stack with a long support period
+HWE_SUPPORTED_BACKPORT = "-hwe-20.04"
+SUPPORTED_KERNEL_IMAGE_REGEX = r'^$' # No fixed backported kernel yet
+
+
+KERNEL_METAPKGS = (
+    "linux-generic",
+    "linux-image-generic",
+    "linux-signed-generic",
+    "linux-signed-image-generic",
+)
+XORG_METAPKGS = (
+    "xserver-xorg",
+    "libgl1-mesa-glx",
+    # LP: #1610434 - Ubuntu GNOME needed libwayland
+    "libwayland-egl1-mesa",
+)
+VBOX_METAPKGS = (
+    "virtualbox-guest-utils",
+    "virtualbox-guest-source"
+)
+METAPKGS = KERNEL_METAPKGS + XORG_METAPKGS + VBOX_METAPKGS
+
+
+class Package:
+    """A lightweight apt package """
+    def __init__(self, name, version, arch, foreign=False):
+        self.name = name
+        self.installed_version = version
+        self.arch = arch
+        self.foreign = foreign
+
+
+def find_hwe_packages(installed_packages):
+    unsupported_hwe_packages = set()
+    supported_hwe_packages = set()
+    for pkg in installed_packages:
+        # metapackages and X are marked with the -lts-$distro string
+        for name in HWE_UNSUPPORTED_BACKPORTS:
+            if pkg.name.endswith(name):
+                unsupported_hwe_packages.add(pkg)
+        # The individual backported kernels have names like
+        #   linux-image-3.11.0-17-generic
+        # so we match via a regexp.
+        #
+        # The linux-image-generic-lts-$distro metapkg has additional
+        #  dependencies (like linux-firmware) so we can't just walk the
+        # dependency chain.
+        if re.match(UNSUPPORTED_KERNEL_IMAGE_REGEX, pkg.name):
+            unsupported_hwe_packages.add(pkg)
+        # SUPPORTED
+        if pkg.name.endswith(HWE_SUPPORTED_BACKPORT):
+            supported_hwe_packages.add(pkg)
+        if re.match(SUPPORTED_KERNEL_IMAGE_REGEX, pkg.name):
+            supported_hwe_packages.add(pkg)
+    return unsupported_hwe_packages, supported_hwe_packages
+
+
+def is_unsupported_hwe_kernel_running(unsupported_hwe_package):
+    # kernels do not conflict with each other, so we need to check
+    # what version is actually running
+    running_kernel_ver = os.uname()[2]
+    # the running kernel without the abi or buildver
+    running_kernel_ver = running_kernel_ver.split("-")[0]
+    for pkg in unsupported_hwe_package:
+        if not pkg.name.startswith("linux-"):
+            continue
+        # we only care about the version, not abi or build
+        if pkg.installed_version.startswith(running_kernel_ver):
+            return True
+    return False
+
+
+def is_unsupported_xstack_running(unsupported_hwe_packages):
+    # the HWE xstacks conflict with each other, so we can simply test
+    # for existence in the installed unsupported hwe packages
+    for pkg in unsupported_hwe_packages:
+        for xorg_meta in XORG_METAPKGS:
+            if pkg.name.startswith(xorg_meta):
+                return True
+    return False
+
+
+def find_supported_replacement_hwe_packages(unsupported_hwe_packages,
+                                            installed_packages):
+    unsupported_metapkg_names = set()
+    replacement_names = set()
+    for metapkg in METAPKGS:
+        for unsupported_backport in HWE_UNSUPPORTED_BACKPORTS:
+            metapkg_name = metapkg + unsupported_backport
+            for pkg in unsupported_hwe_packages:
+                if pkg.name == metapkg_name:
+                    replacement_name = metapkg + HWE_SUPPORTED_BACKPORT
+                    if (replacement_name, pkg.arch) not in \
+                            [(p.name, p.arch) for p in installed_packages]:
+                        if pkg.foreign:
+                            replacement_name += ':' + pkg.arch
+                        replacement_names.add(replacement_name)
+                    unsupported_metapkg_names.add(metapkg_name)
+    return unsupported_metapkg_names, replacement_names
+
+
+def is_unsupported_hwe_running(unsupported_hwe_packages):
+    return (is_unsupported_hwe_kernel_running(unsupported_hwe_packages) or
+            is_unsupported_xstack_running(unsupported_hwe_packages))
+
+
+def advice_about_hwe_status(unsupported_hwe_packages, supported_hwe_packages,
+                            installed_packages, has_update_manager, today,
+                            verbose):
+    unsupported_hwe_stack_running = is_unsupported_hwe_running(
+        unsupported_hwe_packages)
+    unsupported_hwe_metapkgs, supported_replacement_hwe = \
+        find_supported_replacement_hwe_packages(unsupported_hwe_packages,
+                                                installed_packages)
+    # we need the "-p" option until the next LTS point release is available
+    if today < NEXT_LTS_DOT1_DATE:
+        do_release_upgrade_option = "-p"
+    else:
+        do_release_upgrade_option = ""
+
+    if unsupported_hwe_stack_running:
+        if today < HWE_EOL_DATE:
+            s = Messages.HWE_SUPPORT_ENDS
+        else:
+            s = Messages.HWE_SUPPORT_HAS_ENDED
+        if has_update_manager:
+            print(s + Messages.UM_UPGRADE)
+        else:
+            # bug #1341320 - if no metapkg is left we need to show
+            #                what is no longer supported
+            if supported_replacement_hwe:
+                print(s + Messages.APT_UPGRADE % (
+                    do_release_upgrade_option,
+                    " ".join(supported_replacement_hwe)))
+            else:
+                print(s + Messages.APT_SHOW_UNSUPPORTED % (
+                    " ".join([pkg.name for pkg in unsupported_hwe_packages])))
+
+    # some unsupported package installed but not running and not superseded
+    # - this is worth reporting
+    elif (unsupported_hwe_packages and
+          not supported_hwe_packages and
+          not unsupported_hwe_stack_running):
+        s = _("""
+You have packages from the Hardware Enablement Stack (HWE) installed that
+are going out of support on %s.
+        """) % HWE_EOL_DATE
+        if has_update_manager:
+            print(s + Messages.UM_UPGRADE)
+        else:
+            print(s + Messages.APT_UPGRADE % (
+                do_release_upgrade_option,
+                " ".join(supported_replacement_hwe)))
+    elif supported_hwe_packages:
+        print(Messages.HWE_SUPPORTED)
+    elif verbose:
+        print(
+            _("You are not running a system with a Hardware Enablement Stack. "
+              "Your system is supported until %(month)s %(year)s.") % {
+                  'month': LTS_EOL_DATE.strftime("%B"),
+                  'year': LTS_EOL_DATE.year})
+
+
+if __name__ == "__main__":
+    parser = optparse.OptionParser(description=_("Check HWE support status"))
+    parser.add_option('--quiet', action='store_true', default=False,
+                      help="No output, exit code 10 on unsupported HWE "
+                      "packages")
+    parser.add_option('--verbose', action='store_true', default=False,
+                      help="more verbose output")
+    parser.add_option('--show-all-unsupported', action='store_true',
+                      default=False,
+                      help="Show unsupported HWE packages")
+    parser.add_option('--show-replacements', action='store_true',
+                      default=False,
+                      help="show what packages need installing to be "
+                      "supported")
+    # hidden, only useful for testing
+    parser.add_option(
+        '--disable-hwe-check-semaphore-file',
+        default="/var/lib/update-notifier/disable-hwe-eol-messages",
+        help=optparse.SUPPRESS_HELP)
+    options, args = parser.parse_args()
+
+    if options.quiet:
+        nullfd = os.open(os.devnull, os.O_WRONLY)
+        os.dup2(nullfd, sys.stdout.fileno())
+
+    # Check to see if we are an LTS release
+    di = distro_info.UbuntuDistroInfo()
+    codename = get_dist()
+    lts = di.is_lts(codename)
+    if not lts:
+        if options.verbose:
+            print("Only LTS releases have Hardware Enablement stacks",
+                  file=sys.stderr)
+        sys.exit(0)
+
+    # request from PSE to be able to disable the hwe check via a special
+    # semaphore file
+    HWE_CHECK_DISABLED_FILE = options.disable_hwe_check_semaphore_file
+    if os.path.exists(HWE_CHECK_DISABLED_FILE):
+        if options.verbose:
+            print("Forcefully disabled hwe-support-status via file %s" %
+                  HWE_CHECK_DISABLED_FILE, file=sys.stderr)
+        sys.exit(0)
+
+    foreign_archs = set(subprocess.check_output(
+        ['dpkg', '--print-foreign-architectures'],
+        universal_newlines=True).split())
+
+    # do the actual check
+    installed_packages = set()
+    today = datetime.date.today()
+    tagf = apt.apt_pkg.TagFile("/var/lib/dpkg/status")
+    while tagf.step():
+        if tagf.section.find("Status", "") != "install ok installed":
+            continue
+        pkgname = tagf.section.find("Package")
+        version = tagf.section.find("Version")
+        arch = tagf.section.find("Architecture")
+        foreign = arch in foreign_archs
+        installed_packages.add(Package(pkgname, version, arch, foreign))
+
+    has_update_manager = "update-manager" in [
+        pkg.name for pkg in installed_packages]
+    unsupported_hwe_packages, supported_hwe_packages = find_hwe_packages(
+        installed_packages)
+
+    if options.show_all_unsupported:
+        if today > HWE_EOL_DATE:
+            print(twrap(" ".join([
+                pkg.foreign and pkg.name + ':' + pkg.arch or pkg.name
+                        for pkg in unsupported_hwe_packages])))
+
+    if options.show_replacements:
+        unsupported, replacements = find_supported_replacement_hwe_packages(
+            unsupported_hwe_packages, installed_packages)
+        if replacements:
+            print(" ".join(replacements))
+
+    if not options.show_all_unsupported and not options.show_replacements:
+        advice_about_hwe_status(
+            unsupported_hwe_packages, supported_hwe_packages,
+            installed_packages, has_update_manager, today,
+            options.verbose)
+    if is_unsupported_hwe_running(unsupported_hwe_packages) and \
+            today > HWE_EOL_DATE:
+        sys.exit(10)
+
+    sys.exit(0)

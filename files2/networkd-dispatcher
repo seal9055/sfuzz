@@ -1,0 +1,498 @@
+#! /usr/bin/python3
+# networkd-dispatcher
+#   Dispatcher service for systemd-networkd
+# Copyright(c) 2016 by wave++ "Yuri D'Elia" <wavexx@thregr.org>
+# Distributed under GPLv3+ (see COPYING) WITHOUT ANY WARRANTY.
+# Copyright(c) 2018-2020 by craftyguy "Clayton Craft" <clayton@craftyguy.net>
+# Distributed under GPLv3+ (see COPYING) WITHOUT ANY WARRANTY.
+
+
+from __future__ import print_function, division, generators, unicode_literals
+
+import argparse
+import collections
+import errno
+import json
+import logging
+import os
+import re
+import socket
+import stat
+import subprocess
+import sys
+
+# Try to import the dynamic glib, or try to fall back to static
+try:
+    from gi.repository import GLib as glib  # pragma: no cover
+except ImportError:                         # pragma: no cover
+    import glib                             # pragma: no cover
+
+import dbus
+import dbus.mainloop.glib
+
+logger = logging.getLogger('networkd-dispatcher')
+
+
+# Detect up-front which commands we use exist
+def resolve_path(cmdname):
+    for dirname in os.environ['PATH'].split(':'):
+        path = os.path.join(dirname, cmdname)
+        if os.path.exists(path):
+            return path
+    logger.warning('No valid path found for %s', cmdname)
+    return None
+
+
+# Constants
+NETWORKCTL = resolve_path('networkctl')
+DEFAULT_SCRIPT_DIR = '/etc/networkd-dispatcher:/usr/lib/networkd-dispatcher'
+
+# Supported wireless tools
+IWCONFIG = resolve_path('iwconfig')
+IW = resolve_path('iw')
+
+LOG_FORMAT = '%(levelname)s:%(message)s'
+
+SINGLETONS = {'Type', 'ESSID', 'OperationalState'}
+
+
+AddressList = collections.namedtuple('AddressList', ['ipv4', 'ipv6'])
+NetworkctlListState = collections.namedtuple('NetworkctlListState',
+                                             ['idx', 'name', 'type',
+                                              'operational', 'administrative'])
+
+
+def unquote(buf, char='\\'):
+    """Remove escape characters from iwconfig ESSID output"""
+    idx = 0
+    while True:
+        idx = buf.find(char, idx)
+        if idx < 0:
+            break
+        buf = buf[:idx] + buf[idx+1:]
+        idx += 1
+    return buf
+
+
+def get_networkctl_list():
+    """Update the mapping from interface index numbers to state"""
+    try:
+        out = subprocess.check_output([NETWORKCTL, 'list', '--no-pager',
+                                       '--no-legend'])
+    except subprocess.CalledProcessError as e:
+        logger.error('networkctl list failed: %s', e)
+        return []
+
+    result = []
+    for line in out.split(b'\n')[:-1]:
+        fields = line.decode('utf-8', errors='replace').split()
+        idx_s = fields.pop(0)
+        result.append(NetworkctlListState(int(idx_s), *fields))
+    return result
+
+
+def get_networkctl_status(iface_name):
+    """Return a dictionary mapping keys to lists (or strings if
+    in SINGLETONS)"""
+    data = collections.defaultdict(list)
+    try:
+        out = subprocess.check_output([NETWORKCTL, 'status', '--no-pager',
+                                       '--no-legend', '--', iface_name])
+    except subprocess.CalledProcessError as e:
+        logger.error('Failed to get interface "%s" status: %s', iface_name, e)
+        return data
+
+    out = out.decode('utf-8', errors='replace')
+    oldk = None
+    for line in out.split('\n')[1:-1]:
+        kv = line.split(': ', 1)
+        k = oldk if len(kv) == 1 else kv[0].strip()
+        v = kv[-1].strip()
+        if not v:
+            continue
+
+        # normalize some values that changed in v244 & v246
+        if k == 'Address':
+            v = re.sub(r' \(DHCP4.*\)$', '', v)
+
+        oldk = k
+
+        if k in SINGLETONS:
+            data[k] = v
+        else:
+            data[k].append(v)
+    return data
+
+
+def get_wlan_essid(iface_name):
+    """Given an interface name, return its ESSID"""
+    if IWCONFIG is None:
+        if IW is None:
+            logger.error('Unable to retrieve ESSID for wireless interface %s: '
+                         'no supported wireless tool installed', iface_name)
+            return ''
+        return iw_get_ssid(iface_name)
+    return iwconfig_get_ssid(iface_name)
+
+
+def iw_get_ssid(iface_name):
+    out = subprocess.check_output([IW, iface_name, 'link'])
+    lines = out.decode('utf-8', errors='replace').split('\n')
+    line = [s for s in lines if 'SSID' in s]
+    if not line:
+        logger.warning('Unable to retrieve ESSID for wireless interface %s.',
+                       iface_name)
+        return ''
+    essid = line[0].rsplit(" ")[1]
+    return unquote(essid)
+
+
+def iwconfig_get_ssid(iface_name):
+    out = subprocess.check_output([IWCONFIG, '--', iface_name])
+    line = out.split(b'\n')[0].decode('utf-8', errors='replace')
+    essid = line[line.find('ESSID:')+7:-3]
+    return unquote(essid)
+
+
+def scripts_in_path(path, subdir):
+    """Given directory names in PATH notation (separated by :), and a
+    subdirectory name, return a sorted list of executables
+    contained in that subdirectory, such that executables in earlier
+    path components override those with the same name in later path
+    components."""
+    script_list = []
+    base_filenames = set()
+    for one_path in path.split(":"):
+        one_path = os.path.join(one_path, subdir)
+        if not os.path.exists(one_path):
+            logger.debug("Path %r does not exist; skipping", one_path)
+            continue
+        base_filenames.update(os.listdir(one_path))
+
+    for filename in sorted(base_filenames):
+        for one_path in path.split(":"):
+            pathname = os.path.join(one_path, subdir, filename)
+            logger.debug("Checking if %s exists as %s", filename, pathname)
+
+            if os.path.isfile(pathname):
+                entry = os.stat(pathname)
+                # Make sure script can be executed
+                if not stat.S_IXUSR & entry.st_mode:
+                    logger.error("Unable to execute script, check file mode: "
+                                 "%s", pathname)
+                # Make sure script is owned by root
+                elif entry.st_uid != 0 or entry.st_gid != 0:
+                    logger.error("Unable to execute script, check file perms: "
+                                 "%s", pathname)
+                else:
+                    script_list.append(pathname)
+                break
+
+    return script_list
+
+
+def parse_address_strings(addrs):
+    """Given a list of addresses, discard uninteresting ones, and sort the rest
+    into IPv4 vs IPv6"""
+    ip4addrs = []
+    ip6addrs = []
+    for addr in addrs:
+        if addr.startswith('127.') or \
+           addr.startswith('fe80:'):
+            continue
+        if ':' in addr:
+            ip6addrs.append(addr)
+        elif '.' in addr:
+            ip4addrs.append(addr)
+    return AddressList(ip4addrs, ip6addrs)
+
+
+def get_interface_data(iface):
+    """Return JSON-serializable data representing all state needed to run
+    hooks for the given interface"""
+    data = {'Type': iface.type, 'OperationalState': iface.operational,
+            'AdministrativeState': iface.administrative,
+            "InterfaceName": iface.name}
+    # Always collect what data we can.
+    data.update(get_networkctl_status(iface.name))
+    # The returned state may be different than what was read from
+    # 'networkctl list', so construct state based on th iface data.
+    # See Issue #24.
+    data['State'] = (data.get('OperationalState', '') + " (" +
+                     data.get('AdministrativeState', '') + ")")
+    if data.get('Type') == 'wlan':
+        data['ESSID'] = get_wlan_essid(iface.name)
+    return data
+
+
+class Dispatcher():
+    iface_names_by_idx = {}    # only changed on rescan
+    ifaces_by_name = {}        # updated on every state change
+
+    def __init__(self, script_dir=DEFAULT_SCRIPT_DIR):
+        self.script_dir = script_dir
+        self._interface_scan()
+
+    def __repr__(self):
+        return '<Dispatcher(%r)>' % (self.__dict__,)
+
+    def _interface_scan(self):
+        iface_list = get_networkctl_list()
+        # Append new interfaces, keeping old ones around to avoid hotplug race
+        # condition (issue #20)
+        for i in iface_list:
+            if i not in self.iface_names_by_idx:
+                self.iface_names_by_idx[i.idx] = i.name
+                self.ifaces_by_name[i.name] = i
+        logger.debug('Performed interface scan; state: %r', self)
+
+    def register(self, bus=None):
+        """Register this dispatcher to handle events from the given bus"""
+        if bus is None:
+            bus = dbus.SystemBus()
+        bus.add_signal_receiver(self._receive_signal,
+                                bus_name='org.freedesktop.network1',
+                                signal_name='PropertiesChanged',
+                                path_keyword='path')
+
+    def trigger_all(self):
+        """Immediately invoke all scripts for the last known (or initial)
+        states for each interface"""
+        logger.info('Triggering scripts for last-known state for all'
+                    'interfaces')
+        for iface_name, iface in self.ifaces_by_name.items():
+            logger.debug('Running immediate triggers for %r', iface)
+            try:
+                self.handle_state(iface_name,
+                                  administrative_state=iface.administrative,
+                                  operational_state=iface.operational,
+                                  force=True)
+            # pylint: disable=broad-except
+            except Exception:
+                logger.exception('Error handling initial for interface %r',
+                                 iface)
+
+    def get_scripts_list(self, state):
+        """Return scripts for the given state"""
+        return scripts_in_path(self.script_dir, state + ".d")
+
+    def _handle_one_state(self, iface_name, state, state_type, force=False):
+        """Process a single state change"""
+        try:
+            if state is None:
+                return
+
+            prior_iface = self.ifaces_by_name.get(iface_name)
+            if prior_iface is None:
+                logger.error('Attempting to handle state for unknown interface'
+                             ' %r', iface_name)
+                return
+
+            prior_state = getattr(prior_iface, state_type)
+            if force is False and state == prior_state:
+                logger.debug('No change represented by %s state %r for '
+                             'interface %r', state_type, state, iface_name)
+                return
+
+            new_iface = prior_iface._replace(**{state_type: state})
+            self.ifaces_by_name[new_iface.name] = new_iface
+
+            self.run_hooks_for_state(new_iface, state)
+        # pylint: disable=broad-except
+        except Exception:
+            logger.exception('Error handling notification for interface %r '
+                             'entering %s state %s', iface_name, state_type,
+                             state)
+
+    def handle_state(self, iface_name, administrative_state=None,
+                     operational_state=None, force=False):
+        self._handle_one_state(iface_name, administrative_state,
+                               'administrative', force=force)
+        self._handle_one_state(iface_name, operational_state, 'operational',
+                               force=force)
+
+    def run_hooks_for_state(self, iface, state):
+        """Run all hooks associated with a given state"""
+        # No actions to take? Do nothing.
+        script_list = self.get_scripts_list(state)
+        if not script_list:
+            logger.debug('Ignoring notification for interface %r entering '
+                         'state %r: no triggers', iface, state)
+            return
+
+        # Collect data
+        data = get_interface_data(iface)
+        (v4addrs, v6addrs) = parse_address_strings(data.get('Address', ()))
+
+        # Set script env. variables
+        script_env = dict(os.environ)
+        script_env.update({
+            'ADDR': (data.get('Address', ['']) + [''])[0],
+            'ESSID': data.get('ESSID', ''),
+            'IP_ADDRS': ' '.join(v4addrs),
+            'IP6_ADDRS': ' '.join(v6addrs),
+            'IFACE': iface.name,
+            'STATE': str(state),
+            'AdministrativeState': data.get('AdministrativeState', ''),
+            'OperationalState': data.get('OperationalState', ''),
+            'json': json.dumps(data, sort_keys=True),
+        })
+
+        # run all valid scripts in the list
+        logger.debug('Running triggers for interface %r entering state %r '
+                     'with environment %r', iface, state, script_env)
+        for script in script_list:
+            logger.info('Invoking %r for interface %s', script, iface.name)
+            ret = subprocess.Popen(script, env=script_env).wait()
+            if ret != 0:
+                logger.warning('Exit status %r from script %r invoked with '
+                               'environment %r', ret, script, script_env)
+
+    def _receive_signal(self, typ, data, _, path):
+        logger.debug('Signal: typ=%r, data=%r, path=%r', typ, data, path)
+        if typ != 'org.freedesktop.network1.Link':
+            logger.debug('Ignoring signal received with unexpected typ %r',
+                         typ)
+            return
+        if not path.startswith('/org/freedesktop/network1/link/_'):
+            logger.warning('Ignoring signal received with unexpected path %r',
+                           path)
+            return
+
+        # Detect necessity of reloading map *before* filtering ignored states
+        # http://thread.gmane.org/gmane.comp.sysutils.systemd.devel/36460
+        idx = path[32:]
+        idx = int(chr(int(idx[:2], 16)) + idx[2:])
+        if idx not in self.iface_names_by_idx:
+            # Try to reload configuration if even an ignored message is seen
+            logger.warning('Unknown index %r seen, reloading interface list',
+                           idx)
+            self._interface_scan()
+
+        try:
+            iface_name = self.iface_names_by_idx[idx]
+        except KeyError:
+            # Presumptive race condition: We reloaded, but the index is
+            # still invalid
+            logger.error('Unknown interface index %r seen even after reload',
+                         idx)
+            return
+
+        operational_state = data.get('OperationalState', None)
+        administrative_state = data.get('AdministrativeState', None)
+
+        if ((operational_state is not None) or
+                (administrative_state is not None)):
+            self.handle_state(iface_name,
+                              administrative_state=str(administrative_state)
+                              if administrative_state else None,
+                              operational_state=str(operational_state)
+                              if operational_state else None,)
+
+        # Handle interfaces that have been removed
+        if administrative_state == 'linger':
+            try:
+                self.iface_names_by_idx.pop(idx)
+                self.ifaces_by_name.pop(iface_name)
+            except KeyError:
+                logger.error('Unable to remove interface at index %r.', idx)
+
+
+def sd_notify(**kwargs):
+    """Systemd sd_notify implementation for Python.
+    Note: kwargs should contain the state to send to systemd"""
+    if not kwargs:
+        logger.error("sd_notify called with no state specified!")
+        return -errno.EINVAL
+    sock = None
+    try:
+        # Turn state, a dictionary, into a properly formatted string where
+        # each 'key=val' combo in the dictionary is separated by a \n
+        state_str = '\n'.join(['{0}={1}'.format(key, val) for (key, val)
+                               in kwargs.items()])
+        env = os.environ.get('NOTIFY_SOCKET', None)
+        if not env:
+            # Process was not invoked with systemd
+            return -errno.EINVAL
+        if env[0] not in ('/', '@'):
+            logger.warning("NOTIFY_SOCKET is set, but does not contain a "
+                           "legitimate value")
+            return -errno.EINVAL
+        if env[0] == '@':
+            env = '\0' + env[1:]
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+        if sock.sendto(bytearray(state_str, 'utf-8'), env) > 0:
+            return 1
+    # pylint: disable=broad-except
+    except Exception:
+        logger.exception("Ignoring unexpected error during sd_notify() "
+                         "invocation")
+
+    if sock:
+        sock.close()
+
+    return 0
+
+
+def parse_args(args):
+    """Parses arguments from command line"""
+    ap = argparse.ArgumentParser(description='networkd dispatcher daemon')
+    ap.add_argument('-S', '--script-dir', action='store',
+                    default=DEFAULT_SCRIPT_DIR,
+                    help='Location under which to look for scripts [default: '
+                    '%(default)s]')
+    ap.add_argument('-T', '--run-startup-triggers', action='store_true',
+                    help='Generate events reflecting preexisting state and '
+                    'behavior on startup [default: %(default)s]')
+    ap.add_argument('-v', '--verbose', action='count', default=0,
+                    help='Increment verbosity level once per call')
+    ap.add_argument('-q', '--quiet', action='count', default=0,
+                    help='Decrement verbosity level once per call')
+    return ap.parse_args(args)
+
+
+def main():
+    args = parse_args(sys.argv[1:])
+
+    verbosity_num = (args.verbose - args.quiet)
+    if verbosity_num <= -2:
+        log_level = logging.CRITICAL
+    elif verbosity_num <= -1:
+        log_level = logging.ERROR
+    elif verbosity_num == 0:
+        log_level = logging.WARNING
+    elif verbosity_num == 1:
+        log_level = logging.INFO
+    else:
+        log_level = logging.DEBUG
+    logging.basicConfig(level=log_level, format=LOG_FORMAT)
+
+    dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
+
+    if NETWORKCTL is None:
+        logger.critical('Unable to find networkctl command; cannot continue')
+        sd_notify(ERRNO=errno.ENOENT)
+        sys.exit(1)
+
+    dispatcher = Dispatcher(script_dir=args.script_dir)
+    dispatcher.register()
+
+    # After configuring the receiver, run initial operations
+    if args.run_startup_triggers:
+        dispatcher.trigger_all()
+
+    # main loop
+    mainloop = glib.MainLoop()
+    # Signal to systemd that service is runnning
+    sd_notify(READY=1)
+    logger.info('Startup complete')
+    mainloop.run()
+
+
+def init():
+    if __name__ == '__main__':
+        main()
+
+
+init()
+# vim: ai et sts=4 sw=4 ts=4

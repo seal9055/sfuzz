@@ -9,7 +9,6 @@ use std::thread;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::Mutex;
 
 use byteorder::{LittleEndian, WriteBytesExt};
 use num_format::{Locale, ToFormattedString};
@@ -28,6 +27,8 @@ fn malloc_hook(emu: &mut Emulator) -> Result<(), Fault> {
     }
 }
 
+/// Hook that makes use of sfuzz's mmu to perform a memory safe calloc operation, pretty much same
+/// as malloc apart from how the size is calculated
 fn calloc_hook(emu: &mut Emulator) -> Result<(), Fault> {
     let nmemb = emu.get_reg(Register::A1);
     let size  = emu.get_reg(Register::A2);
@@ -110,13 +111,11 @@ fn main() {
     // Thead-shared jit backing
     let jit = Arc::new(Jit::new(16 * 1024 * 1024));
 
-    let prevent_rc: Arc<Mutex<usize>> = Arc::new(Mutex::new(0));
-
     // Thread-shared structure that holds fuzz-inputs and coverage information
-    let mut corpus: Corpus = Corpus::default();
+    let corpus: Corpus = Corpus::new(16*1024*1024);
 
     // Each thread gets its own forked emulator. The jit-cache is shared between them however
-    let mut emu = Emulator::new(64 * 1024 * 1024, jit, prevent_rc);
+    let mut emu = Emulator::new(64 * 1024 * 1024, jit);
 
     // Statistics structure. This is kept local to the main thread and updated via message passing 
     // from the worker threads
@@ -128,13 +127,15 @@ fn main() {
     });
 
     // Initialize corpus with every file in ./files
+    let mut w = corpus.inputs.write();
     for filename in std::fs::read_dir("files").unwrap() {
         let filename = filename.unwrap().path();
         let data = std::fs::read(filename).unwrap();
 
         // Add the corpus input to the corpus
-        corpus.inputs.push(Input::new(data));
+        w.push(Input::new(data));
     }
+    drop(w);
 
     // Setup Stack
     let stack = emu.allocate(1024 * 1024, Perms::READ | Perms::WRITE)
@@ -161,8 +162,8 @@ fn main() {
     // Setup argc, argv & envp
     push!(0u64);    // Auxp
     push!(0u64);    // Envp
-    push!(0u64);    // Argv[3] (null to terminate array)
-    push!(argv1);   // Argv[1]
+    push!(0u64);    // Null-terminate Argv
+    push!(argv1);   // Argv[1] 
     push!(argv0);   // Argv[0]
     push!(1u64);    // Argc
 

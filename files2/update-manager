@@ -1,0 +1,119 @@
+#!/usr/bin/python3
+# update-manager.in - easy updating application
+#  
+#  Copyright (c) 2004-2008 Canonical
+#                2004-2008 Michael Vogt
+#                2004 Michiel Sikkes
+#  
+#  Author: Michiel Sikkes <michiel@eyesopened.nl>
+#          Michael Vogt <mvo@debian.org>
+# 
+#  This program is free software; you can redistribute it and/or 
+#  modify it under the terms of the GNU General Public License as 
+#  published by the Free Software Foundation; either version 2 of the
+#  License, or (at your option) any later version.
+# 
+#  This program is distributed in the hope that it will be useful,
+#  but WITHOUT ANY WARRANTY; without even the implied warranty of
+#  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#  GNU General Public License for more details.
+# 
+#  You should have received a copy of the GNU General Public License
+#  along with this program; if not, write to the Free Software
+#  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307
+#  USA
+
+from __future__ import print_function
+
+import gi
+gi.require_version("Gtk", "3.0")
+from gi.repository import Gtk
+from gi.repository import Gio
+
+import logging
+import os
+import sys
+import time
+
+from UpdateManager.UpdateManager import UpdateManager
+from UpdateManager.Core.utils import init_proxy
+from UpdateManager.UpdateManagerVersion import VERSION
+import locale
+import gettext
+
+from optparse import OptionParser
+
+if __name__ == "__main__":
+
+  Gtk.init(sys.argv)
+  Gtk.Window.set_default_icon_name("system-software-update")
+
+  #FIXME: Workaround a bug in optparser which doesn't handle unicode/str
+  #       correctly, see http://bugs.python.org/issue4391
+  #       Should be resolved by Python3
+  gettext.bindtextdomain("update-manager", "/usr/share/locale")
+  gettext.textdomain("update-manager")
+  translation = gettext.translation("update-manager", fallback=True)
+  if sys.version >= '3':
+    _ = translation.gettext
+  else:
+    _ = translation.ugettext
+
+  try:
+    locale.setlocale(locale.LC_ALL, "")
+  except:
+    pass
+
+  # Begin parsing of options
+  parser = OptionParser()
+  parser.add_option ("-V", "--version", action="store_true",
+                     dest="show_version", default=False,
+                     help=_("Show version and exit"))
+  parser.add_option ("--data-dir", "", 
+                     default="/usr/share/update-manager/",
+                     help=_("Directory that contains the data files"))
+  parser.add_option ("-c", "--check-dist-upgrades", action="store_true",
+                     dest="check_dist_upgrades", default=False,
+                     help=_("Check if a new Ubuntu release is available"))
+  parser.add_option ("-d", "--devel-release", action="store_true",
+                     dest="devel_release", default=False,
+                     help=_("If using the latest supported release, "
+                            "upgrade to the development release"))
+  parser.add_option ("-p","--proposed", action="store_true",
+                     dest="use_proposed", default=False,
+                     help=_("Upgrade using the latest proposed version of the release upgrader"))
+  parser.add_option ("--no-focus-on-map", action="store_true",
+                     dest="no_focus_on_map", default=False,
+                     # TRANSLATORS: this describes the "focus-on-map" gtk
+                     # property that controls if a new window takes the
+                     # input focus control when it is displayed for the
+                     # first time (see also the gtk devhelp page)
+                     help=_("Do not focus on map when starting"))
+  parser.add_option ("--no-update", action="store_true",
+                     dest="no_update", default=False,
+                     help=_("Do not check for updates when starting"))
+  parser.add_option ("", "--debug", action="store_true", default=False,
+                     help=_("Show debug messages"))
+
+  (options, args) = parser.parse_args()
+
+  #data_dir="/usr/share/update-manager/"
+  #data_dir="/tmp/xxx/share/update-manager/"
+  data_dir = os.path.normpath(options.data_dir)+"/"
+
+  if options.debug:
+    logging.basicConfig(level=logging.DEBUG)
+
+  if options.show_version:
+    print("%s: version %s" % (os.path.basename(sys.argv[0]), VERSION))
+    sys.exit(0)
+
+  # keep track when we run (for update-notifier)
+  settings =  Gio.Settings.new("com.ubuntu.update-manager")
+  settings.set_int64("launch-time", int(time.time()))
+  settings.set_int("launch-count", settings.get_int("launch-count") + 1)
+  init_proxy(settings)
+
+  app = UpdateManager(data_dir, options)
+  app.start_update()
+  Gtk.main()

@@ -1,0 +1,10 @@
+#!/bin/sh
+
+prog=$(basename $0 tui)
+
+dir=$(dirname $0)
+if [ "$dir" != "." ]; then
+   prog=$dir/$prog
+fi
+
+exec $prog --tui "$@"

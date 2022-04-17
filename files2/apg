@@ -1,0 +1,15 @@
+#!/bin/sh
+
+CONFFILE="/etc/apg.conf"
+
+# wrapper to give default parameters to apg if invoked without
+
+if [ -z "$*" ]; then
+  APG_PARM="-M NCL -a 0 -s -m 8 -x 12 -t"
+  if [ -e "$CONFFILE" ]; then
+    . $CONFFILE
+  fi
+  /usr/lib/apg/apg $APG_PARM
+else
+  /usr/lib/apg/apg $@
+fi

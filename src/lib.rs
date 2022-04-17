@@ -20,6 +20,7 @@ use std::sync::mpsc::Sender;
 use rustc_hash::FxHashMap;
 use rand::Rng;
 use fasthash::{xx::Hash32, FastHash};
+use parking_lot::RwLock;
 
 /// Small wrapper to easily handle unrecoverable errors without panicking
 pub fn error_exit(msg: &str) -> ! {
@@ -167,17 +168,26 @@ impl Input {
 }
 
 /// Structure that is meant to be shared between threads. Tracks fuzz inputs and coverage
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Corpus {
     /// Actual byte-backing for the fuzz-inputs
-    pub inputs: Vec<Input>,
+    pub inputs: RwLock<Vec<Input>>,
 
-    /// Coverage byte-map
+    /// Coverage map
     pub coverage: Vec<u8>,
 }
 
+impl Corpus {
+    pub fn new(size: usize) -> Self {
+        Self {
+            inputs:   RwLock::new(Vec::new()),
+            coverage: Vec::with_capacity(size),
+        }
+    }
+}
+
 /// Wrapper function for each emulator, takes care of running the emulator, memory resets, etc
-pub fn worker(_thr_id: usize, mut emu: Emulator, corpus: Arc<Corpus>, tx: Sender<Statistics>) {
+pub fn worker(_thr_id: usize, mut emu: Emulator, mut corpus: Arc<Corpus>, tx: Sender<Statistics>) {
     // Maintain an original copy of the passed in emulator so it can later be referenced
     let original = emu.fork();
 
@@ -202,14 +212,16 @@ pub fn worker(_thr_id: usize, mut emu: Emulator, corpus: Arc<Corpus>, tx: Sender
         emu.fuzz_input.clear();
 
         // Select random seed from corpus
-        let index = rng.gen_range(0..corpus.inputs.len());
-        emu.fuzz_input.extend_from_slice(&corpus.inputs[index].data);
+        let corpus_len = corpus.inputs.read().len();
+        let index = rng.gen_range(0..corpus_len);
+        emu.fuzz_input.extend_from_slice(&corpus.inputs.read()[index].data);
 
         // Mutate the previously chosen seed
         mutator.mutate(&mut emu.fuzz_input);
 
         // If a crash occured, save the input and increase crash count, otherwise just move on
-        match emu.run_jit().unwrap() {
+        let case_res = emu.run_jit(&mut corpus);
+        match case_res.0.unwrap() {
             Fault::ReadFault(v) => {
                 let h = Hash32::hash(&emu.fuzz_input);
                 let crash_dir = format!("crashes/read_{:x}_{}", v, h);
@@ -231,6 +243,12 @@ pub fn worker(_thr_id: usize, mut emu: Emulator, corpus: Arc<Corpus>, tx: Sender
             Fault::Exit => {},
             _ => unreachable!(),
         }
+
+        // This input found new coverage
+        if case_res.1 == true {
+            corpus.inputs.write().push(Input::new(emu.fuzz_input.clone()));
+        }
+
 
         count +=1;
 

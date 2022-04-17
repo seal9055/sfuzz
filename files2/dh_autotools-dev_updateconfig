@@ -1,0 +1,67 @@
+#!/usr/bin/perl -w
+
+=head1 NAME
+
+dh_autotools-dev_updateconfig - update B<config.sub> and B<config.guess>
+
+=cut
+
+use strict;
+use Debian::Debhelper::Dh_Lib;
+
+=head1 SYNOPSIS
+
+B<dh_autotools-dev_updateconfig> [S<I<debhelper options>>]
+
+=head1 DESCRIPTION
+
+B<Deprecated>: dh_autotools-dev_updateconfig and
+dh_autotools-dev_restoreconfig are deprecated and replaced by
+L<dh_update_autotools_config(1)> and L<dh_clean(1)> from debhelper.
+Please replace all uses of dh_autotools-dev_updateconfig with
+dh_update_autotools_config and then remove any use of
+dh_autotools-dev_restoreconfig.
+
+
+dh_autotools-dev_updateconfig replaces all occurances of B<config.sub> and B<config.guess>
+in the source tree by the up-to-date versions found in the autotools-dev package.
+The original files are backed up under the names B<config.sub.dh-orig> and
+B<config.guess.dh-orig>.
+
+=head1 EXAMPLES
+
+dh_autotools-dev_updateconfig is usually called indirectly in a rules file via the
+dh command.
+
+	%:
+		dh $@ --with autotools_dev
+
+It can also be direcly called at the start of the build (or configure)
+rule.
+
+	build:
+		dh_autotools-dev_updateconfig
+		./configure
+		$(MAKE)
+
+=cut
+
+init();
+
+deprecated_functionality('dh_autotools-dev_updateconfig is deprecated; please see dh_autotools-dev_updateconfig(1) for a replacement', 12);
+
+complex_doit('for c_g in `find -type f -name config.guess` ; do if ! test -e "$c_g.dh-orig" ; then mv -f "$c_g" "$c_g.dh-orig" ; cp -f /usr/share/misc/config.guess "$c_g" ; fi ; done');
+complex_doit('for c_s in `find -type f -name config.sub`   ; do if ! test -e "$c_s.dh-orig" ; then mv -f "$c_s" "$c_s.dh-orig" ; cp -f /usr/share/misc/config.sub   "$c_s" ; fi ; done');
+
+=head1 SEE ALSO
+
+L<debhelper(7)>, L<dh(1)>.
+
+This program is meant to be used together with debhelper.
+
+=head1 AUTHOR
+
+Fabian Greffrath <fabian+debian@greffrath.com>
+
+=cut
+

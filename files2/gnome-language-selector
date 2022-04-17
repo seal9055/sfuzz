@@ -1,0 +1,42 @@
+#! /usr/bin/python3
+
+import gettext
+
+from LanguageSelector.gtk.GtkLanguageSelector import GtkLanguageSelector
+from gettext import gettext as _
+from optparse import OptionParser
+from gi.repository import Gtk, Gio
+import sys
+
+is_running = False
+
+def on_activate (app, options):
+    global is_running
+    if is_running:
+        for window in app.get_windows():
+            if not window.is_active():
+                window.present()
+        return
+    is_running = True
+    instance = GtkLanguageSelector(datadir=options.datadir,
+                                   options=options)
+    app.add_window(instance.window_main)
+
+if __name__ == "__main__":
+    gettext.bindtextdomain("language-selector", "/usr/share/locale")
+    gettext.textdomain("language-selector")
+
+    parser = OptionParser()
+    parser.add_option("-n", "--no-verify-installed-lang-support",
+                      action="store_false", dest="verify_installed",
+                      default=True,
+                      help=_("don't verify installed language support"))
+    parser.add_option("-d", "--datadir",
+                      default="/usr/share/language-selector/",
+                      help=_("alternative datadir"))
+    (options, args) = parser.parse_args()
+
+    app = Gtk.Application(application_id="com.ubuntu.GnomeLanguageSelector",
+                          flags=Gio.ApplicationFlags.FLAGS_NONE)
+    app.connect("activate", on_activate, options)
+    app.run(None)

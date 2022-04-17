@@ -1,0 +1,289 @@
+#! /usr/bin/python2
+# -*- coding: utf-8 -*- vim: et ts=4 sw=4
+#
+# Copyright © 2010-2012 Piotr Ożarowski <piotr@debian.org>
+# Copyright © 2010 Canonical Ltd
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in
+# all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+# THE SOFTWARE.
+
+from __future__ import with_statement
+import logging
+import optparse
+import os
+import sys
+from os import environ, listdir
+from os.path import exists, isdir, islink, join
+from subprocess import PIPE, STDOUT, Popen
+sys.path.insert(1, '/usr/share/python/')
+
+from debpython.version import SUPPORTED, debsorted, vrepr, \
+        get_requested_versions, parse_vrange, getver
+from debpython import files as dpf
+from debpython.namespace import add_namespace_files
+from debpython.option import Option, compile_regexpr
+from debpython.pydist import PUBLIC_DIR_RE
+from debpython.tools import memoize
+
+# initialize script
+logging.basicConfig(format='%(levelname).1s: %(module)s:%(lineno)d: '
+                           '%(message)s')
+log = logging.getLogger(__name__)
+STDINS = {}
+WORKERS = {}
+
+"""TODO: move it to manpage
+Examples:
+    pycompile -p python-mako # package's public files
+    pycompile -p foo /usr/share/foo # package's private files
+    pycompile -p foo -V 2.6- /usr/share/foo # private files, Python >= 2.6
+    pycompile -V 2.6 /usr/lib/python2.6/dist-packages # python2.6 only
+    pycompile -V 2.6 /usr/lib/foo/bar.py # python2.6 only
+"""
+
+
+### EXCLUDES ###################################################
+@memoize
+def get_exclude_patterns_from_dir(name='/usr/share/python/bcep/'):
+    """Return patterns for files that shouldn't be bytecompiled."""
+    if not isdir(name):
+        return []
+
+    result = []
+    for fn in listdir(name):
+        with file(join(name, fn), 'r') as lines:
+            for line in lines:
+                type_, vrange, dname, pattern = line.split('|', 3)
+                vrange = parse_vrange(vrange)
+                versions = get_requested_versions(vrange, available=True)
+                if not versions:
+                    # pattern doesn't match installed Python versions
+                    continue
+                pattern = pattern.rstrip('\n')
+                if type_ == 're':
+                    pattern = compile_regexpr(None, None, pattern)
+                result.append((type_, versions, dname, pattern))
+    return result
+
+
+def get_exclude_patterns(directory='/', patterns=None, versions=None):
+    """Return patterns for files that shouldn't be compiled in given dir."""
+    if versions is not None:
+        # make sure it's a set (debsorted returns a list)
+        versions = set(versions)
+    if patterns:
+        if versions is None:
+            versions = set(SUPPORTED)
+        patterns = [('re', versions, directory, i) for i in patterns]
+    else:
+        patterns = []
+
+    for type_, vers, dname, pattern in get_exclude_patterns_from_dir():
+        # skip patterns that do not match requested directory
+        if not dname.startswith(directory[:len(dname)]):
+            continue
+        # skip patterns that do not match requested versions
+        if versions and not versions & vers:
+            continue
+        patterns.append((type_, vers, dname, pattern))
+    return patterns
+
+
+def filter_files(files, e_patterns, compile_versions):
+    """Generate (file, versions_to_compile) pairs."""
+    for fn in files:
+        valid_versions = set(compile_versions)  # all by default
+
+        for type_, vers, dname, pattern in e_patterns:
+            if type_ == 'dir' and fn.startswith(dname):
+                valid_versions = valid_versions - vers
+            elif type_ == 're' and pattern.match(fn):
+                valid_versions = valid_versions - vers
+
+            # move to the next file if all versions were removed
+            if not valid_versions:
+                break
+        if valid_versions:
+            public_dir = PUBLIC_DIR_RE.match(fn)
+            if public_dir:
+                yield fn, set([getver(public_dir.group(1))])
+            else:
+                yield fn, valid_versions
+
+
+### COMPILE ####################################################
+def py_compile(version, optimize, workers):
+    if not isinstance(version, basestring):
+        version = vrepr(version)
+    cmd = "/usr/bin/python%s%s -m py_compile -" \
+        % (version, ' -O' if optimize else '')
+    process = Popen(cmd, bufsize=1, shell=True,
+                    stdin=PIPE, stdout=PIPE, stderr=STDOUT, close_fds=True)
+    workers[version] = process  # keep the reference for .communicate()
+    stdin = process.stdin
+    while True:
+        filename = (yield)
+        stdin.write(filename + '\n')
+
+
+def compile(files, versions, force, optimize, e_patterns=None):
+    global STDINS, WORKERS
+    # start Python interpreters that will handle byte compilation
+    for version in versions:
+        if version not in STDINS:
+            coroutine = py_compile(version, optimize, WORKERS)
+            coroutine.next()
+            STDINS[version] = coroutine
+
+    # byte compile files
+    for fn, versions_to_compile in filter_files(files, e_patterns, versions):
+        cfn = fn + 'o' if optimize else 'c'
+        if not exists(fn):
+            # pycentral's hook should clean it later
+            if islink(fn):
+                log.warn('dangling symlink skipped: %s (%s)', fn,
+                          os.readlink(fn))
+            continue
+        if exists(cfn) and not force:
+            ftime = os.stat(fn).st_mtime
+            try:
+                ctime = os.stat(cfn).st_mtime
+            except os.error:
+                ctime = 0
+            if ctime > ftime:
+                continue
+        for version in versions_to_compile:
+            try:
+                pipe = STDINS[version]
+            except KeyError:
+                # `pycompile /usr/lib/` invoked, add missing worker
+                pipe = py_compile(version, optimize, WORKERS)
+                pipe.next()
+                STDINS[version] = pipe
+            pipe.send(fn)
+
+
+################################################################
+def main():
+    usage = '%prog [-V [X.Y][-][A.B]] DIR_OR_FILE [-X REGEXPR]\n' + \
+     '       %prog -p PACKAGE'
+    parser = optparse.OptionParser(usage, version='%prog 1.0',
+                                   option_class=Option)
+    parser.add_option('-v', '--verbose', action='store_true', dest='verbose',
+        help='turn verbose mode on')
+    parser.add_option('-q', '--quiet', action='store_false', dest='verbose',
+        default=False, help='be quiet')
+    parser.add_option('-f', '--force', action='store_true', dest='force',
+        default=False, help='force rebuild even if timestamps are up-to-date')
+    parser.add_option('-O', action='store_true', dest='optimize',
+        default=False, help="byte-compile to .pyo files")
+    parser.add_option('-p', '--package',
+        help='specify Debian package name whose files should be bytecompiled')
+    parser.add_option('-V', type='version_range', dest='vrange',
+        help="""force private modules to be bytecompiled with Python version
+from given range, regardless of the default Python version in the system.
+If there are no other options, bytecompile all public modules for installed
+Python versions that match given range.
+
+VERSION_RANGE examples: '2.5' (version 2.5 only), '2.5-' (version 2.5 or
+newer), '2.5-2.7' (version 2.5 or 2.6), '-3.0' (all supported 2.X versions)""")
+    parser.add_option('-X', '--exclude', action='append',
+        dest='regexpr', type='regexpr',
+        help='exclude items that match given REGEXPR. You may use this option \
+multiple times to build up a list of things to exclude.')
+
+    (options, args) = parser.parse_args()
+
+    if options.verbose or environ.get('PYCOMPILE_DEBUG') == '1':
+        log.setLevel(logging.DEBUG)
+        log.debug('argv: %s', sys.argv)
+        log.debug('options: %s', options)
+        log.debug('args: %s', args)
+    else:
+        log.setLevel(logging.WARN)
+
+    if options.regexpr and not args:
+        parser.error('--exclude option works with private directories '
+            'only, please use /usr/share/python/bcep to specify '
+            'public modules to skip')
+
+    if options.vrange and options.vrange[0] == options.vrange[1] and\
+       options.vrange != (None, None) and\
+       exists("/usr/bin/python%d.%d" % options.vrange[0]):
+        # specific version requested, use it even if it's not in SUPPORTED
+        versions = set(options.vrange[:1])
+    else:
+        versions = get_requested_versions(options.vrange, available=True)
+    if not versions:
+        log.error('Requested versions are not installed')
+        exit(3)
+
+    if options.package and args:  # package's private directories
+        # get requested Python version
+        compile_versions = debsorted(versions)[:1]
+        log.debug('compile versions: %s', versions)
+
+        pkg_files = tuple(dpf.from_package(options.package))
+        for item in args:
+            e_patterns = get_exclude_patterns(item, options.regexpr, \
+                                              compile_versions)
+            if not exists(item):
+                log.warn('No such file or directory: %s', item)
+            else:
+                log.debug('byte compiling %s using Python %s',
+                          item, compile_versions)
+                files = dpf.filter_directory(pkg_files, item)
+                compile(files, compile_versions, options.force,
+                        options.optimize, e_patterns)
+    elif options.package:  # package's public modules
+        # no need to limit versions here, version is hardcoded in path or
+        # via -V option
+        e_patterns = get_exclude_patterns()
+        files = dpf.from_package(options.package, extensions=('.py', '.so'))
+        files = dpf.filter_public(files, versions)
+        files = add_namespace_files(files, options.package, action=True)
+        files = dpf.filter_out_ext(files, ('.so',))
+        compile(files, versions,
+                options.force, options.optimize, e_patterns)
+    elif args:  # other directories/files
+        versions = debsorted(versions)[:1]
+        for item in args:
+            e_patterns = get_exclude_patterns(item, options.regexpr, versions)
+            files = dpf.from_directory(item, extensions=('.py', '.so'))
+            files = add_namespace_files(files, action=True)
+            files = dpf.filter_out_ext(files, ('.so',))
+            compile(files, versions,
+                    options.force, options.optimize, e_patterns)
+    else:
+        parser.print_usage()
+        exit(1)
+
+    # wait for all processes to finish
+    rv = 0
+    for process in WORKERS.itervalues():
+        child_output, child_unused = process.communicate()
+        if process.returncode not in (None, 0):
+            # FIXME: find out the package the file belongs to
+            sys.stderr.write(child_output)
+            rv = process.returncode
+    if rv != 0:
+        rv += 100
+    exit(rv)
+
+if __name__ == '__main__':
+    main()

@@ -1,0 +1,79 @@
+#!/usr/bin/python3
+
+# Extract the fields of a problem report into separate files into a new or
+# empty directory.
+#
+# Copyright (c) 2006 Canonical Ltd.
+# Author: Martin Pitt <martin.pitt@ubuntu.com>
+#
+# This program is free software; you can redistribute it and/or modify it
+# under the terms of the GNU General Public License as published by the
+# Free Software Foundation; either version 2 of the License, or (at your
+# option) any later version.  See http://www.gnu.org/copyleft/gpl.html for
+# the full text of the license.
+
+import sys, os, os.path, gettext, gzip
+from apport import unicode_gettext as _, fatal
+
+import problem_report
+
+
+def help():
+    print(_('Usage: %s <report> <target directory>') % sys.argv[0])
+
+
+gettext.textdomain('apport')
+
+if len(sys.argv) >= 2 and sys.argv[1] == '--help':
+    help()
+    sys.exit(0)
+
+if len(sys.argv) != 3:
+    help()
+    sys.exit(1)
+
+report = sys.argv[1]
+dir = sys.argv[2]
+
+# ensure that the directory does not yet exist or is empty
+try:
+    if os.path.isdir(dir):
+        if os.listdir(dir):
+            fatal(_('Destination directory exists and is not empty.'))
+    else:
+        os.mkdir(dir)
+except OSError as e:
+    fatal(str(e))
+
+bin_keys = []
+pr = problem_report.ProblemReport()
+if report == '-':
+    pr.load(sys.stdin, binary=False)
+else:
+    try:
+        if report.endswith('.gz'):
+            with gzip.open(report, 'rb') as f:
+                pr.load(f, binary=False)
+        else:
+            with open(report, 'rb') as f:
+                pr.load(f, binary=False)
+    except IOError as e:
+        fatal(str(e))
+for k in pr:
+    if pr[k] == '':
+        bin_keys.append(k)
+        continue
+    with open(os.path.join(dir, k), 'wb') as f:
+        if type(pr[k]) == str:
+            f.write(pr[k].encode('UTF-8'))
+        else:
+            f.write(pr[k])
+try:
+    if report.endswith('.gz'):
+        with gzip.open(report, 'rb') as f:
+            pr.extract_keys(f, bin_keys, dir)
+    else:
+        with open(report, 'rb') as f:
+            pr.extract_keys(f, bin_keys, dir)
+except IOError as e:
+    fatal(str(e))

@@ -47,7 +47,7 @@ pub struct Jit {
 
     pub lookup_arr: Box<[AtomicUsize]>,
 
-    pub cur_index: usize,
+    pub cur_index: AtomicUsize,
 }
 
 impl Jit {
@@ -58,7 +58,7 @@ impl Jit {
             lookup_arr: (0..(address_space_size + 3) / 4).map(|_| {
                 AtomicUsize::new(0)
             }).collect::<Vec<_>>().into_boxed_slice(),
-            cur_index: 0,
+            cur_index: AtomicUsize::new(0),
         }
     }
 
@@ -82,6 +82,17 @@ impl Jit {
         addr
     }
 
+    /// Overwrite code inserted into the jit to track coverage with nop-instructions
+    pub fn nop_coverage(&self, addr: usize) {
+        let mut jit = self.jit_backing.lock().unwrap();
+        let offset = addr - jit.0.as_ptr() as usize;
+
+        for i in 0..0xc {
+            jit.0[(i+offset)] = 0x90;
+        }
+
+    }
+
     /// Look up jit address corresponding to a translated instruction
     pub fn lookup(&self, pc: usize) -> Option<usize> {
         let addr = self.lookup_arr.get(pc / 4).unwrap().load(Ordering::SeqCst);
@@ -101,10 +112,17 @@ impl Jit {
         self.lookup_arr[pc / 4].store(cur_jit_addr + code.len(), Ordering::SeqCst);
     }
 
-    /// r12 : contains pointer to permissions map
-    /// r13 : contains pointer to memory map
-    /// r14 : contains pointer to memory mapped register array
-    /// r15 : contains pointer to jit lookup array
+    /// rax, rbx, rcx, rdx, rsp : in use by compiler
+    /// rdi, rsi, rbp : free
+    /// rsi : Bool to indicate that new coverage was found by this input
+    /// r8  : Coverage map
+    /// r9  : Current size of dirty list vector (could prob change vec size directly and save r9)
+    /// r10 : Dirty list
+    /// r11 : Dirty list bitmap
+    /// r12 : Permissions
+    /// r13 : Memory
+    /// r14 : Memory mapped register array
+    /// r15 : Jit lookup array
     pub fn compile(&self, 
                    irgraph: &IRGraph, 
                    hooks: &FxHashMap<usize, fn(&mut Emulator) -> Result<(), Fault>>, 
@@ -116,11 +134,10 @@ impl Jit {
 
         // Address of function start
         let init_pc = irgraph.instrs[0].pc.unwrap();
-        let mut pc = 0;
+        let mut pc = init_pc;
 
         // Temporary registers used to load spilled registers into
         let regs_64 = [rbx, rcx];
-
 
         //TODO early return to fix race condition bug
         if let Some(v) = self.lookup(init_pc) {
@@ -178,6 +195,14 @@ impl Jit {
             }
         }
 
+        /// Track new coverage detection
+        macro_rules! new_coverage {
+            ($pc: expr) => {
+                asm.mov(qword_ptr(r8 + (rsi*8)), pc as i32).unwrap();
+                asm.add(rsi, 1i32).unwrap();
+            }
+        }
+
         // Insert hook for addresses we want to hook with our own function and return
         if hooks.get(&init_pc).is_some() {
             jit_exit1!(3, init_pc);
@@ -194,16 +219,24 @@ impl Jit {
             return b;
         }
 
-        let mut first = true;
+        //let mut first = true;
         for instr in &irgraph.instrs {
             if let Some(v) = instr.pc {
                 pc = v;
-                if first {
-                    first = false;
-                } else {
-                    //jit_exit1!(4, v);
-                }
+                //if first {
+                //    first = false;
+                //} else {
+                //    //jit_exit1!(4, v);
+                //}
+
+                // This instruction requires a lookup entry to be inserted into lookup table
                 self.add_lookup(&asm.assemble(0x0).unwrap(), v);
+
+                // This instruction is the first instruction of a cfg block, so we need to track
+                // coverage
+                if compile_inputs.leaders.get(&v).is_some() {
+                    new_coverage!(pc);
+                }
             }
 
             match instr.op {
@@ -494,7 +527,9 @@ impl Jit {
                         0b0100000010 => {   /* Unsigned | DWord */
                             let r_out = get_reg_64!(vr_out, 1);
 
-                            asm.movzx(to_32(r_out), dword_ptr(r_in1 + r13)).unwrap();
+                            //println!("r_out: {:?}\nr_out_32: {:?}\nr_in1: {:?}\nr13: {:?}", r_out, 
+                            //         to_32(r_out), r_in1, r13);
+                            asm.mov(to_32(r_out), dword_ptr(r_in1 + r13)).unwrap();
 
                             // Save the result of the operation if necessary
                             if vr_out.is_spilled() {

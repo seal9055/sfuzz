@@ -1,0 +1,4 @@
+#! /bin/sh
+
+gnome-session-selector
+exec gnome-session

@@ -1,0 +1,191 @@
+#!/usr/bin/perl
+## ----------------------------------------------------------------------
+## Debian update-perl-sax-parsers version 0.3
+## ----------------------------------------------------------------------
+## Copyright (C) 2001-2003 Ardo van Rangelrooij
+## Copyright (C) 2007      Niko Tyni
+##
+## This is free software; see the GNU General Public Licence version 2
+## or later for copying conditions.  There is NO warranty.
+## ----------------------------------------------------------------------
+
+## ----------------------------------------------------------------------
+use strict;
+
+## ----------------------------------------------------------------------
+use File::Spec;
+use Getopt::Long;
+use XML::SAX;
+use XML::SAX::Debian;
+use File::Temp qw(tempfile);
+
+## ----------------------------------------------------------------------
+$0  =~ m|[^/]+$|;
+
+## ----------------------------------------------------------------------
+my $name = $&;
+
+## ----------------------------------------------------------------------
+my $add       = '';
+my @directory = ();
+my $file      = '';
+my $help      = '';
+my $quiet     = '';
+my $remove    = '';
+my $test      = '';
+my $update    = '';
+my $version   = '';
+my $ucf;
+my $priority;
+
+## ----------------------------------------------------------------------
+if ( ! GetOptions(
+		  'add=s'       => \$add,
+		  'directory=s' => \@directory,
+		  'file=s'      => \$file,
+		  'help'        => \$help,
+		  'quiet'       => \$quiet,
+		  'remove=s'    => \$remove,
+		  'test'        => \$test,
+		  'update'      => \$update,
+		  'version'     => \$version,
+		  'priority=i'  => \$priority,
+		  'ucf=i'       => \$ucf,
+		  )
+     )
+{
+    &usage;
+    exit 1;
+}
+
+
+## ----------------------------------------------------------------------
+if ( $version )
+{
+    &version;
+    exit 0;
+}
+
+## ----------------------------------------------------------------------
+if ( $help )
+{
+    &usage;
+    exit 0;
+}
+
+## ----------------------------------------------------------------------
+print STDERR "$name: test mode - Perl SAX parsers file will not be updated\n"
+    if $test && ! $quiet;
+
+## ----------------------------------------------------------------------
+# default priority is 50 unless --directory was specified
+# with --directory, default to 0 (no priority in the filenames)
+$priority = (@directory ? 0 : 50) if not defined $priority;
+
+## ----------------------------------------------------------------------
+my $PARSER_DETAILS_DIR  = "/var/lib/libxml-sax-perl/ParserDetails.d";
+push( @directory, $PARSER_DETAILS_DIR) if ! @directory;
+
+## ----------------------------------------------------------------------
+# use ucf by default if --file is not specified
+$ucf  = ($file ? 0 : 1) if not defined $ucf;
+
+## ----------------------------------------------------------------------
+my $PARSER_DETAILS_FILE = "/etc/perl/XML/SAX/ParserDetails.ini";
+$file = $PARSER_DETAILS_FILE if ! $file;
+
+## ----------------------------------------------------------------------
+unless (XML::SAX->can("_is_vendor_supplied")) {
+    print STDERR "$name: Non-vendor version of XML::SAX is installed.\n";
+    print STDERR "$name: Automatic registration of SAX parsers might not work.\n";
+}
+
+if ( $add )
+{
+    print "$name: Registering Perl SAX parser $add with priority $priority...\n"
+        unless $quiet;
+    
+    XML::SAX::Debian->save_parsers_debian( $add, $directory[0], $priority );
+}
+elsif ( $remove )
+{
+    print "$name: Unregistering Perl SAX parser $remove with priority $priority...\n"
+        unless $quiet;
+    
+    my $parser_file = $remove;
+    $parser_file = "${priority}-$parser_file" if $priority != 0;
+    $parser_file = File::Spec->catfile( $directory[0], $parser_file );
+    unlink( $parser_file );
+}
+elsif ( $update )
+{
+    print "$name: Updating overall Perl SAX parser modules info file...\n"
+        unless $quiet;
+
+    my ($handle, $tmpfile);
+
+    if ($ucf) {
+        ($handle, $tmpfile) = tempfile();
+        chmod 0644, $tmpfile or die("chmod $tmpfile: $!");
+    } else {
+        open( $handle, ">$file" )
+	        || die "Cannot write to $file: $!";
+    }
+    foreach my $directory ( @directory)
+    {
+	opendir( PARSER_DETAILS_DIR, $directory )
+	    || die "Cannot access $directory: $!";
+	my @files = sort readdir ( PARSER_DETAILS_DIR );
+	for my $parser_details ( @files )
+	{
+	    next if $parser_details =~ /^\.\.?$/; # skip . and ..
+	    open( PARSER_DETAILS, "$directory/$parser_details" )
+		|| die "Cannot read from $parser_details: $!";
+	    while ( <PARSER_DETAILS> ) { print $handle $_; }
+	    close( PARSER_DETAILS );
+	}
+	closedir( PARSER_DETAILS_DIR );
+    }
+    close( $handle );
+    if ($ucf) {
+        system("ucf", "--debconf-ok", "--sum-file",  "/var/lib/libxml-sax-perl/ParserDetails.ini.md5sum", $tmpfile, $file);
+        unlink $tmpfile or die("unlink $tmpfile: $!");
+    }
+}
+
+## ----------------------------------------------------------------------
+exit 0;
+
+## ----------------------------------------------------------------------
+sub usage
+{
+    print STDERR <<END;
+Usage:
+    $name <options> --add <parser_module>
+    $name <options> --remove <parser_module>
+    $name <options> --update
+
+Options:
+    --directory     Perl SAX parser module info file directory to be used
+                    as target for 'add'/'remove' or as sources for 'update'
+                    (default = '/var/lib/libxml-sax-perl/ParserDetails.d')
+    --priority      The priority of the parser to add. The parser with the
+                    highest priority is the default parser.
+    --file          Perl SAX parser module info file to be updated
+                    (default = '/etc/perl/XML/SAX/ParserDetails.ini')
+    --ucf X         Forcibly disable (X == 0) or enable (X != 0) the use
+                    of ucf with '--update'.
+    --help          display this help text (usage)
+    --quiet         be quiet
+    --test          do not modify any files, enable debugging mode
+    --version       display version number
+END
+}
+
+## ----------------------------------------------------------------------
+sub version
+{
+    print "Debian $name version 0.4\n";
+}
+
+## ----------------------------------------------------------------------

@@ -1,0 +1,14 @@
+#!/bin/sh
+
+replacement="gio tree"
+help="gio help tree"
+
+>&2 echo "This tool has been deprecated, use '$replacement' instead."
+>&2 echo "See '$help' for more info."
+>&2 echo
+
+if [ "$1" = "--help" ] || [ "$1" = "-h" ]; then
+  exec $help "$@:2"
+else
+  exec $replacement "$@"
+fi
