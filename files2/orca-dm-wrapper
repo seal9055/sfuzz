@@ -1,3 +1,0 @@
-#!/bin/sh
-orca --replace --no-setup --disable splash-window &
-exec $*
