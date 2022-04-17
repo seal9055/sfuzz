@@ -19,8 +19,25 @@ pub fn alloc_rwx(size: usize) -> &'static mut [u8] {
     }
 
     unsafe {
-        // Alloc RWX and MAP_PRIVATE | MAP_ANON
+        // Alloc RWX and MAP_PRIVATE | MAP_ANON on linux
         let ret = mmap(std::ptr::null_mut::<u8>(), size, 7, 34, -1, 0);
+        assert!(!ret.is_null());
+
+        std::slice::from_raw_parts_mut(ret, size)
+    }
+}
+
+/// Allocate RWX memory for Windows systems
+#[cfg(target_os="windows")]
+pub fn alloc_rwx(size: usize) -> &'static mut [u8] {
+    extern {
+        fn VirtualAlloc(lpAddress: *const u8, dwSize: usize,
+                        flAllocationType: u32, flProtect: u32) -> *mut u8;
+    }
+
+    unsafe {
+        // Alloc RWX and MAP_PRIVATE | MAP_ANON on windows
+        let ret = VirtualAlloc(0 as *const _, size, 0x1000 | 0x2000, 0x40);
         assert!(!ret.is_null());
 
         std::slice::from_raw_parts_mut(ret, size)
