@@ -7,28 +7,31 @@ Requires rustup nightly channel to compile
 #### Overview
 
 This project focuses on high performance RISC-V to x86\_64 binary translations for the purpose of
-fuzzing.
+fuzzing. The fuzzer now runs successfully against simple targets, the below task list represents
+what I believe is necessary for the fuzzer to become a viable choice for general purpose targets.
 <br>
 
 **Task List**
-- [X] RISCV instruction decoding
-- [X] ELF parser to map target process into emulator memory
-- [X] Basic memory management unit layout
-- [X] Emulator outline that enables starting threads and intercepting syscalls
-- [X] Lift code into intermediate representation
-- [ ] JIT Compile into x86\_64 machine code
-- [ ] Implement a good amount of commonly used syscalls in userland
-- [ ] MMU improvements (dirty bit memory resets, Read-on-Write memory protection, etc)
-- [ ] Codegen improvements (relevant compiler optimizations)
-- [ ] Start fuzzing :tada:
+- [X] Virtualized files for in-memory fuzzing
+- [X] Byte level permission checks + hooked/safe allocators (asan)
+- [X] 2 Different modes of block-level coverage (Hitcounts & No Hitcounts)
+- [ ] Deterministic mode to fuzz in small loops around target functions
+- [ ] Update mutators to include more options and to work based off coverage feedback
+- [ ] Crash deduping
+- [ ] Fix the remaining few JIT-bugs
+- [ ] Implement riscv-atomics so the JIT can deal with libc binaries as opposed to newlib
+- [ ] 2 Different modes of edge-level coverage (Hitcounts & No Hitcounts)
+- [ ] Crash exploration mode
+- [ ] CMP deconstruction to get past magic values and checksums
+- [ ] Proper benchmarking
+- [ ] Input-to-coverage mapping to focus mutators on useful bytes
 
-<br>
-The objective of this project is to highlight the benefits of using an emulated environment for
-fuzzing. Many previous projects exist on this topic, but they almost exclusively use the qemu
+The objective is to highlight the benefits of using an emulated environment for
+fuzzing. Many previous fuzzers based on emulation exist,, but they almost exclusively use the qemu
 emulation engine for the underlying emulation. While this engine does have a fairly mature
-just-in-time compiler, it is not meant for fuzzing. During fuzzing, we intend to run the same
+just-in-time compiler, it is not designed for fuzzing. During fuzzing, we intend to run the same
 process thousands of times per second. This makes room for specialized optimizations that qemu does
-not make strong use of, such as reusing the same memory space for each process run and only
+not make strong use of such as reusing the same memory space for each process run and only
 resetting a limited amount of memory via dirty bit mechanics.<br><br>
 
 Sfuzz starts by allocating a memory space for the main emulator and creating a JIT backing. Next

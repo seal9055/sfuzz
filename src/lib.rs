@@ -22,6 +22,8 @@ use rand::Rng;
 use fasthash::{xx::Hash32, FastHash};
 use parking_lot::RwLock;
 
+const SAVE_CRASHES: bool = false;
+
 /// Small wrapper to easily handle unrecoverable errors without panicking
 pub fn error_exit(msg: &str) -> ! {
     println!("{}", msg);
@@ -225,19 +227,19 @@ pub fn worker(_thr_id: usize, mut emu: Emulator, mut corpus: Arc<Corpus>, tx: Se
             Fault::ReadFault(v) => {
                 let h = Hash32::hash(&emu.fuzz_input);
                 let crash_dir = format!("crashes/read_{:x}_{}", v, h);
-                std::fs::write(&crash_dir, &emu.fuzz_input).unwrap();
+                if SAVE_CRASHES { std::fs::write(&crash_dir, &emu.fuzz_input).unwrap(); }
                 local_crashes += 1;
             },
             Fault::WriteFault(v) => {
                 let h = Hash32::hash(&emu.fuzz_input);
                 let crash_dir = format!("crashes/write_{:x}_{}", v, h);
-                std::fs::write(&crash_dir, &emu.fuzz_input).unwrap();
+                if SAVE_CRASHES { std::fs::write(&crash_dir, &emu.fuzz_input).unwrap(); }
                 local_crashes += 1;
             },
             Fault::OutOfBounds(v) => {
                 let h = Hash32::hash(&emu.fuzz_input);
                 let crash_dir = format!("crashes/oob_{:x}_{}", v, h);
-                std::fs::write(&crash_dir, &emu.fuzz_input).unwrap();
+                if SAVE_CRASHES { std::fs::write(&crash_dir, &emu.fuzz_input).unwrap(); }
                 local_crashes += 1;
             },
             Fault::Exit => {},
