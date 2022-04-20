@@ -1,6 +1,6 @@
 use crate::{
     irgraph::{IRGraph, Flag, Operation, Val},
-    emulator::{Emulator, Fault, Register as PReg},
+    emulator::{Emulator, Fault, Register as PReg, ExitType},
     mmu::Perms,
     config::{CovMethod, COVMETHOD},
 };
@@ -51,21 +51,30 @@ pub enum LibFuncs {
     STRCMP,
 }
 
-#[derive(Debug, Clone)]
-pub struct CompileInputs {
+#[derive(Debug)]
+pub struct CompileInputs<'a> {
+    /// Total size of allocated emulator memory
     pub mem_size: usize,
 
+    /// Starting address of each CFG block
     pub leaders: FxHashMap<usize, usize>,
+
+    /// pc - exit-type mapping. If the pc is hit in the JIT, the jit is left with a corresponding 
+    /// code
+    pub exit_conds: &'a mut FxHashMap<usize, ExitType>,
 }
 
 /// Holds the backing that contains the just-in-time compiled code
 #[derive(Debug)]
 pub struct Jit {
+    /// The actual RWX byte-backing that the JIT compiler writes x86 opcodes too
     pub jit_backing: Mutex<(&'static mut [u8], usize)>,
 
+    /// Lookup array that maps riscv addresses to x86 addresses
     pub lookup_arr: Box<[AtomicUsize]>,
 
-    pub cur_index: AtomicUsize,
+    /// Size of the injected snapshot stub
+    pub snapshot_inject_size: AtomicUsize,
 }
 
 impl Jit {
@@ -76,7 +85,7 @@ impl Jit {
             lookup_arr: (0..(address_space_size + 3) / 4).map(|_| {
                 AtomicUsize::new(0)
             }).collect::<Vec<_>>().into_boxed_slice(),
-            cur_index: AtomicUsize::new(0),
+            snapshot_inject_size: AtomicUsize::new(0),
         }
     }
 
@@ -101,11 +110,16 @@ impl Jit {
     }
 
     /// Overwrite code inserted into the jit to track coverage with nop-instructions
-    pub fn nop_coverage(&self, addr: usize) {
+    pub fn nop_code(&self, addr: usize, size: Option<usize>) {
         let mut jit = self.jit_backing.lock().unwrap();
         let offset = addr - jit.0.as_ptr() as usize;
 
-        for i in 0..0xc {
+        let len = match size {
+            Some(v) => v,
+            None => self.snapshot_inject_size.load(Ordering::SeqCst),
+        };
+
+        for i in 0..len {
             jit.0[(i+offset)] = 0x90;
         }
 
@@ -145,7 +159,7 @@ impl Jit {
                    irgraph: &IRGraph, 
                    hooks: &FxHashMap<usize, fn(&mut Emulator) -> Result<(), Fault>>, 
                    custom_lib: &FxHashMap<usize, LibFuncs>, 
-                   compile_inputs: &CompileInputs,
+                   compile_inputs: &mut CompileInputs,
                    ) -> Option<usize> {
 
         let mut asm = CodeAssembler::new(64).unwrap();
@@ -158,10 +172,10 @@ impl Jit {
         let regs_64 = [rbx, rcx];
 
         //TODO early return to fix race condition bug
-        if let Some(v) = self.lookup(init_pc) {
-            println!("HIT WITH {}", v);
-            return Some(v);
-        }
+        //if let Some(v) = self.lookup(init_pc) {
+        //    println!("HIT WITH {}", v);
+        //    return Some(v);
+        //}
 
         /// Returns the destination register for an operation
         macro_rules! get_reg_64 {
@@ -204,6 +218,31 @@ impl Jit {
             }
         }
 
+        /// Generate JIT-code to setup appropriate arguments for a snapshot before leaving JIT
+        /// Call + ret() used to get current rip. This is then passed on to the emulator using the 
+        /// rdx register alongside the size, which then takes care of zeroing out the area.
+        macro_rules! snapshot {
+            ($reentry: expr) => {
+                let start = asm.assemble(0x0).unwrap().len();
+                let mut here = asm.create_label();
+
+                asm.mov(rax, 5u64).unwrap();
+                asm.mov(rcx, $reentry as u64).unwrap();
+                asm.call(here).unwrap();
+
+                let off = asm.assemble(0x0).unwrap().len() - start;
+
+                asm.set_label(&mut here).unwrap();
+                asm.pop(rdx).unwrap();
+                asm.sub(rdx, off as i32).unwrap();
+                asm.ret().unwrap();
+
+                // Save size of the snapshot code injection that we have to later nop out
+                self.snapshot_inject_size.store(asm.assemble(0x0).unwrap().len() - start, 
+                                               Ordering::SeqCst);
+            }
+        }
+
         /// Jit exit with reentry address stored in a register
         macro_rules! jit_exit2 {
             ($code: expr, $reentry: expr) => {
@@ -214,7 +253,7 @@ impl Jit {
         }
 
         /// Track new coverage detection
-        macro_rules! new_coverage {
+        macro_rules! new_block_coverage {
             ($pc: expr) => {
                 asm.mov(qword_ptr(r8 + (rsi*8)), pc as i32).unwrap();
                 asm.add(rsi, 1i32).unwrap();
@@ -241,6 +280,8 @@ impl Jit {
         for instr in &irgraph.instrs {
             if let Some(v) = instr.pc {
                 pc = v;
+
+                // Debug-print register-state on each instruction
                 //if first {
                 //    first = false;
                 //} else {
@@ -254,7 +295,18 @@ impl Jit {
                 // coverage if coverage-tracking is enabled
                 if COVMETHOD == CovMethod::Block || COVMETHOD == CovMethod::BlockHitCounter {
                     if compile_inputs.leaders.get(&pc).is_some() {
-                        new_coverage!(pc);
+                        new_block_coverage!(pc);
+                    }
+                }
+
+                // Hit an exit condition, assemble appropriate instructions to handle the case
+                if let Some(code) = compile_inputs.exit_conds.get(&pc) {
+                    match code {
+                        ExitType::Snapshot => {
+                            compile_inputs.exit_conds.remove(&pc);
+                            snapshot!(pc);
+                        },
+                        _ => panic!("Don't yet support other exit conditions than snapshots"),
                     }
                 }
             }

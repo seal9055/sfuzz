@@ -15,7 +15,7 @@ what I believe is necessary for the fuzzer to become a viable choice for general
 - [X] Virtualized files for in-memory fuzzing
 - [X] Byte level permission checks + hooked/safe allocators (asan)
 - [X] 2 Different modes of block-level coverage (Hitcounts & No Hitcounts)
-- [ ] Deterministic mode to fuzz in small loops around target functions
+- [X] Persistent mode to fuzz in small loops around target functions
 - [ ] Update mutators to include more options and to work based off coverage feedback
 - [ ] Crash deduping
 - [ ] Fix the remaining few JIT-bugs
@@ -375,6 +375,31 @@ noticable.
 Once proper backend functions are in place to make use of the coverage information I plan to setup
 more comparisons between the coverage-tracking modes, and to implement edge-level coverage. For now
 this will suffice though.
+
+`2. Persistent-mode/Snapshot Fuzzing`
+
+This is mostly a performance optimization, but since it is very specific to fuzzing I figured this
+category probably suits it best. The basic idea behind persistent fuzzing is that the standard
+`fork() + execve()` routine used for fuzzing is slow. 
+
+One initial improvement afl uses is the forkserver optimization, where new processes are cloned
+from a copy-on-write master that is kept in the original state. This reduces a lot of the overhead,
+but still requires the expensive fork() syscall. A better alternative is to instrument the api with
+a custom-written, single-process loop, therefore removing all of the 'execve()/fork()' overhead. AFL
+mostly automates this, but still requires the user to write a small harness to designate where this
+loop should be positioned.
+
+In the case of sfuzz, since the fuzzer is running in an emulator, this becomes almost trivial. We
+can specify a specific address as the snapshot starting-point, run the JIT up to that point, and
+take a snapshot of the entire register/memory state. All future fuzz-cases can now use this snapshot
+as their starting location instead of having to restart the process from the very beginning. This
+can be used to avoid a lot of setup that is disconnected from our fuzzing input and thus greatly
+speed up the fuzzing process. This becomes especially useful when dealing with larger targets, for
+which we can take a snapshot right before the interesting function, set an exit-point right
+afterwards, and then fuzz this function in a very tight/fast loop.
+
+In the small test2.c target, placing a snapshot right after the open() call to skip the initial
+setup/file opening, already led to a 30-50% speedup depending on the number of active threads.
 
 <br>
 

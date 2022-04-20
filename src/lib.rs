@@ -210,13 +210,26 @@ impl Corpus {
     }
 }
 
+/// Run the emulator until a Snapshot fault is returned, at which point the injected code is 
+/// overwritten with nops, and the 'advanced' emulator is returned back to main
+pub fn snapshot(emu: &mut Emulator, mut corpus: Arc<Corpus>) {
+    let case_res = emu.run_jit(&mut corpus);
+    match case_res.0.unwrap() {
+        Fault::Snapshot => {
+            // Overwrite the snapshot code with nops so we dont break there again.
+            emu.jit.nop_code(emu.snapshot_addr, None);
+        },
+        _ => panic!("Failed to reach snapshot address, make sure it is trivially reachable"),
+    }
+}
+
 /// Wrapper function for each emulator, takes care of running the emulator, memory resets, etc
 pub fn worker(_thr_id: usize, mut emu: Emulator, mut corpus: Arc<Corpus>, tx: Sender<Statistics>) {
     // Maintain an original copy of the passed in emulator so it can later be referenced
     let original = emu.fork();
 
     // Data is sent to the main thread in batches to increase throughput
-    const BATCH_SIZE: usize = 10000;
+    const BATCH_SIZE: usize = 100000;
 
     // Keep track of how many cases are being executed
     let mut count = 0;
@@ -264,6 +277,7 @@ pub fn worker(_thr_id: usize, mut emu: Emulator, mut corpus: Arc<Corpus>, tx: Se
                 if SAVE_CRASHES { std::fs::write(&crash_dir, &emu.fuzz_input).unwrap(); }
                 local_crashes += 1;
             },
+            Fault::Snapshot => panic!("Hit snapshot during execution, this should not happen"),
             Fault::Exit => {},
             _ => unreachable!(),
         }

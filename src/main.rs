@@ -1,9 +1,9 @@
 use sfuzz::{
     mmu::Perms,
-    emulator::{Emulator, Register, Fault},
-    error_exit, load_elf_segments, worker,
+    emulator::{Emulator, Register, Fault, ExitType},
     jit::{Jit, LibFuncs},
-    Input, Corpus, Statistics
+    config::{SNAPSHOT_ADDR, NUM_THREADS},
+    Input, Corpus, Statistics, error_exit, load_elf_segments, worker, snapshot,
 };
 use std::thread;
 use std::sync::Arc;
@@ -127,6 +127,9 @@ fn main() {
         error_exit("Unrecoverable error while loading elf segments");
     });
 
+    // Messaging objects used to transfer statistics between worker threads and main thread
+    let (tx, rx): (Sender<Statistics>, Receiver<Statistics>) = mpsc::channel();
+
     // Initialize corpus with every file in ./files
     let mut w = corpus.inputs.write();
     for filename in std::fs::read_dir("files").unwrap() {
@@ -170,13 +173,24 @@ fn main() {
 
     // Insert various hooks into binary
     insert_hooks(&sym_map, &mut emu);
-    
+
     let corpus = Arc::new(corpus);
+
+    // Setup snapshot fuzzing
+    if let Some(addr) = SNAPSHOT_ADDR {
+        println!("Activated snapshot-based fuzzing");
+
+        // Insert snapshot fuzzer exit condition
+        emu.exit_conds.insert(addr, ExitType::Snapshot);
+
+        // Snapshot the emulator
+        snapshot(&mut emu, corpus.clone());
+    }
+
     let emu = Arc::new(emu);
-    let (tx, rx): (Sender<Statistics>, Receiver<Statistics>) = mpsc::channel();
 
     // Spawn worker threads to do the actual fuzzing
-    for thr_id in 0..16 {
+    for thr_id in 0..NUM_THREADS {
         let emu_cp = emu.fork();
         let corpus = corpus.clone();
         let tx = tx.clone();
@@ -203,11 +217,6 @@ fn main() {
                      (stats.total_cases / elapsed_time as usize).to_formatted_string(&Locale::en), 
                      stats.coverage,
                      stats.crashes);
-
-            //let v = corpus.coverage.lock().unwrap();
-            //for a in v.iter() {
-            //    println!("{:x?}", a);
-            //}
 
             last_time = Instant::now();
         }

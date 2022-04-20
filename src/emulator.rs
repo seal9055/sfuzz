@@ -118,6 +118,9 @@ pub enum Fault {
 
     /// Process called exit
     Exit,
+
+    /// Snapshot taken for deterministic fuzzing
+    Snapshot,
 }
 
 #[repr(C)]
@@ -134,20 +137,48 @@ impl Default for State {
     }
 }
 
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub enum ExitType {
+    /// Leave JIT to create snapshot at this address
+    Snapshot,
+
+    /// Leave JIT reporting success-case
+    Success,
+
+    /// Exit jit as if exit() was called
+    Exit,
+}
+
 #[derive(Copy, Debug, Clone, Eq, PartialEq)]
 pub enum FileType {
+    /// STDIN (0)
     STDIN,
+
+    /// STDOUT (1), basically ignored apart from debug-prints to console
     STDOUT,
+
+    /// STDERR (2), basically ignored apart from debug-prints to console
     STDERR,
+
+    /// The input we are fuzzing. It keeps its byte-backing in emulator.fuzz_input
     FUZZINPUT,
+
+    /// A standard file that is not 0/1/2 or the input we are fuzzing
     OTHER,
+
+    /// Invalid file
     INVALID,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct File {
+    /// Filetype of this file
     pub ftype:   FileType,
+
+    /// The byte-backing used by this file. Not required by 0/1/2, or the fuzzinput
     pub backing: Option<Vec<u8>>,
+
+    /// Cursor is used by the fuzz-input and potential other files that aren't 0/1/2
     pub cursor:  Option<usize>,
 }
 
@@ -194,6 +225,12 @@ pub struct Emulator {
 
     /// The fuzz input that is in use by the current case
     pub fuzz_input: Vec<u8>,
+
+    /// Map of exit conditions that would cause the fuzzer to prematurely exit
+    pub exit_conds: FxHashMap<usize, ExitType>,
+
+    /// JIT-backing-address at which the injected code for the snapshot is located
+    pub snapshot_addr: usize,
 }
 
 impl Emulator {
@@ -208,6 +245,8 @@ impl Emulator {
             functions:  FxHashMap::default(),
             jit,
             fuzz_input: Vec::new(),
+            exit_conds: FxHashMap::default(),
+            snapshot_addr: 0,
         }
     }
 
@@ -223,6 +262,8 @@ impl Emulator {
             functions:  self.functions.clone(),
             jit:        self.jit.clone(),
             fuzz_input: self.fuzz_input.clone(),
+            exit_conds: self.exit_conds.clone(),
+            snapshot_addr: 0,
         }
     }
 
@@ -235,6 +276,7 @@ impl Emulator {
         self.fd_list.extend_from_slice(&original.fd_list);
     }
 
+    /// Allocate a new file in the emulator
     pub fn alloc_file(&mut self, ftype: FileType) -> usize {
         let file = File::new(ftype);
         self.fd_list.push(file);
@@ -247,16 +289,6 @@ impl Emulator {
         if reg == Register::Zero { panic!("Can't set zero-register"); }
         self.state.regs[reg as usize] = val;
     }
-
-    /*
-    /// Set a register using assembly instructions in the jit
-    pub fn jit_set_reg(&mut self, asm: &mut CodeAssembler, dst: Register, src: AsmRegister64) {
-        let dst_off = self.get_reg_offset(dst);
-        if dst_off != 0 { // Don't do the write if destination is zero-register
-            asm.mov(ptr(r13+dst_off), src).unwrap();
-        }
-    }
-    */
 
     /// Get the value stored in a register
     pub fn get_reg(&self, reg: Register) -> usize {
@@ -343,6 +375,7 @@ impl Emulator {
         let mut tmp_cov: Vec<usize> = Vec::with_capacity(10000);
         let mut found_new_cov: bool = false;
         let mut cov_len: usize = 0;
+        let mut tmp: usize;
 
         loop {
             let pc = self.get_reg(Register::Pc);
@@ -355,23 +388,20 @@ impl Emulator {
             // or by compiling the function if it hasn't yet been compiled
             let jit_addr = match (*self.jit).lookup(pc) {
                 Option::None => {
-                    //self.jit.cur_index += 1;
-                    //let mut v = self.prevent_rc.lock().unwrap();
-
                     // IR instructions + labels at start of each control block
                     let irgraph = self.lift_func(pc).unwrap();
 
                     let leader_set: FxHashMap<usize, usize> = irgraph.get_leaders();
 
-                    let inputs: CompileInputs = CompileInputs {
+                    let mut inputs: CompileInputs = CompileInputs {
                         mem_size: self.memory.memory.len(),
                         leaders: leader_set,
+                        exit_conds: &mut self.exit_conds,
                     };
 
                     // Compile the previously lifted function
-                    let ret = self.jit.compile(&irgraph, &self.hooks, &self.custom_lib, &inputs);
-                    //*v += 1;
-
+                    let ret = self.jit.compile(&irgraph, &self.hooks, &self.custom_lib, 
+                                               &mut inputs);
                     ret.unwrap()
                 },
                 Some(addr) => addr
@@ -380,6 +410,7 @@ impl Emulator {
             let exit_code:  usize;
             let reentry_pc: usize;
 
+            // Invoke the JIT with appropriate arguments
             unsafe {
                 let func = *(&jit_addr as *const usize as *const fn());
 
@@ -389,6 +420,7 @@ impl Emulator {
                 call_dest = in(reg) func,
                 out("rax")   exit_code,
                 out("rcx")   reentry_pc,
+                out("rdx")   tmp,
                 inout("rsi") cov_len,
                 in("r8")     tmp_cov.as_ptr() as u64,
                 inout("r9")  self.memory.dirty_size,
@@ -420,7 +452,7 @@ impl Emulator {
 
                             // Overwrite the jit_coverage instructions with nop-instructions
                             let addr = self.jit.lookup(v as usize).unwrap();
-                            self.jit.nop_coverage(addr);
+                            self.jit.nop_code(addr, Some(0xc));
                         }
                         cov_len = 0;
                     }
@@ -449,6 +481,7 @@ impl Emulator {
             }
 
 
+            // Take action based on the exit code returned by JIT
             match exit_code {
                 1 => { /* Nothing special, just need to compile next code block */ },
                 2 => { /* SYSCALL */
@@ -492,7 +525,11 @@ impl Emulator {
                 },
                 4 => { /* Debug function, huge performance cost, only use while debugging */
                     self.debug_jit(reentry_pc);
-                }
+                },
+                5 => { /* JIT exited to setup a snapshot */
+                    self.snapshot_addr = tmp;
+                    return (Some(Fault::Snapshot), found_new_cov);
+                },
                 8 => { /* Attempted to read memory without read permissions */
                     return (Some(Fault::ReadFault(reentry_pc)), found_new_cov);
                 },
@@ -507,6 +544,7 @@ impl Emulator {
         }
     }
 
+    /// Debug-print register-state on each instruction
     fn debug_jit(&mut self, pc: usize) {
         let opcode: u32 = self.memory.read_at(pc, Perms::READ | Perms::EXECUTE).map_err(|_|
             Fault::ExecFault(pc)).unwrap();
