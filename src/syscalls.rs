@@ -4,7 +4,7 @@ use crate::emulator::{Emulator, Register, FileType::{self, STDOUT, STDERR, INVAL
 // Helper Structs for syscalls {{{
 
 #[repr(C)]
-#[derive(Default, Debug)]
+#[derive(Debug)]
 struct Stat {
     st_dev:     u64,
     st_ino:     u64,
@@ -51,20 +51,27 @@ pub fn fstat(emu: &mut Emulator) -> Option<Fault> {
     }
 
     if file.unwrap().ftype == FileType::FUZZINPUT {
-        let mut stat = Stat::default();
-        stat.st_dev = 0x803;
-        stat.st_ino = 0x81889;
-        stat.st_mode = 0x81a4;
-        stat.st_nlink = 0x1;
-        stat.st_uid = 0x3e8;
-        stat.st_gid = 0x3e8;
-        stat.st_rdev = 0x0;
-        stat.st_size = emu.fuzz_input.len() as i64;
-        stat.st_blksize = 0x1000;
-        stat.st_blocks = (emu.fuzz_input.len() as i64 + 511) / 512;
-        stat.st_atime = 0x5f0fe246;
-        stat.st_mtime = 0x5f0fe244;
-        stat.st_ctime = 0x5f0fe244;
+        let stat: Stat = Stat {
+            st_dev:           0x803,
+            st_ino:           0x81889,
+            st_mode:          0x81a4,
+            st_nlink:         0x1,
+            st_uid:           0x3e8,
+            st_gid:           0x3e8,
+            st_rdev:          0x0,
+            __pad1:           0,
+            st_size:          emu.fuzz_input.len() as i64,
+            st_blksize:       0x1000,
+            __pad2:           0,
+            st_blocks:        (emu.fuzz_input.len() as i64 + 511) / 512,
+            st_atime:         0x5f0fe246,
+            st_atimensec:     0,
+            st_mtime:         0x5f0fe244,
+            st_mtimensec:     0,
+            st_ctime:         0x5f0fe244,
+            st_ctimensec:     0,
+            __glibc_reserved: [0, 0],
+        };
 
         // Cast the stat structure to raw bytes
         let stat = unsafe {

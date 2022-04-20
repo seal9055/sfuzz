@@ -5,6 +5,7 @@ pub mod jit;
 pub mod syscalls;
 pub mod irgraph;
 pub mod mutator;
+pub mod config;
 
 extern crate iced_x86;
 
@@ -12,10 +13,12 @@ use elfparser::{self, ARCH64, ELFMAGIC, LITTLEENDIAN, TYPEEXEC, RISCV};
 use emulator::{Emulator, Register, Fault};
 use mutator::Mutator;
 use my_libs::sorted_vec::*;
+use config::{CovMethod, COVMETHOD};
 
 use std::process;
 use std::sync::Arc;
 use std::sync::mpsc::Sender;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use rustc_hash::FxHashMap;
 use rand::Rng;
@@ -153,6 +156,8 @@ pub struct Statistics {
     pub total_cases: usize,
 
     pub crashes: usize,
+
+    pub coverage: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -175,15 +180,32 @@ pub struct Corpus {
     /// Actual byte-backing for the fuzz-inputs
     pub inputs: RwLock<Vec<Input>>,
 
-    /// Coverage map
-    pub coverage: Vec<u8>,
+    /// Coverage map - used by block level coverage with hit-counter
+    pub coverage_map: Option<RwLock<FxHashMap<usize, usize>>>,
+
+    /// Coverage vector - used by block level coverage without hit-counter
+    pub coverage_vec: Option<RwLock<Vec<usize>>>,
+
+    /// Counter that keeps track of current coverage
+    pub cov_counter: AtomicUsize,
 }
 
 impl Corpus {
-    pub fn new(size: usize) -> Self {
+    pub fn new(_size: usize) -> Self {
+        let (coverage_vec, coverage_map) = match COVMETHOD {
+            CovMethod::Block => {
+                (Some(RwLock::new(Vec::new())), None)
+            },
+            CovMethod::BlockHitCounter => {
+                (None, Some(RwLock::new(FxHashMap::default())))
+            },
+            _ => (None, None)
+        };
         Self {
             inputs:   RwLock::new(Vec::new()),
-            coverage: Vec::with_capacity(size),
+            coverage_map,
+            coverage_vec,
+            cov_counter: AtomicUsize::new(0),
         }
     }
 }
@@ -247,11 +269,11 @@ pub fn worker(_thr_id: usize, mut emu: Emulator, mut corpus: Arc<Corpus>, tx: Se
         }
 
         // This input found new coverage
-        if case_res.1 == true {
+        if case_res.1 {
             corpus.inputs.write().push(Input::new(emu.fuzz_input.clone()));
         }
 
-
+        // New case completed
         count +=1;
 
         // Once `count` reaches `BATCH_SIZE`, send statistics to main thread and reset count
@@ -264,6 +286,7 @@ pub fn worker(_thr_id: usize, mut emu: Emulator, mut corpus: Arc<Corpus>, tx: Se
             let stats = Statistics {
                 total_cases: BATCH_SIZE,
                 crashes: local_crashes,
+                coverage: corpus.cov_counter.load(Ordering::SeqCst),
             };
 
             // Send stats over to the main thread

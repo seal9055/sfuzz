@@ -2,6 +2,7 @@ use crate::{
     irgraph::{IRGraph, Flag, Operation, Val},
     emulator::{Emulator, Fault, Register as PReg},
     mmu::Perms,
+    config::{CovMethod, COVMETHOD},
 };
 
 use rustc_hash::FxHashMap;
@@ -131,7 +132,7 @@ impl Jit {
 
     /// rax, rbx, rcx, rdx, rsp : in use by compiler
     /// rdi, rsi, rbp : free
-    /// rsi : Bool to indicate that new coverage was found by this input
+    /// rsi : Counts coverage pc's accumulated in at r8
     /// r8  : Coverage map
     /// r9  : Current size of dirty list vector (could prob change vec size directly and save r9)
     /// r10 : Dirty list
@@ -250,9 +251,11 @@ impl Jit {
                 self.add_lookup(&asm.assemble(0x0).unwrap(), v);
 
                 // This instruction is the first instruction of a cfg block, so we need to track
-                // coverage
-                if compile_inputs.leaders.get(&v).is_some() {
-                    new_coverage!(pc);
+                // coverage if coverage-tracking is enabled
+                if COVMETHOD == CovMethod::Block || COVMETHOD == CovMethod::BlockHitCounter {
+                    if compile_inputs.leaders.get(&pc).is_some() {
+                        new_coverage!(pc);
+                    }
                 }
             }
 
@@ -599,10 +602,8 @@ impl Jit {
                     // Save the result of the operation if necessary
                     if vr_out.is_spilled() {
                         asm.mov(ptr(r14 + vr_out.get_offset()), r_in1).unwrap();
-                    } else {
-                        if vr_out != vr_in1 {
+                    } else if vr_out != vr_in1 {
                             asm.mov(vr_out.convert_64(), r_in1).unwrap();
-                        }
                     }
                 },
                 Operation::Sub => {
@@ -642,10 +643,8 @@ impl Jit {
                     // Save the result of the operation if necessary
                     if vr_out.is_spilled() {
                         asm.mov(ptr(r14 + vr_out.get_offset()), r_in1).unwrap();
-                    } else {
-                        if vr_out != vr_in1 {
+                    } else if vr_out != vr_in1 {
                             asm.mov(vr_out.convert_64(), r_in1).unwrap();
-                        }
                     }
                 },
                 Operation::Shl => {
@@ -687,10 +686,8 @@ impl Jit {
                     // Save the result of the operation if necessary
                     if vr_out.is_spilled() {
                         asm.mov(ptr(r14 + vr_out.get_offset()), r_in1).unwrap();
-                    } else {
-                        if vr_out != vr_in1 {
+                    } else if vr_out != vr_in1 {
                             asm.mov(vr_out.convert_64(), r_in1).unwrap();
-                        }
                     }
                 },
                 Operation::Shr => {
@@ -732,10 +729,8 @@ impl Jit {
                     // Save the result of the operation if necessary
                     if vr_out.is_spilled() {
                         asm.mov(ptr(r14 + vr_out.get_offset()), r_in1).unwrap();
-                    } else {
-                        if vr_out != vr_in1 {
+                    } else if vr_out != vr_in1 {
                             asm.mov(vr_out.convert_64(), r_in1).unwrap();
-                        }
                     }
                 },
                 Operation::Sar => {
@@ -777,10 +772,8 @@ impl Jit {
                     // Save the result of the operation if necessary
                     if vr_out.is_spilled() {
                         asm.mov(ptr(r14 + vr_out.get_offset()), r_in1).unwrap();
-                    } else {
-                        if vr_out != vr_in1 {
+                    } else if vr_out != vr_in1 {
                             asm.mov(vr_out.convert_64(), r_in1).unwrap();
-                        }
                     }
                 },
                 Operation::And => {
@@ -801,10 +794,8 @@ impl Jit {
                     // Save the result of the operation if necessary
                     if vr_out.is_spilled() {
                         asm.mov(ptr(r14 + vr_out.get_offset()), r_in1).unwrap();
-                    } else {
-                        if vr_out != vr_in1 {
+                    } else if vr_out != vr_in1 {
                             asm.mov(vr_out.convert_64(), r_in1).unwrap();
-                        }
                     }
                 },
                 Operation::Xor => {
@@ -825,10 +816,8 @@ impl Jit {
                     // Save the result of the operation if necessary
                     if vr_out.is_spilled() {
                         asm.mov(ptr(r14 + vr_out.get_offset()), r_in1).unwrap();
-                    } else {
-                        if vr_out != vr_in1 {
+                    } else if vr_out != vr_in1 {
                             asm.mov(vr_out.convert_64(), r_in1).unwrap();
-                        }
                     }
                 },
                 Operation::Or => {
@@ -849,10 +838,8 @@ impl Jit {
                     // Save the result of the operation if necessary
                     if vr_out.is_spilled() {
                         asm.mov(ptr(r14 + vr_out.get_offset()), r_in1).unwrap();
-                    } else {
-                        if vr_out != vr_in1 {
+                    } else if vr_out != vr_in1 {
                             asm.mov(vr_out.convert_64(), r_in1).unwrap();
-                        }
                     }
                 },
                 Operation::Slt => {
@@ -886,10 +873,8 @@ impl Jit {
                     // Save the result of the operation if necessary
                     if vr_out.is_spilled() {
                         asm.mov(ptr(r14 + vr_out.get_offset()), rcx).unwrap();
-                    } else {
-                        if vr_out != vr_in1 {
+                    } else if vr_out != vr_in1 {
                             asm.mov(vr_out.convert_64(), rcx).unwrap();
-                        }
                     }
                     asm.pop(r15).unwrap();
                 },

@@ -25,6 +25,7 @@ what I believe is necessary for the fuzzer to become a viable choice for general
 - [ ] CMP deconstruction to get past magic values and checksums
 - [ ] Proper benchmarking
 - [ ] Input-to-coverage mapping to focus mutators on useful bytes
+- [ ] Replace assembler to increase compile time's
 
 The objective is to highlight the benefits of using an emulated environment for
 fuzzing. Many previous fuzzers based on emulation exist,, but they almost exclusively use the qemu
@@ -132,7 +133,7 @@ Riscv compiler/tooling:
     libexpat-dev
     git clone https://github.com/riscv-collab/riscv-gnu-toolchain && cd riscv-gnu-toolchain
     ./configure --prefix=/opt/riscv --with-arch=rv64i
-    sudo make -j
+    sudo make
 Debugger:
     gdb-multiarch
 ```
@@ -343,8 +344,39 @@ mov rcx, [r14 + r2_offset]
 add rbx, rcx
 mov [r14 + r3_offset], rbx
 ```
+<br>  
 
-<br><br>
+#### Fuzzing
+
+`1. Coverage Tracking`
+
+This fuzzer currently implements 2 different coverage tracking methods. Standard block level
+coverage, and block level coverage with hit-counters (tracking how often each block is hit).
+
+Standard block-level coverage without hit-counters converges to 0 performance costs. It initially
+has some costs while the fuzzer finds a lot of new coverage since this data needs to be shared
+between threads. As fuzzers get deeper into programs however, new coverage events become much rarer,
+resulting in this cost being eliminated. Additionally, since we only need to track each block hit
+once, the coverage tracking events in the JIT are overwritten with nop's once triggered so they are
+basically free as well. These 2 points result in the minimal cost of block-level coverage.
+
+Hit-counter block-coverage in comparison results in a pretty heavy 30-35% performance decrease. This
+may be worth it for some cases if the fuzzer can make good use of this information, but as Fioraldi 
+et al demonstrated, it can sometimes also harm the fuzzer [10].
+
+The performance hit occurs because the coverage-map is shared between threads, so whenever covarage 
+is supposed to be updated, the lock needs to be grabbed, thus slowing down execution. Unlike the
+variant without hit-count, these need to be done on every block hit, and not just when a previously
+unencountered block is hit, which means that it never has the ability to become cheap. This is 
+partially mitigated by buffering the coverage data locally, and just moving on with execution if 
+the lock is not currently available instead of waiting for it to free up, but the slowdown remains
+noticable.
+
+Once proper backend functions are in place to make use of the coverage information I plan to setup
+more comparisons between the coverage-tracking modes, and to implement edge-level coverage. For now
+this will suffice though.
+
+<br>
 
 #### Performance Measurements
 
@@ -577,4 +609,5 @@ for (reg, interval) in live_intervals { // in order of increasing starting point
 * RISCV User ISA specification
 * AddressSanitizer: A Fast Address Sanity Checker
     https://static.googleusercontent.com/media/research.google.com/en//pubs/archive/37752.pdf
-* 
+
+[10]  https://www.s3.eurecom.fr/docs/fuzzing22_fioraldi_report.pdf

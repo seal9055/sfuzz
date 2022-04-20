@@ -9,6 +9,7 @@ use std::thread;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::atomic::Ordering;
 
 use byteorder::{LittleEndian, WriteBytesExt};
 use num_format::{Locale, ToFormattedString};
@@ -192,14 +193,21 @@ fn main() {
         let elapsed_time = start.elapsed().as_secs_f64();
         stats.total_cases += received.total_cases;
         stats.crashes += received.crashes;
+        stats.coverage = corpus.cov_counter.load(Ordering::SeqCst);
 
         // Print out updated statistics every second
         if last_time.elapsed() >= Duration::from_millis(1000) {
-            println!("[{:8.2}] fuzz cases: {:12} : fcps: {:8} : crashes: {:8}", 
+            println!("[{:8.2}] fuzz cases: {:12} : fcps: {:8} : coverage: {:6} : crashes: {:8}", 
                      elapsed_time, 
                      stats.total_cases.to_formatted_string(&Locale::en),
                      (stats.total_cases / elapsed_time as usize).to_formatted_string(&Locale::en), 
+                     stats.coverage,
                      stats.crashes);
+
+            //let v = corpus.coverage.lock().unwrap();
+            //for a in v.iter() {
+            //    println!("{:x?}", a);
+            //}
 
             last_time = Instant::now();
         }

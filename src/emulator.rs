@@ -5,13 +5,15 @@ use crate::{
     jit::{Jit, LibFuncs, CompileInputs},
     irgraph::{IRGraph, Flag},
     emulator::FileType::{STDIN, STDOUT, STDERR},
+    config::{CovMethod, COVMETHOD},
     syscalls, Corpus, error_exit,
 };
 
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::arch::asm;
 use std::collections::BTreeMap;
-use std::ptr::write_volatile;
+//use std::ptr::write_volatile;
 
 use rustc_hash::FxHashMap;
 use iced_x86::code_asm::*;
@@ -214,7 +216,7 @@ impl Emulator {
     pub fn fork(&self) -> Self {
         Emulator {
             memory:     self.memory.fork(),
-            state:      self.state.clone(),
+            state:      self.state,
             hooks:      self.hooks.clone(),
             custom_lib: self.custom_lib.clone(),
             fd_list:    self.fd_list.clone(),
@@ -338,8 +340,9 @@ impl Emulator {
     /// code. It performs an appropriate operation based on the exit code and then continues with
     /// the loop to reenter the jit.
     pub fn run_jit(&mut self, corpus: &mut Arc<Corpus>) -> (Option<Fault>, bool) {
-        let mut tmp_cov: Vec<u64> = Vec::with_capacity(500);
+        let mut tmp_cov: Vec<usize> = Vec::with_capacity(10000);
         let mut found_new_cov: bool = false;
+        let mut cov_len: usize = 0;
 
         loop {
             let pc = self.get_reg(Register::Pc);
@@ -376,8 +379,6 @@ impl Emulator {
 
             let exit_code:  usize;
             let reentry_pc: usize;
-            tmp_cov.clear();
-            let mut cov_len: usize = 0;
 
             unsafe {
                 let func = *(&jit_addr as *const usize as *const fn());
@@ -405,33 +406,48 @@ impl Emulator {
 
             self.set_reg(Register::Pc, reentry_pc);
 
-            // This means we found new coverage in this input
-            if tmp_cov.len() > 0 {
-                found_new_cov = true;
+            // Different forms of supported coverage tracking
+            match COVMETHOD {
+                CovMethod::Block => { /* Block level coverage without a hit-counter */
+                    if !tmp_cov.is_empty() {
+                        // New coverage hit
+                        found_new_cov = true;
+                        corpus.cov_counter.fetch_add(1, Ordering::SeqCst);
+                        let mut cov_vec = corpus.coverage_vec.as_ref().unwrap().write();
 
-                for v in tmp_cov.pop() {
-                    unsafe {
-                        // Track each new coverage in map
-                        let cov_index: *mut u64 = ((corpus.coverage.as_ptr() as u64) + 
-                                                   (v as u64)) as *mut u64;
-                        write_volatile(cov_index, 1);
+                        while let Some(v) = tmp_cov.pop() {
+                            cov_vec.push(v);
 
-                        // Overwrite the jit_coverage instructions with nop-instructions
-                        let addr = self.jit.lookup(v as usize).unwrap();
-                        self.jit.nop_coverage(addr);
+                            // Overwrite the jit_coverage instructions with nop-instructions
+                            let addr = self.jit.lookup(v as usize).unwrap();
+                            self.jit.nop_coverage(addr);
+                        }
+                        cov_len = 0;
                     }
-                }
+                },
+                CovMethod::BlockHitCounter => { /* Block level coverage with hit-counter */
+                    if !tmp_cov.is_empty() {
+                        if let Some(mut cov_map) = corpus.coverage_map.as_ref()
+                            .unwrap().try_write() {
+                            while let Some(v) = tmp_cov.pop() {
+                                if let Some(e) = cov_map.get_mut(&v) {
+                                    // Old coverage hit, increment counter
+                                    *e += 1;
+                                } else {
+                                    // New coverage hit
+                                    corpus.cov_counter.fetch_add(1, Ordering::SeqCst);
+                                    found_new_cov = true;
+                                    cov_map.insert(v, 1);
+                                }
+                            }
+                            cov_len = 0;
+                        }
+                    }
+                },
+                CovMethod::None => {},
+                _ => panic!("Coverage Method not implemented"),
             }
 
-            //if reentry_pc == 0xa265c {
-            //    let v = self.state.regs[Register::A0 as usize];
-            //    let a = self.state.regs[Register::A2 as usize];
-            //    println!("A2 is: {:#0X}", a);
-            //    for i in 0..16 {
-            //        println!("Mem is: {:?}", self.memory.memory[a+i as usize]);
-            //    }
-            //    panic!("");
-            //}
 
             match exit_code {
                 1 => { /* Nothing special, just need to compile next code block */ },

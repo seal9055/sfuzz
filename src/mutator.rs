@@ -17,7 +17,7 @@ impl Mutator {
         }
     }
 
-    pub fn mutate(&mut self, input: &mut Vec<u8>) {
+    pub fn mutate(&mut self, input: &mut [u8]) {
         let input_length = input.len();
 
         for _ in 0..self.rng.gen_range(0..8) {
