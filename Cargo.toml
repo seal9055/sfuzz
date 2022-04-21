@@ -12,13 +12,12 @@ panic = 'abort'
 elfparser = { git = "https://github.com/seal9055/local_crates/", branch = "main" }
 my_libs = { git = "https://github.com/seal9055/local_crates/", branch = "main" }
 rustc-hash = "1.1.0"
-petgraph = "0.6.0"
 num-traits = "0.2.14"
 byteorder = "1.4.3"
-rand = "0.8.4"
 fasthash = "0.4.0"
 num-format = "0.4.0"
 parking_lot = "0.12.0"
+rand_xoshiro = "0.6.0"
 
 [dependencies.iced-x86]
 version = "1.15.0"

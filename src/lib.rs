@@ -21,9 +21,11 @@ use std::sync::mpsc::Sender;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use rustc_hash::FxHashMap;
-use rand::Rng;
 use fasthash::{xx::Hash32, FastHash};
 use parking_lot::RwLock;
+
+use rand_xoshiro::Xoroshiro64Star;
+use rand_xoshiro::rand_core::{SeedableRng, RngCore};
 
 const SAVE_CRASHES: bool = false;
 
@@ -164,12 +166,16 @@ pub struct Statistics {
 pub struct Input {
     /// Raw bytes stored in this input
     data: Vec<u8>,
+
+    /// Weight of this input, used to determine its priority during seed selection
+    weight: usize,
 }
 
 impl Input {
     pub fn new(data: Vec<u8>) -> Self {
         Self {
             data: data.to_vec(),
+            weight: 200,
         }
     }
 }
@@ -191,6 +197,7 @@ pub struct Corpus {
 }
 
 impl Corpus {
+    /// Start a new corpus. Initialize fields based on what type of coverage method is in use.
     pub fn new(_size: usize) -> Self {
         let (coverage_vec, coverage_map) = match COVMETHOD {
             CovMethod::Block => {
@@ -208,6 +215,27 @@ impl Corpus {
             cov_counter: AtomicUsize::new(0),
         }
     }
+
+    /// Select a seed from the corpus that should be used for the next fuzz input
+    pub fn select_seed(&self, mut index: usize, rng: &mut Xoroshiro64Star) -> Option<usize> {
+        let inputs = self.inputs.read();
+        let mut control: usize;
+        let len = inputs.len();
+
+        loop {
+            control = (rng.next_u32() as usize) % 1000;
+            if inputs[index].weight > control {
+                break;
+            }
+            index = (index + 1) % len;
+        };
+        Some(index)
+    }
+
+    /// Update an inputs weight based on its performance in fuzz cases
+    pub fn update_input_weight(&self, index: usize) {
+
+    }
 }
 
 /// Run the emulator until a Snapshot fault is returned, at which point the injected code is 
@@ -218,6 +246,8 @@ pub fn snapshot(emu: &mut Emulator, mut corpus: Arc<Corpus>) {
         Fault::Snapshot => {
             // Overwrite the snapshot code with nops so we dont break there again.
             emu.jit.nop_code(emu.snapshot_addr, None);
+            println!("Snapshot taken");
+
         },
         _ => panic!("Failed to reach snapshot address, make sure it is trivially reachable"),
     }
@@ -235,7 +265,7 @@ pub fn worker(_thr_id: usize, mut emu: Emulator, mut corpus: Arc<Corpus>, tx: Se
     let mut count = 0;
 
     // Initialize rng to be used for random seed selection and other purposes
-    let mut rng = rand::thread_rng();
+    let mut rng = Xoroshiro64Star::seed_from_u64(0);
 
     // Initialize a mutator that will be in charge of randomly corrupting input
     let mut mutator = Mutator::new(rng.clone());
@@ -243,15 +273,17 @@ pub fn worker(_thr_id: usize, mut emu: Emulator, mut corpus: Arc<Corpus>, tx: Se
     // Locally count the number of crashes
     let mut local_crashes = 0;
 
+    // Current index into the input array of the corpus
+    let mut input_index = 0;
+
     loop {
         // Reset the emulator state
         emu.reset(&original);
         emu.fuzz_input.clear();
 
-        // Select random seed from corpus
-        let corpus_len = corpus.inputs.read().len();
-        let index = rng.gen_range(0..corpus_len);
-        emu.fuzz_input.extend_from_slice(&corpus.inputs.read()[index].data);
+        // Seed selection
+        input_index = corpus.select_seed(input_index, &mut rng).unwrap();
+        emu.fuzz_input.extend_from_slice(&corpus.inputs.read()[input_index].data);
 
         // Mutate the previously chosen seed
         mutator.mutate(&mut emu.fuzz_input);
@@ -281,6 +313,8 @@ pub fn worker(_thr_id: usize, mut emu: Emulator, mut corpus: Arc<Corpus>, tx: Se
             Fault::Exit => {},
             _ => unreachable!(),
         }
+
+        corpus.update_input_weight(input_index);
 
         // This input found new coverage
         if case_res.1 {
