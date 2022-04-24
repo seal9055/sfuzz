@@ -88,7 +88,7 @@ impl From<u32> for Register {
 
 /// Various faults that can occur during program execution. These can be syscalls, bugs, or other
 /// non-standard behaviors that require kernel involvement
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Hash, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Fault {
     /// Syscall
     Syscall,

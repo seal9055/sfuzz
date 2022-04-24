@@ -16,12 +16,13 @@ what I believe is necessary for the fuzzer to become a viable choice for general
 - [X] Byte level permission checks + hooked/safe allocators (asan)
 - [X] 2 Different modes of block-level coverage (Hitcounts & No Hitcounts)
 - [X] Persistent mode to fuzz in small loops around target functions
+- [X] Crash deduping
 - [ ] Seed Scheduling
 - [ ] Update mutators to include more options and to work based off coverage feedback
-- [ ] Crash deduping
 - [ ] Fix the remaining few JIT-bugs
 - [ ] Implement riscv-atomics so the JIT can use libc instead of newlib
 - [ ] 2 Different modes of edge-level coverage (Hitcounts & No Hitcounts)
+
 - [ ] Crash exploration mode
 - [ ] CMP deconstruction to get past magic values and checksums
 - [ ] Proper benchmarking

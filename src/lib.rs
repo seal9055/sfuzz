@@ -155,10 +155,16 @@ pub fn load_elf_segments(filename: &str, emu_inst: &mut Emulator)
 /// Holds various information related to tracking statistics for the fuzzer
 #[derive(Default, Debug)]
 pub struct Statistics {
+    /// Total number of fuzz cases
     pub total_cases: usize,
 
+    /// Total crashes
     pub crashes: usize,
 
+    /// Unique crashes
+    pub ucrashes: usize,
+
+    /// Number of coverage units that has been reached
     pub coverage: usize,
 }
 
@@ -180,6 +186,12 @@ impl Input {
     }
 }
 
+//#[derive(Debug, Hash, Eq, PartialEq)]
+//pub struct CrashType {
+//    /// The type of fault, and the address of the crash
+//    fault_type: Fault,
+//}
+
 /// Structure that is meant to be shared between threads. Tracks fuzz inputs and coverage
 #[derive(Debug)]
 pub struct Corpus {
@@ -194,6 +206,9 @@ pub struct Corpus {
 
     /// Counter that keeps track of current coverage
     pub cov_counter: AtomicUsize,
+
+    /// Unique crashes, 
+    pub crash_mapping: RwLock<FxHashMap<Fault, u8>>,
 }
 
 impl Corpus {
@@ -213,6 +228,7 @@ impl Corpus {
             coverage_map,
             coverage_vec,
             cov_counter: AtomicUsize::new(0),
+            crash_mapping: RwLock::new(FxHashMap::default()),
         }
     }
 
@@ -233,7 +249,7 @@ impl Corpus {
     }
 
     /// Update an inputs weight based on its performance in fuzz cases
-    pub fn update_input_weight(&self, index: usize) {
+    pub fn update_input_weight(&self, _index: usize) {
 
     }
 }
@@ -270,8 +286,9 @@ pub fn worker(_thr_id: usize, mut emu: Emulator, mut corpus: Arc<Corpus>, tx: Se
     // Initialize a mutator that will be in charge of randomly corrupting input
     let mut mutator = Mutator::new(rng.clone());
 
-    // Locally count the number of crashes
-    let mut local_crashes = 0;
+    // Locally count the number of crashes, total and unique
+    let mut local_total_crashes = 0;
+    let mut local_unique_crashes = 0;
 
     // Current index into the input array of the corpus
     let mut input_index = 0;
@@ -291,23 +308,25 @@ pub fn worker(_thr_id: usize, mut emu: Emulator, mut corpus: Arc<Corpus>, tx: Se
         // If a crash occured, save the input and increase crash count, otherwise just move on
         let case_res = emu.run_jit(&mut corpus);
         match case_res.0.unwrap() {
-            Fault::ReadFault(v) => {
-                let h = Hash32::hash(&emu.fuzz_input);
-                let crash_dir = format!("crashes/read_{:x}_{}", v, h);
-                if SAVE_CRASHES { std::fs::write(&crash_dir, &emu.fuzz_input).unwrap(); }
-                local_crashes += 1;
-            },
-            Fault::WriteFault(v) => {
-                let h = Hash32::hash(&emu.fuzz_input);
-                let crash_dir = format!("crashes/write_{:x}_{}", v, h);
-                if SAVE_CRASHES { std::fs::write(&crash_dir, &emu.fuzz_input).unwrap(); }
-                local_crashes += 1;
-            },
+            // This means that a crash is found. Determine if the crash is unique, and if so, 
+            // save it. 
+            Fault::ReadFault(v)   |
+            Fault::WriteFault(v)  |
             Fault::OutOfBounds(v) => {
-                let h = Hash32::hash(&emu.fuzz_input);
-                let crash_dir = format!("crashes/oob_{:x}_{}", v, h);
-                if SAVE_CRASHES { std::fs::write(&crash_dir, &emu.fuzz_input).unwrap(); }
-                local_crashes += 1;
+                let mut crash_map = corpus.crash_mapping.write();
+                if crash_map.get(&case_res.0.unwrap()).is_none() {
+                    crash_map.insert(case_res.0.unwrap(), 0);
+                    let h = Hash32::hash(&emu.fuzz_input);
+                    let crash_dir = match case_res.0.unwrap() {
+                        Fault::ReadFault(_)   => format!("crashes/read_{:x}_{}", v, h),
+                        Fault::WriteFault(_)  => format!("crashes/write_{:x}_{}", v, h),
+                        Fault::OutOfBounds(_) => format!("crashes/oob_{:x}_{}", v, h),
+                        _ => unreachable!(),
+                    };
+                    if SAVE_CRASHES { std::fs::write(&crash_dir, &emu.fuzz_input).unwrap(); }
+                    local_unique_crashes += 1;
+                }
+                local_total_crashes += 1;
             },
             Fault::Snapshot => panic!("Hit snapshot during execution, this should not happen"),
             Fault::Exit => {},
@@ -333,7 +352,8 @@ pub fn worker(_thr_id: usize, mut emu: Emulator, mut corpus: Arc<Corpus>, tx: Se
             // Populate statistics that will be sent to the main thread
             let stats = Statistics {
                 total_cases: BATCH_SIZE,
-                crashes: local_crashes,
+                crashes: local_total_crashes,
+                ucrashes: local_unique_crashes,
                 coverage: corpus.cov_counter.load(Ordering::SeqCst),
             };
 
@@ -342,7 +362,8 @@ pub fn worker(_thr_id: usize, mut emu: Emulator, mut corpus: Arc<Corpus>, tx: Se
 
             // Reset local statistics
             count = 0;
-            local_crashes = 0;
+            local_total_crashes = 0;
+            local_unique_crashes = 0;
         }
     }
 }

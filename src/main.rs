@@ -205,18 +205,21 @@ fn main() {
     // Update stats structure whenever a thread sends a new message
     for received in rx {
         let elapsed_time = start.elapsed().as_secs_f64();
+
+        stats.coverage     = corpus.cov_counter.load(Ordering::SeqCst);
         stats.total_cases += received.total_cases;
-        stats.crashes += received.crashes;
-        stats.coverage = corpus.cov_counter.load(Ordering::SeqCst);
+        stats.crashes     += received.crashes;
+        stats.ucrashes    += received.ucrashes;
 
         // Print out updated statistics every second
         if last_time.elapsed() >= Duration::from_millis(1000) {
-            println!("[{:8.2}] fuzz cases: {:12} : fcps: {:8} : coverage: {:6} : crashes: {:8}", 
+            println!("[{:8.2}] fuzz cases: {:12} : fcps: {:8} : coverage: {:6} : crashes: {:8} : ucrashes: {:6}", 
                      elapsed_time, 
                      stats.total_cases.to_formatted_string(&Locale::en),
                      (stats.total_cases / elapsed_time as usize).to_formatted_string(&Locale::en), 
                      stats.coverage,
-                     stats.crashes);
+                     stats.crashes,
+                     stats.ucrashes);
 
             last_time = Instant::now();
         }

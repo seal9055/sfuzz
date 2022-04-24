@@ -1,6 +1,6 @@
 ## Fuzzing Reading List
     1.  Basics          https://www.fuzzingbook.org/
-    2.  Basics          https://wcventure.github.io/FuzzingPaper/Paper/TRel18_Fuzzing.pdf
+    2.  AFL++           https://www.usenix.org/system/files/woot20-paper-fioraldi.pdf
     3.  Afl-dev         https://lcamtuf.blogspot.com/
     4.  Afl-dev         https://lcamtuf.coredump.cx/afl/technical_details.txt
     5.  Afl-study       https://www.s3.eurecom.fr/docs/fuzzing22_fioraldi_report.pdf
@@ -12,13 +12,12 @@
     11. Feedback-muts   https://link.springer.com/article/10.1007/s10664-020-09927-3
     12. Snapshots/state https://arxiv.org/pdf/2202.03643.pdf
     13. Snapshots/state https://github.com/fgsect/FitM/blob/main/fitm.pdf
-    14. Baseband-emu    https://arxiv.org/pdf/2005.07797.pdf
     15. Benchmarking    https://github.com/google/fuzzbench/issues/654
     16. Benchmarking    https://hexgolems.com/2020/08/on-measuring-and-visualizing-fuzzer-performance/
     17. Crash-triaging  https://www.usenix.org/system/files/sec20-blazytko.pdf
     18. Redqueen        https://synthesis.to/papers/NDSS19-Redqueen.pdf
     19. Nautilus        https://wcventure.github.io/FuzzingPaper/Paper/NDSS19_Nautilus.pdf
-    20. AFL++           https://www.usenix.org/system/files/woot20-paper-fioraldi.pdf
+    14. Baseband-emu    https://arxiv.org/pdf/2005.07797.pdf
     21. Hash-collisions https://chao.100871.net/papers/oakland18.pdf
     22. Bigmap-covmap   https://alifahmed.github.io/res/BigMap_DSN.pdf
 
@@ -53,6 +52,7 @@
     > Seed-collections:
         - https://datacommons.anu.edu.au/DataCommons/rest/records/anudc:6106/data/
         - https://lcamtuf.coredump.cx/afl/demo/
+        - https://github.com/AFLplusplus/AFLplusplus/tree/stable/testcases
         - https://github.com/radareorg/radare2-testbins
 
 ## Coverage Tracking 
