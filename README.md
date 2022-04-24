@@ -22,7 +22,6 @@ what I believe is necessary for the fuzzer to become a viable choice for general
 - [ ] Fix the remaining few JIT-bugs
 - [ ] Implement riscv-atomics so the JIT can use libc instead of newlib
 - [ ] 2 Different modes of edge-level coverage (Hitcounts & No Hitcounts)
-
 - [ ] Crash exploration mode
 - [ ] CMP deconstruction to get past magic values and checksums
 - [ ] Proper benchmarking
