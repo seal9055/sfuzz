@@ -19,6 +19,7 @@ use std::process;
 use std::sync::Arc;
 use std::sync::mpsc::Sender;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Instant;
 
 use rustc_hash::FxHashMap;
 use fasthash::{xx::Hash32, FastHash};
@@ -27,7 +28,7 @@ use parking_lot::RwLock;
 use rand_xoshiro::Xoroshiro64Star;
 use rand_xoshiro::rand_core::{SeedableRng, RngCore};
 
-const SAVE_CRASHES: bool = false;
+const SAVE_CRASHES: bool = true;
 
 /// Small wrapper to easily handle unrecoverable errors without panicking
 pub fn error_exit(msg: &str) -> ! {
@@ -170,19 +171,33 @@ pub struct Statistics {
 
 #[derive(Debug, Clone)]
 pub struct Input {
-    /// Raw bytes stored in this input
+    /// Raw byte backing of this input
     data: Vec<u8>,
 
-    /// Weight of this input, used to determine its priority during seed selection
-    weight: usize,
+    /// Size of this input
+    size: usize,
+
+    /// Execution time of this seed (determined on first run)
+    exec_time: Option<usize>,
 }
 
 impl Input {
-    pub fn new(data: Vec<u8>) -> Self {
+    pub fn new(data: Vec<u8>, exec_time: Option<usize>) -> Self {
         Self {
             data: data.to_vec(),
-            weight: 200,
+            size: data.len(),
+            exec_time,
         }
+    }
+
+    pub fn calculate_energy(&self) -> usize {
+
+        /*
+            self.size
+            self.exec_time
+        */
+
+        15000
     }
 }
 
@@ -233,31 +248,27 @@ impl Corpus {
     }
 
     /// Select a seed from the corpus that should be used for the next fuzz input
-    pub fn select_seed(&self, mut index: usize, rng: &mut Xoroshiro64Star) -> Option<usize> {
-        let inputs = self.inputs.read();
-        let mut control: usize;
-        let len = inputs.len();
+    pub fn select_seed(&self, index: usize, _rng: &mut Xoroshiro64Star) -> Option<usize> {
+        //let inputs = self.inputs.read();
+        //let mut control: usize;
+        //let len = inputs.len();
 
-        loop {
-            control = (rng.next_u32() as usize) % 1000;
-            if inputs[index].weight > control {
-                break;
-            }
-            index = (index + 1) % len;
-        };
-        Some(index)
-    }
-
-    /// Update an inputs weight based on its performance in fuzz cases
-    pub fn update_input_weight(&self, _index: usize) {
-
+        //loop {
+        //    control = (rng.next_u32() as usize) % 1000;
+        //    if inputs[index].energy > control {
+        //        break;
+        //    }
+        //    index = (index + 1) % len;
+        //};
+        //Some(index)
+        Some((index + 1) % self.inputs.read().len())
     }
 }
 
 /// Run the emulator until a Snapshot fault is returned, at which point the injected code is 
 /// overwritten with nops, and the 'advanced' emulator is returned back to main
-pub fn snapshot(emu: &mut Emulator, mut corpus: Arc<Corpus>) {
-    let case_res = emu.run_jit(&mut corpus);
+pub fn snapshot(emu: &mut Emulator, corpus: &Corpus) {
+    let case_res = emu.run_jit(&corpus);
     match case_res.0.unwrap() {
         Fault::Snapshot => {
             // Overwrite the snapshot code with nops so we dont break there again.
@@ -269,16 +280,40 @@ pub fn snapshot(emu: &mut Emulator, mut corpus: Arc<Corpus>) {
     }
 }
 
+/// Callibrate how long the initial seeds take to run and use it to determine timeout
+pub fn calibrate_seeds(emu: &mut Emulator, corpus: &Corpus) {
+    let inputs = corpus.inputs.read();
+    let num_inputs = inputs.len();
+    drop(inputs);
+
+    let original = emu.fork();
+    //let mut avg: usize = 0;
+
+    for i in 0..num_inputs {
+        emu.fuzz_input.extend_from_slice(&corpus.inputs.read()[i].data);
+
+        // Run jit until finish and collect how long this input needed
+        let start = Instant::now();
+        emu.run_jit(&corpus);
+        let elapsed = start.elapsed().subsec_nanos() as usize;
+
+        //avg += elapsed;
+
+        let mut inputs = corpus.inputs.write();
+        inputs[i].exec_time = Some(elapsed);
+
+        emu.fuzz_input.clear();
+        emu.reset(&original);
+    }
+
+    // Timeout is the average initial seed execution time * 5
+    //(avg / num_inputs) * 5
+}
+
 /// Wrapper function for each emulator, takes care of running the emulator, memory resets, etc
 pub fn worker(_thr_id: usize, mut emu: Emulator, mut corpus: Arc<Corpus>, tx: Sender<Statistics>) {
     // Maintain an original copy of the passed in emulator so it can later be referenced
     let original = emu.fork();
-
-    // Data is sent to the main thread in batches to increase throughput
-    const BATCH_SIZE: usize = 100000;
-
-    // Keep track of how many cases are being executed
-    let mut count = 0;
 
     // Initialize rng to be used for random seed selection and other purposes
     let mut rng = Xoroshiro64Star::seed_from_u64(0);
@@ -294,76 +329,70 @@ pub fn worker(_thr_id: usize, mut emu: Emulator, mut corpus: Arc<Corpus>, tx: Se
     let mut input_index = 0;
 
     loop {
-        // Reset the emulator state
-        emu.reset(&original);
-        emu.fuzz_input.clear();
-
-        // Seed selection
+        // Get the next seed from the input queue and calculate its energy. This enery is then used 
+        // to determine how often this input should be run before moving on to the next input
         input_index = corpus.select_seed(input_index, &mut rng).unwrap();
-        emu.fuzz_input.extend_from_slice(&corpus.inputs.read()[input_index].data);
+        let seed_energy = corpus.inputs.read()[input_index].calculate_energy();
 
-        // Mutate the previously chosen seed
-        mutator.mutate(&mut emu.fuzz_input);
+        for _ in 0..seed_energy {
+            // Reset the emulator state
+            emu.reset(&original);
+            emu.fuzz_input.clear();
 
-        // If a crash occured, save the input and increase crash count, otherwise just move on
-        let case_res = emu.run_jit(&mut corpus);
-        match case_res.0.unwrap() {
-            // This means that a crash is found. Determine if the crash is unique, and if so, 
-            // save it. 
-            Fault::ReadFault(v)   |
-            Fault::WriteFault(v)  |
-            Fault::OutOfBounds(v) => {
-                let mut crash_map = corpus.crash_mapping.write();
-                if crash_map.get(&case_res.0.unwrap()).is_none() {
-                    crash_map.insert(case_res.0.unwrap(), 0);
-                    let h = Hash32::hash(&emu.fuzz_input);
-                    let crash_dir = match case_res.0.unwrap() {
-                        Fault::ReadFault(_)   => format!("crashes/read_{:x}_{}", v, h),
-                        Fault::WriteFault(_)  => format!("crashes/write_{:x}_{}", v, h),
-                        Fault::OutOfBounds(_) => format!("crashes/oob_{:x}_{}", v, h),
-                        _ => unreachable!(),
-                    };
-                    if SAVE_CRASHES { std::fs::write(&crash_dir, &emu.fuzz_input).unwrap(); }
-                    local_unique_crashes += 1;
-                }
-                local_total_crashes += 1;
-            },
-            Fault::Snapshot => panic!("Hit snapshot during execution, this should not happen"),
-            Fault::Exit => {},
-            _ => unreachable!(),
+            emu.fuzz_input.extend_from_slice(&corpus.inputs.read()[input_index].data);
+
+            // Mutate the previously chosen seed
+            mutator.mutate(&mut emu.fuzz_input);
+
+            // If a crash occured, save the input and increase crash count, otherwise just move on
+            let case_res = emu.run_jit(&mut corpus);
+            let exec_time = 0;
+
+            match case_res.0.unwrap() {
+                // This means that a crash is found. Determine if the crash is unique, and if so, 
+                // save it. 
+                Fault::ReadFault(v)   |
+                Fault::WriteFault(v)  |
+                Fault::OutOfBounds(v) => {
+                    let mut crash_map = corpus.crash_mapping.write();
+                    if crash_map.get(&case_res.0.unwrap()).is_none() {
+                        crash_map.insert(case_res.0.unwrap(), 0);
+                        let h = Hash32::hash(&emu.fuzz_input);
+                        let crash_dir = match case_res.0.unwrap() {
+                            Fault::ReadFault(_)   => format!("crashes/read_{:x}_{}", v, h),
+                            Fault::WriteFault(_)  => format!("crashes/write_{:x}_{}", v, h),
+                            Fault::OutOfBounds(_) => format!("crashes/oob_{:x}_{}", v, h),
+                            _ => unreachable!(),
+                        };
+                        if SAVE_CRASHES { std::fs::write(&crash_dir, &emu.fuzz_input).unwrap(); }
+                        local_unique_crashes += 1;
+                    }
+                    local_total_crashes += 1;
+                },
+                Fault::Snapshot => panic!("Hit snapshot during execution, this should not happen"),
+                Fault::Exit => {},
+                _ => unreachable!(),
+            }
+
+            // This input found new coverage
+            if case_res.1 {
+                corpus.inputs.write().push(Input::new(emu.fuzz_input.clone(), Some(exec_time)));
+            }
         }
 
-        corpus.update_input_weight(input_index);
+        // Populate statistics that will be sent to the main thread
+        let stats = Statistics {
+            total_cases: seed_energy,
+            crashes: local_total_crashes,
+            ucrashes: local_unique_crashes,
+            coverage: corpus.cov_counter.load(Ordering::SeqCst),
+        };
 
-        // This input found new coverage
-        if case_res.1 {
-            corpus.inputs.write().push(Input::new(emu.fuzz_input.clone()));
-        }
+        // Send stats over to the main thread
+        tx.send(stats).unwrap();
 
-        // New case completed
-        count +=1;
-
-        // Once `count` reaches `BATCH_SIZE`, send statistics to main thread and reset count
-        if count == BATCH_SIZE {
-            //let mut stats = emu.jit.stats.lock().unwrap();
-            //stats.total_cases += BATCH_SIZE;
-            //stats.crashes += crashes;
-
-            // Populate statistics that will be sent to the main thread
-            let stats = Statistics {
-                total_cases: BATCH_SIZE,
-                crashes: local_total_crashes,
-                ucrashes: local_unique_crashes,
-                coverage: corpus.cov_counter.load(Ordering::SeqCst),
-            };
-
-            // Send stats over to the main thread
-            tx.send(stats).unwrap();
-
-            // Reset local statistics
-            count = 0;
-            local_total_crashes = 0;
-            local_unique_crashes = 0;
-        }
+        // Reset local statistics
+        local_total_crashes = 0;
+        local_unique_crashes = 0;
     }
 }

@@ -3,7 +3,7 @@ use sfuzz::{
     emulator::{Emulator, Register, Fault, ExitType},
     jit::{Jit, LibFuncs},
     config::{SNAPSHOT_ADDR, NUM_THREADS},
-    Input, Corpus, Statistics, error_exit, load_elf_segments, worker, snapshot,
+    Input, Corpus, Statistics, error_exit, load_elf_segments, worker, snapshot, calibrate_seeds,
 };
 use std::thread;
 use std::sync::Arc;
@@ -137,8 +137,9 @@ fn main() {
         let data = std::fs::read(filename).unwrap();
 
         // Add the corpus input to the corpus
-        w.push(Input::new(data));
+        w.push(Input::new(data, None));
     }
+    if w.is_empty() { panic!("Please supply at least 1 initial seed"); }
     drop(w);
 
     // Setup Stack
@@ -174,9 +175,13 @@ fn main() {
     // Insert various hooks into binary
     insert_hooks(&sym_map, &mut emu);
 
+    // Wrap corpus in an arc so it can be shared between threads
+    //let mut tmp_corpus = corpus.clone();
+    //let mut tmp_emu = emo.clone();
+
     let corpus = Arc::new(corpus);
 
-    // Setup snapshot fuzzing
+    // Setup snapshot fuzzing at a point before the fuzz-input is read in
     if let Some(addr) = SNAPSHOT_ADDR {
         println!("Activated snapshot-based fuzzing");
 
@@ -184,8 +189,11 @@ fn main() {
         emu.exit_conds.insert(addr, ExitType::Snapshot);
 
         // Snapshot the emulator
-        snapshot(&mut emu, corpus.clone());
+        snapshot(&mut emu, &*corpus);
     }
+
+    // Calibrate the emulator for the timeout. Cloning it so the real emulator state isnt changed
+    calibrate_seeds(&mut emu, &*corpus.clone());
 
     let emu = Arc::new(emu);
 
@@ -213,7 +221,8 @@ fn main() {
 
         // Print out updated statistics every second
         if last_time.elapsed() >= Duration::from_millis(1000) {
-            println!("[{:8.2}] fuzz cases: {:12} : fcps: {:8} : coverage: {:6} : crashes: {:8} : ucrashes: {:6}", 
+            println!("[{:8.2}] fuzz cases: {:12} : fcps: {:8} : coverage: {:6} : crashes: {:8} \
+                     \n\t   ucrashes: {:6}", 
                      elapsed_time, 
                      stats.total_cases.to_formatted_string(&Locale::en),
                      (stats.total_cases / elapsed_time as usize).to_formatted_string(&Locale::en), 

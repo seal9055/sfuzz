@@ -6,7 +6,7 @@ pub const COVMETHOD: CovMethod = CovMethod::Block;
 pub const SNAPSHOT_ADDR: Option<usize> = Some(0x101e4);
 
 /// Number of cores to run the fuzzer with
-pub const NUM_THREADS: usize = 16;
+pub const NUM_THREADS: usize = 1;
 
 #[derive(Eq, PartialEq, Copy, Clone)]
 pub enum CovMethod {

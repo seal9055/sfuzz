@@ -39,7 +39,7 @@ macro_rules! impl_byte_conversions {
 impl_byte_conversions!(u8, u16, u32, u64, u128, i8, i16, i32, i64, i128);
 
 /// Describes the virtual memory space that each emulator uses (each emulator has their own)
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Mmu {
     /// Block of memory used by an emulator instance, contains the actual memory
     pub memory: Vec<u8>,

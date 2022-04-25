@@ -144,8 +144,9 @@ impl Jit {
         self.lookup_arr[pc / 4].store(cur_jit_addr + code.len(), Ordering::SeqCst);
     }
 
-    /// rax, rbx, rcx, rdx, rsp : in use by compiler
-    /// rdi, rsi, rbp : free
+    /// rdi, rbx, rcx, rbp, rsp : in use by compiler
+    /// rax, rdx : free
+    /// rdi : instructions executed
     /// rsi : Counts coverage pc's accumulated in at r8
     /// r8  : Coverage map
     /// r9  : Current size of dirty list vector (could prob change vec size directly and save r9)
@@ -310,6 +311,8 @@ impl Jit {
                     }
                 }
             }
+
+            //asm.add(rdi, 1).unwrap();
 
             match instr.op {
                 Operation::Mov => {

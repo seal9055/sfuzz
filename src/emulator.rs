@@ -126,13 +126,20 @@ pub enum Fault {
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct State {
+    /// Target registers
     regs: [usize; 33],
+
+    // Timeout used to determine when to early-terminate a fuzz-case
+    //pub timeout: usize,
 }
 
 impl Default for State {
     fn default() -> Self {
         State {
             regs: [0; 33],
+            // Initialize to high number so initial seeds don't hit it during calibration. This 
+            // timeout is immediately overwritten during calibration
+            //timeout: 1048576 * 1048576 * 1048576,
         }
     }
 }
@@ -199,6 +206,7 @@ impl File {
 
 /// Emulator that runs the actual code. Each thread gets its own emulator in which everything is
 /// separate except the jit backing that all emulators share.
+#[derive(Clone)]
 pub struct Emulator {
     /// Memory backing for the emulator, contains actual memory bytes and permissions
     pub memory: Mmu,
@@ -371,11 +379,11 @@ impl Emulator {
     /// Once the jit exits it collects the reentry_pc (where to continue execution), and the exit
     /// code. It performs an appropriate operation based on the exit code and then continues with
     /// the loop to reenter the jit.
-    pub fn run_jit(&mut self, corpus: &mut Arc<Corpus>) -> (Option<Fault>, bool) {
-        let mut tmp_cov: Vec<usize> = Vec::with_capacity(10000);
+    pub fn run_jit(&mut self, corpus: &Corpus) -> (Option<Fault>, bool) {
+        let mut tmp_cov: Vec<usize> = Vec::with_capacity(90000);
         let mut found_new_cov: bool = false;
         let mut cov_len: usize = 0;
-        let mut tmp: usize;
+        let mut tmp: usize = 0;
 
         loop {
             let pc = self.get_reg(Register::Pc);
@@ -410,6 +418,16 @@ impl Emulator {
             let exit_code:  usize;
             let reentry_pc: usize;
 
+            // Extra space when the available registers are not enough to pass sufficient 
+            // information in/out of the jit
+            let mut scratchpad = [
+                // 0 - 0x00 - Temporary space, currently only used once to extract snapshot addr
+                tmp as usize,
+
+                // 1 - 0x08 - Track which blocks are hit for coverage
+                tmp_cov.as_ptr() as usize,
+            ];
+
             // Invoke the JIT with appropriate arguments
             unsafe {
                 let func = *(&jit_addr as *const usize as *const fn());
@@ -420,7 +438,7 @@ impl Emulator {
                 call_dest = in(reg) func,
                 out("rax")   exit_code,
                 out("rcx")   reentry_pc,
-                out("rdx")   tmp,
+                in("rdx")    scratchpad.as_mut_ptr(),
                 inout("rsi") cov_len,
                 in("r8")     tmp_cov.as_ptr() as u64,
                 inout("r9")  self.memory.dirty_size,
@@ -527,7 +545,7 @@ impl Emulator {
                     self.debug_jit(reentry_pc);
                 },
                 5 => { /* JIT exited to setup a snapshot */
-                    self.snapshot_addr = tmp;
+                    self.snapshot_addr = scratchpad[0];
                     return (Some(Fault::Snapshot), found_new_cov);
                 },
                 8 => { /* Attempted to read memory without read permissions */
