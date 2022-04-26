@@ -26,7 +26,7 @@ use fasthash::{xx::Hash32, FastHash};
 use parking_lot::RwLock;
 
 use rand_xoshiro::Xoroshiro64Star;
-use rand_xoshiro::rand_core::{SeedableRng, RngCore};
+use rand_xoshiro::rand_core::SeedableRng;
 
 const SAVE_CRASHES: bool = true;
 
@@ -197,7 +197,7 @@ impl Input {
             self.exec_time
         */
 
-        15000
+        self.size
     }
 }
 

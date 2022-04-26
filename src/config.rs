@@ -1,9 +1,12 @@
 
 /// Method used to track coverage
-pub const COVMETHOD: CovMethod = CovMethod::Block;
+pub const COVMETHOD: CovMethod = CovMethod::None;
 
 /// Address at which the fuzzer attempts to create a snapshot once reached
-pub const SNAPSHOT_ADDR: Option<usize> = Some(0x101e4);
+//pub const SNAPSHOT_ADDR: Option<usize> = Some(0x101e4);
+pub const SNAPSHOT_ADDR: Option<usize> = None;
+
+pub const PERM_CHECKS: bool = true;
 
 /// Number of cores to run the fuzzer with
 pub const NUM_THREADS: usize = 1;

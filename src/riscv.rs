@@ -221,7 +221,6 @@ pub struct UType {
 impl UType {
     pub fn new(instr: u32) -> Self {
         UType {
-            //imm: ((val << 12) >> 12) as i32,
             imm: (instr & !0xfff) as i32,
             rd:  Register::from(instr.get_u32(20, 5)),
         }

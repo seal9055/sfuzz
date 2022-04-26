@@ -123,7 +123,7 @@ fn main() {
     let mut stats = Statistics::default();
 
     // Insert loadable segments into emulator address space and retrieve symbol table information
-    let sym_map = load_elf_segments("./test2", &mut emu).unwrap_or_else(||{
+    let sym_map = load_elf_segments("./objdump", &mut emu).unwrap_or_else(||{
         error_exit("Unrecoverable error while loading elf segments");
     });
 
@@ -149,9 +149,9 @@ fn main() {
 
     // Allocate space for argv[0] & argv[1]
     let argv0 = emu.allocate(64, Perms::READ | Perms::WRITE).expect("Allocating argv[0] failed");
-    let argv1 = emu.allocate(64, Perms::READ | Perms::WRITE).expect("Allocating argv[1] failed");
-    emu.memory.write_mem(argv0, b"test2\0", 6).expect("Writing to argv[0] failed");
-    emu.memory.write_mem(argv1, b"fuzz_input\0", 11).expect("Writing to argv[1] failed");
+    //let argv1 = emu.allocate(64, Perms::READ | Perms::WRITE).expect("Allocating argv[1] failed");
+    emu.memory.write_mem(argv0, b"objdump\0", 8).expect("Writing to argv[0] failed");
+    //emu.memory.write_mem(argv1, b"fuzz_input\0", 11).expect("Writing to argv[1] failed");
 
     // Macro to push 64-bit integers onto the stack
     macro_rules! push {
@@ -168,7 +168,7 @@ fn main() {
     push!(0u64);    // Auxp
     push!(0u64);    // Envp
     push!(0u64);    // Null-terminate Argv
-    push!(argv1);   // Argv[1] 
+    //push!(argv1);   // Argv[1] 
     push!(argv0);   // Argv[0]
     push!(1u64);    // Argc
 
@@ -182,18 +182,18 @@ fn main() {
     let corpus = Arc::new(corpus);
 
     // Setup snapshot fuzzing at a point before the fuzz-input is read in
-    if let Some(addr) = SNAPSHOT_ADDR {
-        println!("Activated snapshot-based fuzzing");
+    //if let Some(addr) = SNAPSHOT_ADDR {
+    //    println!("Activated snapshot-based fuzzing");
 
-        // Insert snapshot fuzzer exit condition
-        emu.exit_conds.insert(addr, ExitType::Snapshot);
+    //    // Insert snapshot fuzzer exit condition
+    //    emu.exit_conds.insert(addr, ExitType::Snapshot);
 
-        // Snapshot the emulator
-        snapshot(&mut emu, &*corpus);
-    }
+    //    // Snapshot the emulator
+    //    snapshot(&mut emu, &*corpus);
+    //}
 
     // Calibrate the emulator for the timeout. Cloning it so the real emulator state isnt changed
-    calibrate_seeds(&mut emu, &*corpus.clone());
+    //calibrate_seeds(&mut emu, &*corpus.clone());
 
     let emu = Arc::new(emu);
 

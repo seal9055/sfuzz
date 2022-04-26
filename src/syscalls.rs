@@ -142,8 +142,6 @@ pub fn open(emu: &mut Emulator) -> Option<Fault> {
         }
         cur += 1;
     }
-    //let _s = std::str::from_utf8(&buf).unwrap();
-    //println!("opened: {}", s);
 
     if buf == b"fuzz_input\0" {
         emu.alloc_file(FileType::FUZZINPUT);
@@ -198,14 +196,14 @@ pub fn write(emu: &mut Emulator) -> Option<Fault> {
         return None;
     }
 
-    if true {
+    if false {
         let file = file.unwrap();
         if file.ftype == STDOUT || file.ftype == STDERR {
             let mut read_data = vec![0u8; count];
             emu.memory.read_into(buf, &mut read_data, count, Perms::READ).unwrap();
-            println!("len is: {}", count);
-            //let s = std::str::from_utf8(&read_data);
-            //print!("{:?}", read_data);
+
+            let s = std::str::from_utf8(&read_data).unwrap();
+            print!("{}", s);
         } else {
             panic!("Write to unsupported file occured");
         }

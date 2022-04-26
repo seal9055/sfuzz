@@ -2,7 +2,7 @@ use crate::{
     irgraph::{IRGraph, Flag, Operation, Val},
     emulator::{Emulator, Fault, Register as PReg, ExitType},
     mmu::Perms,
-    config::{CovMethod, COVMETHOD},
+    config::{CovMethod, COVMETHOD, PERM_CHECKS},
 };
 
 use rustc_hash::FxHashMap;
@@ -195,17 +195,30 @@ impl Jit {
             ($reg: expr) => {
                 match $reg {
                     Val::Reg(v) => v,
-                    Val::Imm(_) => panic!("extract_reg called with an immediate")
+                    Val::Imm(_) => panic!("extract_reg called with an immediate"),
+                    Val::Imm64(_) => panic!("extract_reg called with an immediate"),
                 }
             }
         }
 
         /// Forcibly extract an immediate from the `Val` enum
-        macro_rules! extract_imm {
+        macro_rules! extract_imm32 {
             ($reg: expr) => {
                 match $reg {
-                    Val::Reg(_) => panic!("extract_imm called with a register"),
-                    Val::Imm(v) => v
+                    Val::Reg(_) => panic!("extract_imm32 called with a register"),
+                    Val::Imm(v) => v,
+                    Val::Imm64(v) => v as i32,
+                }
+            }
+        }
+
+        /// Forcibly extract an immediate from the `Val` enum
+        macro_rules! extract_imm64 {
+            ($reg: expr) => {
+                match $reg {
+                    Val::Reg(_) => panic!("extract_imm32 called with a register"),
+                    Val::Imm(v) => v as i64,
+                    Val::Imm64(v) => v,
                 }
             }
         }
@@ -234,8 +247,9 @@ impl Jit {
                 let off = asm.assemble(0x0).unwrap().len() - start;
 
                 asm.set_label(&mut here).unwrap();
-                asm.pop(rdx).unwrap();
-                asm.sub(rdx, off as i32).unwrap();
+                asm.pop(rbx).unwrap();
+                asm.sub(rbx, off as i32).unwrap();
+                asm.mov(ptr(r8), rbx).unwrap();
                 asm.ret().unwrap();
 
                 // Save size of the snapshot code injection that we have to later nop out
@@ -256,7 +270,8 @@ impl Jit {
         /// Track new coverage detection
         macro_rules! new_block_coverage {
             ($pc: expr) => {
-                asm.mov(qword_ptr(r8 + (rsi*8)), pc as i32).unwrap();
+                asm.mov(rcx, ptr(r8 + 8)).unwrap();
+                asm.mov(qword_ptr(rcx + (rsi*8)), pc as i32).unwrap();
                 asm.add(rsi, 1i32).unwrap();
             }
         }
@@ -312,8 +327,6 @@ impl Jit {
                 }
             }
 
-            //asm.add(rdi, 1).unwrap();
-
             match instr.op {
                 Operation::Mov => {
                     let vr_out = instr.o_reg.unwrap();
@@ -329,7 +342,15 @@ impl Jit {
                         Val::Imm(v) => {
                             // sign/zero extend immediate
                             match instr.flags {
-                                Flag::Signed   => asm.mov(r_out, v as i64).unwrap(),
+                                Flag::Signed   => asm.mov(r_out, v as i64 as u64).unwrap(),
+                                Flag::Unsigned => asm.mov(r_out, v as u64).unwrap(),
+                                _ => unreachable!(),
+                            };
+                        }
+                        Val::Imm64(v) => {
+                            // sign/zero extend immediate
+                            match instr.flags {
+                                Flag::Signed   => asm.mov(r_out, v as i64 as u64).unwrap(),
                                 Flag::Unsigned => asm.mov(r_out, v as u64).unwrap(),
                                 _ => unreachable!(),
                             };
@@ -427,7 +448,7 @@ impl Jit {
                     let vr_in1 = extract_reg!(instr.i_reg[0]);
                     let vr_in2 = extract_reg!(instr.i_reg[1]);
                     let r_in1  = get_reg_64!(vr_in1, 0);
-                    let offset = extract_imm!(instr.i_reg[2]);
+                    let offset = extract_imm32!(instr.i_reg[2]);
                     let mut fallthrough = asm.create_label();
                     let mut skip = asm.create_label();
                     let mut fault = asm.create_label();
@@ -441,15 +462,15 @@ impl Jit {
                     // Retrieve instruction operand size and retrieve memory permission bits
                     let sz = match instr.flags {
                         Flag::Byte => {
-                            asm.mov(rax, byte_ptr(r_in1 + r12)).unwrap();
+                            asm.movzx(eax, byte_ptr(r_in1 + r12)).unwrap();
                             1
                         },
                         Flag::Word => {
-                            asm.mov(rax, word_ptr(r_in1 + r12)).unwrap();
+                            asm.movzx(eax, word_ptr(r_in1 + r12)).unwrap();
                             2
                         },
                         Flag::DWord => {
-                            asm.mov(rax, dword_ptr(r_in1 + r12)).unwrap();
+                            asm.mov(eax, dword_ptr(r_in1 + r12)).unwrap();
                             4
                         },
                         Flag::QWord => {
@@ -462,13 +483,17 @@ impl Jit {
                     // Set the permissions mask based on size
                     let mask = (0..sz).fold(0u64, |acc, i| acc + ((Perms::WRITE as u64) << (8*i)));
 
-                    // rcx is permissions mask that checks that `size` bits have Perms::Write
-                    // rax contains the accessed memory permissions
-                    asm.mov(rcx, mask).unwrap();
-                    asm.and(rax, rcx).unwrap();
-                    asm.cmp(rax, rcx).unwrap();
-                    asm.je(fallthrough).unwrap();
-                    jit_exit1!(9, pc as u64);
+                    if PERM_CHECKS {
+                        // rcx is permissions mask that checks that `size` bits have Perms::Write
+                        // rax contains the accessed memory permissions
+                        asm.mov(rcx, mask).unwrap();
+                        asm.and(rax, rcx).unwrap();
+                        asm.cmp(rax, rcx).unwrap();
+                        asm.je(fallthrough).unwrap();
+                        jit_exit1!(9, pc as u64);
+                    } else {
+                        asm.jmp(fallthrough).unwrap();
+                    }
 
                     // Fault because the access went completely out of bounds
                     asm.set_label(&mut fault).unwrap();
@@ -484,6 +509,7 @@ impl Jit {
                     // The page has not already been dirtied, push to vector and inc its size by 1
                     asm.mov(qword_ptr(r10 + (r9*8)), rcx).unwrap();
                     asm.add(r9, 1).unwrap();
+
                     asm.set_label(&mut skip).unwrap();
 
                     // Perform store operation with varying operand sizes based on flags
@@ -511,7 +537,7 @@ impl Jit {
                     let vr_out = instr.o_reg.unwrap();
                     let vr_in1 = extract_reg!(instr.i_reg[0]);
                     let r_in1  = get_reg_64!(vr_in1, 0);
-                    let offset = extract_imm!(instr.i_reg[1]);
+                    let offset = extract_imm32!(instr.i_reg[1]);
                     let mut fallthrough = asm.create_label();
                     let mut fault = asm.create_label();
 
@@ -544,7 +570,7 @@ impl Jit {
                             2
                         },
                         0b0100000010 => {
-                            asm.mov(rax, word_ptr(r_in1 + r12)).unwrap();
+                            asm.mov(rax, dword_ptr(r_in1 + r12)).unwrap();
                             4
                         },
                         0b1000000000 => {
@@ -558,18 +584,21 @@ impl Jit {
                     // Set the permissions mask based on size
                     let mask = (0..sz).fold(0u64, |acc, i| acc + ((Perms::READ as u64) << (8*i)));
 
-                    // rcx is permissions mask that checks that `size` bits have Perms::Read
-                    // rax contains the accessed memory permissions
-                    asm.mov(rcx, mask).unwrap();
-                    asm.and(rax, rcx).unwrap();
-                    asm.cmp(rax, rcx).unwrap();
-                    asm.je(fallthrough).unwrap();
-                    jit_exit1!(8, pc as u64);
+                    if PERM_CHECKS {
+                        // rcx is permissions mask that checks that `size` bits have Perms::Read
+                        // rax contains the accessed memory permissions
+                        asm.mov(rcx, mask).unwrap();
+                        asm.and(rax, rcx).unwrap();
+                        asm.cmp(rax, rcx).unwrap();
+                        asm.je(fallthrough).unwrap();
+                        jit_exit1!(8, pc as u64);
+                    } else {
+                        asm.jmp(fallthrough).unwrap();
+                    }
 
                     // Fault because the access went completely out of bounds
                     asm.set_label(&mut fault).unwrap();
                     jit_exit1!(10, pc as u64);
-
 
                     asm.set_label(&mut fallthrough).unwrap();
 
@@ -595,22 +624,13 @@ impl Jit {
                             let r_out = get_reg_64!(vr_out, 1);
                             asm.movzx(r_out, word_ptr(r_in1 + r13)).unwrap();
                         },
+                        0b0100000010 => {   /* Unsigned | DWord */
+                            let r_out = get_reg_64!(vr_out, 1);
+                            asm.mov(to_32(r_out), dword_ptr(r_in1 + r13)).unwrap();
+                        },
                         0b1000000000 => {   /* QWord */
                             let r_out = get_reg_64!(vr_out, 1);
                             asm.mov(r_out, qword_ptr(r_in1 + r13)).unwrap();
-                        },
-                        0b0100000010 => {   /* Unsigned | DWord */
-                            let r_out = get_reg_64!(vr_out, 1);
-
-                            //println!("r_out: {:?}\nr_out_32: {:?}\nr_in1: {:?}\nr13: {:?}", r_out, 
-                            //         to_32(r_out), r_in1, r13);
-                            asm.mov(to_32(r_out), dword_ptr(r_in1 + r13)).unwrap();
-
-                            // Save the result of the operation if necessary
-                            if vr_out.is_spilled() {
-                                asm.mov(ptr(r14 + vr_out.get_offset()), rcx).unwrap();
-                            }
-                            continue;
                         },
                         _ => panic!("Unimplemented flag for Load operation used"),
                     }
@@ -639,6 +659,7 @@ impl Jit {
                                     // RISCV requires signextension on 32-bit instructions on imm's
                                     asm.movsxd(r_in1, to_32(r_in1)).unwrap();
                                 },
+                                _ => unreachable!(),
                             }
                         },
                         Flag::QWord => { /* 64-bit add operation */
@@ -649,6 +670,7 @@ impl Jit {
                                     asm.add(r_in1, r_in2).unwrap();
                                 },
                                 Val::Imm(v) => asm.add(r_in1, v).unwrap(),
+                                _ => unreachable!(),
                             }
                         },
                         _ => panic!("Unsupported flag provided for Add Instruction")
@@ -680,6 +702,7 @@ impl Jit {
                                     // RISCV requires signextension on 32-bit instructions on imm's
                                     asm.movsxd(r_in1, to_32(r_in1)).unwrap();
                                 },
+                                _ => unreachable!(),
                             }
                         },
                         Flag::QWord => { /* 64-bit sub operation */
@@ -690,6 +713,7 @@ impl Jit {
                                     asm.sub(r_in1, r_in2).unwrap();
                                 },
                                 Val::Imm(v) => asm.sub(r_in1, v).unwrap(),
+                                _ => unreachable!(),
                             }
                         },
                         _ => panic!("Unsupported flag provided for Sub Instruction")
@@ -722,6 +746,7 @@ impl Jit {
                                     // RISCV requires signextension on 32-bit instructions on imm's
                                     asm.movsxd(r_in1, to_32(r_in1)).unwrap();
                                 },
+                                _ => unreachable!(),
                             }
                         },
                         Flag::QWord => { /* 64-bit shl operation */
@@ -733,6 +758,7 @@ impl Jit {
                                     asm.shl(r_in1, cl).unwrap();
                                 },
                                 Val::Imm(v) => asm.shl(r_in1, v).unwrap(),
+                                _ => unreachable!(),
                             }
                         },
                         _ => panic!("Unsupported flag provided for Shl Instruction")
@@ -765,6 +791,7 @@ impl Jit {
                                     // RISCV requires signextension on 32-bit instructions on imm's
                                     asm.movsxd(r_in1, to_32(r_in1)).unwrap();
                                 },
+                                _ => unreachable!(),
                             }
                         },
                         Flag::QWord => { /* 64-bit shr operation */
@@ -776,6 +803,7 @@ impl Jit {
                                     asm.shr(r_in1, cl).unwrap();
                                 },
                                 Val::Imm(v) => asm.shr(r_in1, v).unwrap(),
+                                _ => unreachable!(),
                             }
                         },
                         _ => panic!("Unsupported flag provided for Shr Instruction")
@@ -808,6 +836,7 @@ impl Jit {
                                     // RISCV requires signextension on 32-bit instructions on imm's
                                     asm.movsxd(r_in1, to_32(r_in1)).unwrap();
                                 },
+                                _ => unreachable!(),
                             }
                         },
                         Flag::QWord => { /* 64-bit sar operation */
@@ -819,6 +848,7 @@ impl Jit {
                                     asm.sar(r_in1, cl).unwrap();
                                 },
                                 Val::Imm(v) => asm.sar(r_in1, v).unwrap(),
+                                _ => unreachable!(),
                             }
                         },
                         _ => panic!("Unsupported flag provided for Sar Instruction")
@@ -844,6 +874,7 @@ impl Jit {
                             asm.and(r_in1, r_in2).unwrap();
                         },
                         Val::Imm(v) => asm.and(r_in1, v).unwrap(),
+                        _ => unreachable!(),
                     }
 
                     // Save the result of the operation if necessary
@@ -866,6 +897,7 @@ impl Jit {
                             asm.xor(r_in1, r_in2).unwrap();
                         },
                         Val::Imm(v) => asm.xor(r_in1, v).unwrap(),
+                        _ => unreachable!(),
                     }
 
                     // Save the result of the operation if necessary
@@ -888,6 +920,7 @@ impl Jit {
                             asm.or(r_in1, r_in2).unwrap();
                         },
                         Val::Imm(v) => asm.or(r_in1, v).unwrap(),
+                        _ => unreachable!(),
                     }
 
                     // Save the result of the operation if necessary
@@ -916,6 +949,7 @@ impl Jit {
                             asm.cmp(r15, r_in2).unwrap();
                         },
                         Val::Imm(v) => asm.cmp(r15, v).unwrap(),
+                        _ => unreachable!(),
                     }
 
                     // Check if operation is Signed or Unsigned
@@ -1014,19 +1048,23 @@ impl Jit {
         let mut asm = CodeAssembler::new(64).unwrap();
         let mut loop_start = asm.create_label();
 
+        // Load string into rbx
         asm.mov(rbx, ptr(r14 + PReg::A0.get_offset())).unwrap();
         asm.add(rbx, r13).unwrap();
-        asm.lea(rax, ptr(rbx + 1)).unwrap();
+
+        // Load first character into rax
+        asm.lea(rax, ptr(rbx - 1)).unwrap();
 
         // Main loop
         asm.set_label(&mut loop_start).unwrap();
-        asm.mov(cl, byte_ptr(rax)).unwrap();
         asm.inc(rax).unwrap();
+        asm.mov(cl, byte_ptr(rax)).unwrap();
         asm.test(cl, cl).unwrap();
         asm.jnz(loop_start).unwrap();
 
         asm.sub(rax, rbx).unwrap();
         asm.mov(ptr(r14 + PReg::A0.get_offset()), rax).unwrap();
+
         // Return
         asm.mov(rbx, ptr(r14 + PReg::Ra.get_offset())).unwrap();
         asm.shl(rbx, 1).unwrap();

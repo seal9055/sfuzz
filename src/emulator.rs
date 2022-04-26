@@ -380,10 +380,19 @@ impl Emulator {
     /// code. It performs an appropriate operation based on the exit code and then continues with
     /// the loop to reenter the jit.
     pub fn run_jit(&mut self, corpus: &Corpus) -> (Option<Fault>, bool) {
-        let mut tmp_cov: Vec<usize> = Vec::with_capacity(90000);
+        let mut tmp_cov: Vec<u64> = Vec::with_capacity(9000);
         let mut found_new_cov: bool = false;
         let mut cov_len: usize = 0;
-        let mut tmp: usize = 0;
+
+        // Extra space when the available registers are not enough to pass sufficient 
+        // information in/out of the jit
+        let mut scratchpad = [
+            // 0 - 0x00 - Used to extract snapshot addr
+            0usize,
+
+            // 1 - 0x08 - Track which blocks are hit for coverage
+            tmp_cov.as_mut_ptr() as usize,
+        ];
 
         loop {
             let pc = self.get_reg(Register::Pc);
@@ -418,16 +427,6 @@ impl Emulator {
             let exit_code:  usize;
             let reentry_pc: usize;
 
-            // Extra space when the available registers are not enough to pass sufficient 
-            // information in/out of the jit
-            let mut scratchpad = [
-                // 0 - 0x00 - Temporary space, currently only used once to extract snapshot addr
-                tmp as usize,
-
-                // 1 - 0x08 - Track which blocks are hit for coverage
-                tmp_cov.as_ptr() as usize,
-            ];
-
             // Invoke the JIT with appropriate arguments
             unsafe {
                 let func = *(&jit_addr as *const usize as *const fn());
@@ -438,9 +437,9 @@ impl Emulator {
                 call_dest = in(reg) func,
                 out("rax")   exit_code,
                 out("rcx")   reentry_pc,
-                in("rdx")    scratchpad.as_mut_ptr(),
+                in("r8")     scratchpad.as_ptr(),
                 inout("rsi") cov_len,
-                in("r8")     tmp_cov.as_ptr() as u64,
+                //in("r8")     tmp_cov.as_ptr() as u64,
                 inout("r9")  self.memory.dirty_size,
                 in("r10")    self.memory.dirty.as_ptr() as u64,
                 in("r11")    self.memory.dirty_bitmap.as_ptr() as u64,
@@ -452,6 +451,11 @@ impl Emulator {
 
                 self.memory.dirty.set_len(self.memory.dirty_size as usize);
                 tmp_cov.set_len(cov_len as usize);
+                //println!("size is: {}", cov_len);
+                //println!("size is: {}", tmp_cov.len());
+                //println!("data {:x?}", scratchpad[0]);
+                //println!("data {:x?}", scratchpad[1]);
+                //println!("data {:x?}", tmp_cov);
             }
 
             self.set_reg(Register::Pc, reentry_pc);
@@ -466,7 +470,7 @@ impl Emulator {
                         let mut cov_vec = corpus.coverage_vec.as_ref().unwrap().write();
 
                         while let Some(v) = tmp_cov.pop() {
-                            cov_vec.push(v);
+                            cov_vec.push(v as usize);
 
                             // Overwrite the jit_coverage instructions with nop-instructions
                             let addr = self.jit.lookup(v as usize).unwrap();
@@ -480,14 +484,14 @@ impl Emulator {
                         if let Some(mut cov_map) = corpus.coverage_map.as_ref()
                             .unwrap().try_write() {
                             while let Some(v) = tmp_cov.pop() {
-                                if let Some(e) = cov_map.get_mut(&v) {
+                                if let Some(e) = cov_map.get_mut(&(v as usize)) {
                                     // Old coverage hit, increment counter
                                     *e += 1;
                                 } else {
                                     // New coverage hit
                                     corpus.cov_counter.fetch_add(1, Ordering::SeqCst);
                                     found_new_cov = true;
-                                    cov_map.insert(v, 1);
+                                    cov_map.insert(v as usize, 1);
                                 }
                             }
                             cov_len = 0;
@@ -604,10 +608,7 @@ impl Emulator {
 
         let start_pc = pc;
 
-        //println!("PC IS: {:#0X}", pc);
         let end_pc   = start_pc + self.functions.get(&pc).unwrap().0;
-
-        //println!("({:#0x} : {:#0x})", start_pc, end_pc);
 
         while pc < end_pc {
             let opcodes: u32 = self.memory.read_at(pc, Perms::READ | Perms::EXECUTE).map_err(|_|
@@ -647,23 +648,24 @@ impl Emulator {
 
             match *instr {
                 Instr::Lui {rd, imm} => {
-                    irgraph.movi(rd, imm, Flag::Signed);
+                    irgraph.movi32(rd, imm, Flag::Signed);
                 },
                 Instr::Auipc {rd, imm} => {
-                    let sign_extended = (imm as i64 as u64).wrapping_add(pc as u64);
-                    irgraph.movi(rd, sign_extended as i32, Flag::Signed);
+                    let result = (imm as i64 as u64).wrapping_add(pc as u64);
+                    irgraph.movi64(rd, result as i64, Flag::Unsigned);
                 },
                 Instr::Jal {rd, imm} => {
-                    let jmp_target = ((pc as i32) + imm) as usize;
+                    let jmp_target = pc.wrapping_add(imm as i64 as usize);
 
                     if rd != Register::Zero {
-                        irgraph.movi(rd, (pc + 4) as i32, Flag::Unsigned);
+                        irgraph.movi64(rd, pc.wrapping_add(4) as i64, Flag::Unsigned);
                     }
                     irgraph.jmp(jmp_target);
                 },
                 Instr::Jalr {rd, imm, rs1} => {
                     if rd != Register::Zero {
-                        irgraph.movi(rd, (pc + 4) as i32, Flag::Signed);
+                        //irgraph.movi32(rd, (pc + 4) as i32, Flag::Signed);
+                        irgraph.movi64(rd, pc.wrapping_add(4) as i64, Flag::Unsigned);
                     }
                     irgraph.jmp_offset(rs1, imm);
                 },
@@ -673,8 +675,8 @@ impl Emulator {
                 Instr::Bge  { rs1, rs2, imm, mode } |
                 Instr::Bltu { rs1, rs2, imm, mode } |
                 Instr::Bgeu { rs1, rs2, imm, mode } => {
-                    let true_part  = ((pc as i32).wrapping_add(imm)) as usize;
-                    let false_part = ((pc as i32).wrapping_add(4)) as usize;
+                    let true_part  = pc.wrapping_add(imm as i64 as usize);
+                    let false_part = pc.wrapping_add(4) as usize;
 
                     match mode {
                         0b000 => { /* BEQ */

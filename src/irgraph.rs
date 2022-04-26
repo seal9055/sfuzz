@@ -1,6 +1,6 @@
 use crate::{
     emulator::Register as PReg,
-    irgraph::Val::{Reg, Imm},
+    irgraph::Val::{Reg, Imm, Imm64},
 };
 
 use std::fmt::{self, Formatter, UpperHex};
@@ -22,6 +22,7 @@ impl<T: PartialOrd + Signed + UpperHex> UpperHex for ReallySigned<T> {
 pub enum Val {
     Reg(PReg),
     Imm(i32),
+    Imm64(i64),
 }
 
 impl fmt::Display for Val {
@@ -31,6 +32,9 @@ impl fmt::Display for Val {
                 write!(f, "{:?}", v)
             },
             Imm(v) => {
+                write!(f, "{}", v)
+            },
+            Imm64(v) => {
                 write!(f, "{}", v)
             },
         }
@@ -235,10 +239,23 @@ impl IRGraph {
     }
 
     /// r1 = imm
-    pub fn movi(&mut self, r1: PReg, imm: i32, flag: u16) -> PReg {
+    pub fn movi32(&mut self, r1: PReg, imm: i32, flag: u16) -> PReg {
         self.instrs.push( Instruction {
             op: Operation::Mov,
             i_reg: vec![Imm(imm)],
+            o_reg: Some(r1),
+            flags: flag,
+            pc: self.cur_pc,
+        });
+        self.cur_pc = None;
+        r1
+    }
+
+    /// r1 = imm
+    pub fn movi64(&mut self, r1: PReg, imm: i64, flag: u16) -> PReg {
+        self.instrs.push( Instruction {
+            op: Operation::Mov,
+            i_reg: vec![Imm64(imm)],
             o_reg: Some(r1),
             flags: flag,
             pc: self.cur_pc,
