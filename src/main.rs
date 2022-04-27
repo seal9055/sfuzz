@@ -128,7 +128,7 @@ fn main() {
     let mut stats = Statistics::default();
 
     // Insert loadable segments into emulator address space and retrieve symbol table information
-    let sym_map = load_elf_segments("./objdump", &mut emu).unwrap_or_else(||{
+    let sym_map = load_elf_segments("./test2", &mut emu).unwrap_or_else(||{
         error_exit("Unrecoverable error while loading elf segments");
     });
 
@@ -153,14 +153,17 @@ fn main() {
     emu.set_reg(Register::Sp, (stack + (1024 * 1024)) - 8);
 
     // Setup arguments
-    //let arguments = vec!["test2\0".to_string(), "fuzz_input\0".to_string()];
-    let arguments = vec!["objdump\0".to_string(), "-g\0".to_string(), "fuzz_input\0".to_string()];
+    let arguments = vec!["test2\0".to_string(), "fuzz_input\0".to_string()];
+    //let arguments = vec!["objdump\0".to_string(), "-x\0".to_string(), "fuzz_input\0".to_string()];
+    //let arguments = vec!["objdump".to_string()];
     let args: Vec<usize> = arguments.iter().map(|e| {
-        let addr = emu.allocate(64, Perms::READ | Perms::WRITE).expect("Allocating an argument failed");
+        let addr = emu.allocate(64, Perms::READ | Perms::WRITE)
+            .expect("Allocating an argument failed");
+        println!("len is: {}", e.len());
         emu.memory.write_mem(addr, e.as_bytes(), e.len()).expect("Writing to argv[0] failed");
         addr
     }).collect();
-
+    
     // Macro to push 64-bit integers onto the stack
     macro_rules! push {
         ($expr:expr) => {

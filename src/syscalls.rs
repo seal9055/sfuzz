@@ -196,7 +196,10 @@ pub fn write(emu: &mut Emulator) -> Option<Fault> {
         return None;
     }
 
-    if false {
+    println!("buf is at: {:X}", buf);
+    println!("len is: {}", count);
+
+    if true {
         let file = file.unwrap();
         if file.ftype == STDOUT || file.ftype == STDERR {
             let mut read_data = vec![0u8; count];
@@ -204,6 +207,10 @@ pub fn write(emu: &mut Emulator) -> Option<Fault> {
 
             let s = std::str::from_utf8(&read_data).unwrap();
             print!("{}", s);
+            //match std::str::from_utf8(&read_data) {
+            //    Ok(v) => print!("{}", v),
+            //    Err(_) => print!("{:?}", read_data),
+            //}
         } else {
             panic!("Write to unsupported file occured");
         }
@@ -214,10 +221,13 @@ pub fn write(emu: &mut Emulator) -> Option<Fault> {
 }
 
 pub fn brk(emu: &mut Emulator) -> Option<Fault> {
-    let _base = emu.get_reg(Register::A0);
+    let base = emu.get_reg(Register::A0);
+    if base == 0 {
+        emu.set_reg(Register::A0, 0);
+        return None;
+    }
 
-    emu.set_reg(Register::A0, !0);
-    None
+    panic!("Not supporting brk");
 }
 
 pub fn gettimeofday(emu: &mut Emulator) -> Option<Fault> {
