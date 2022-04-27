@@ -18,7 +18,7 @@ use config::{CovMethod, COVMETHOD};
 use std::process;
 use std::sync::Arc;
 use std::sync::mpsc::Sender;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::AtomicUsize;
 use std::time::Instant;
 
 use rustc_hash::FxHashMap;
@@ -209,8 +209,11 @@ impl Input {
             self.exec_time
         */
 
-        self.size;
-        150000
+        if self.size > 0 {
+            100
+        } else {
+            100
+        }
     }
 }
 
@@ -341,6 +344,7 @@ pub fn worker(_thr_id: usize, mut emu: Emulator, mut corpus: Arc<Corpus>, tx: Se
     // Locally count the number of crashes, total and unique
     let mut local_total_crashes = 0;
     let mut local_unique_crashes = 0;
+    let mut local_coverage_counter = 0;
 
     // Current index into the input array of the corpus
     let mut input_index = 0;
@@ -392,8 +396,9 @@ pub fn worker(_thr_id: usize, mut emu: Emulator, mut corpus: Arc<Corpus>, tx: Se
             }
 
             // This input found new coverage
-            if case_res.1 {
+            if case_res.1 > 0 {
                 //println!("saving new coverage: {:?}", emu.fuzz_input.clone());
+                local_coverage_counter += case_res.1;
                 corpus.inputs.write().push(Input::new(emu.fuzz_input.clone(), Some(exec_time)));
             }
         }
@@ -403,7 +408,7 @@ pub fn worker(_thr_id: usize, mut emu: Emulator, mut corpus: Arc<Corpus>, tx: Se
             total_cases: seed_energy,
             crashes: local_total_crashes,
             ucrashes: local_unique_crashes,
-            coverage: corpus.cov_counter.load(Ordering::SeqCst),
+            coverage: local_coverage_counter,
         };
 
         // Send stats over to the main thread
@@ -412,5 +417,6 @@ pub fn worker(_thr_id: usize, mut emu: Emulator, mut corpus: Arc<Corpus>, tx: Se
         // Reset local statistics
         local_total_crashes = 0;
         local_unique_crashes = 0;
+        local_coverage_counter = 0;
     }
 }

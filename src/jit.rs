@@ -284,43 +284,39 @@ impl Jit {
                 let mut fallthrough = asm.create_label();
 
                 // {rbx} = previous_block ^ cur_block = current_hash
-                //asm.mov(rbx, ptr(r8+0x40)).unwrap();
-                //#[allow(overflowing_literals)]
-                //asm.xor(rbx, 0xe66dd519i32).unwrap();
+                asm.mov(rax, (($pc as u64) << 32)).unwrap();
+                asm.mov(rbx, ptr(r8+0x40)).unwrap();
+                asm.add(rbx, rax).unwrap();
 
-                //asm.mov(rax, $pc as u64).unwrap();
-                //#[allow(overflowing_literals)]
-                //asm.xor(rax, 0xa50ec1c4i32).unwrap();
+                asm.mov(rax, rbx).unwrap();
 
-                //asm.xor(rbx, rax).unwrap();
-                //asm.mov(rax, rbx).unwrap();
+                asm.shl(rax, 13).unwrap();
+                asm.xor(rbx, rax).unwrap();
+                asm.mov(rax, rbx).unwrap();
 
-                //asm.shl(rax, 13).unwrap();
-                //asm.xor(rbx, rax).unwrap();
-                //asm.mov(rax, rbx).unwrap();
+                asm.shr(rax, 17).unwrap();
+                asm.xor(rbx, rax).unwrap();
+                asm.mov(rax, rbx).unwrap();
 
-                //asm.shr(rax, 17).unwrap();
-                //asm.xor(rbx, rax).unwrap();
-                //asm.mov(rax, rbx).unwrap();
+                asm.shl(rax, 43).unwrap();
+                asm.xor(rbx, rax).unwrap();
 
-                //asm.shl(rax, 43).unwrap();
-                //asm.xor(rbx, rax).unwrap();
-
-                //asm.and(rbx, 0xffffff).unwrap();
-
-                asm.mov(rbx, $pc as u64).unwrap();
+                // Extract only the bottom 24-bits for our hashtable index
+                asm.and(rbx, 0xffffff).unwrap();
 
                 // Use coverage bytemap to determine if edge has been hit before
+                asm.xor(eax, eax).unwrap();
                 asm.mov(rcx, ptr(r8 + 0x30)).unwrap();
                 asm.add(rcx, rbx).unwrap();
-                asm.xor(eax, eax).unwrap();
                 asm.mov(rax, byte_ptr(rcx)).unwrap();
                 asm.test(rax, rax).unwrap();
                 asm.jnz(fallthrough).unwrap();
 
                 // New edge/coverage event! Leave JIT to track it
-                asm.mov(byte_ptr(r8 + 0x28), 1).unwrap();
                 asm.mov(byte_ptr(rcx), 1).unwrap();
+                asm.mov(rax, ptr(r8 + 0x48)).unwrap();
+                asm.add(eax, 1).unwrap();
+                asm.mov(ptr(r8+0x48), rax).unwrap();
 
                 // Not a new coverage case, do standard hash updates
                 asm.set_label(&mut fallthrough).unwrap();

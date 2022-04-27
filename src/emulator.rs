@@ -379,9 +379,7 @@ impl Emulator {
     /// Once the jit exits it collects the reentry_pc (where to continue execution), and the exit
     /// code. It performs an appropriate operation based on the exit code and then continues with
     /// the loop to reenter the jit.
-    pub fn run_jit(&mut self, corpus: &Corpus) -> (Option<Fault>, bool) {
-        let mut found_new_cov: bool = false;
-
+    pub fn run_jit(&mut self, corpus: &Corpus) -> (Option<Fault>, usize) {
         // Extra space when the available registers are not enough to pass sufficient 
         // information in/out of the jit
         let mut scratchpad = [
@@ -400,10 +398,10 @@ impl Emulator {
             // 4 - 0x20 - Free
             0usize,
 
-            // 5 - 0x28 - has_hit_new_cov
+            // 5 - 0x28 Free
             0usize,
 
-            // 6 - 0x30 - Free
+            // 6 - 0x30 - Coverage byte-map
             corpus.coverage_bytemap.as_ptr() as usize,
 
             // 7 - 0x38 - Accumulated coverage hash of current input
@@ -412,7 +410,7 @@ impl Emulator {
             // 8 - 0x40 - Previous block
             0usize,
 
-            // 9 - 0x48 - 
+            // 9 - 0x48 - Coverage counter
             0usize,
 
             // 10 - 0x50 - Used by coverage event, address that needs to be overwritten with a 1 to
@@ -425,7 +423,7 @@ impl Emulator {
 
             // Error out if code was unaligned.
             // since Riscv instructions are always 4-byte aligned this is a bug
-            if pc & 3 != 0 { return (Some(Fault::ExecFault(pc)), found_new_cov); }
+            if pc & 3 != 0 { return (Some(Fault::ExecFault(pc)), scratchpad[9]); }
 
             // Determine address of the jit-backing code for the current function, either by lookup,
             // or by compiling the function if it hasn't yet been compiled
@@ -478,11 +476,6 @@ impl Emulator {
 
             self.set_reg(Register::Pc, reentry_pc);
 
-            if scratchpad[5] != 0 {
-                found_new_cov = true;
-            }
-
-
             // Take action based on the exit code returned by JIT
             match exit_code {
                 1 => { /* Nothing special, just need to compile next code block */ },
@@ -504,7 +497,7 @@ impl Emulator {
                             syscalls::fstat(self);
                         },
                         93 => {
-                            return (syscalls::exit(), found_new_cov);
+                            return (syscalls::exit(), scratchpad[9]);
                         },
                         169 => {
                             syscalls::gettimeofday(self);
@@ -530,24 +523,20 @@ impl Emulator {
                 },
                 5 => { /* JIT exited to setup a snapshot */
                     self.snapshot_addr = scratchpad[0];
-                    return (Some(Fault::Snapshot), found_new_cov);
+                    return (Some(Fault::Snapshot), scratchpad[9]);
                 },
                 6 => { /* JIT exited to track a new coverage event */
-                    // rax = code
-                    // rcx = reentry
-                    // scratch[8] = to
-                    // scratch[9] = from
-                    // scratch[10] = address to overwrite
+                    panic!("");
                     self.coverage_handler(&scratchpad);
                 },
                 8 => { /* Attempted to read memory without read permissions */
-                    return (Some(Fault::ReadFault(reentry_pc)), found_new_cov);
+                    return (Some(Fault::ReadFault(reentry_pc)), scratchpad[9]);
                 },
                 9 => { /* Attempted to write to memory without write permissions */
-                    return (Some(Fault::WriteFault(reentry_pc)), found_new_cov);
+                    return (Some(Fault::WriteFault(reentry_pc)), scratchpad[9]);
                 },
                 10 => { /* Memory read/write request went completely out of bounds */
-                    return (Some(Fault::OutOfBounds(reentry_pc)), found_new_cov);
+                    return (Some(Fault::OutOfBounds(reentry_pc)), scratchpad[9]);
                 },
                 _ => panic!("Invalid JIT return code: {:x}", exit_code),
             }
@@ -560,7 +549,7 @@ impl Emulator {
             //CovMethod::Block => { /* Block level coverage without a hit-counter */
             //    if !tmp_cov.is_empty() {
             //        // New coverage hit
-            //        found_new_cov = true;
+            //        scratchpad[9] = true;
             //        corpus.cov_counter.fetch_add(1, Ordering::SeqCst);
             //        let mut cov_vec = corpus.coverage_vec.as_ref().unwrap().write();
 
@@ -585,7 +574,7 @@ impl Emulator {
             //                } else {
             //                    // New coverage hit
             //                    corpus.cov_counter.fetch_add(1, Ordering::SeqCst);
-            //                    found_new_cov = true;
+            //                    scratchpad[9] = true;
             //                    cov_map.insert(v as usize, 1);
             //                }
             //            }

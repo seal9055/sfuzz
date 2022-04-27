@@ -10,7 +10,7 @@ use std::thread;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::atomic::Ordering;
+//use std::sync::atomic::Ordering;
 
 use byteorder::{LittleEndian, WriteBytesExt};
 use num_format::{Locale, ToFormattedString};
@@ -152,13 +152,14 @@ fn main() {
         .expect("Error allocating stack");
     emu.set_reg(Register::Sp, (stack + (1024 * 1024)) - 8);
 
-    // Allocate space for argv[0] & argv[1]
-    let argv0 = emu.allocate(64, Perms::READ | Perms::WRITE).expect("Allocating argv[0] failed");
-    let argv1 = emu.allocate(64, Perms::READ | Perms::WRITE).expect("Allocating argv[1] failed");
-    let argv2 = emu.allocate(64, Perms::READ | Perms::WRITE).expect("Allocating argv[1] failed");
-    emu.memory.write_mem(argv0, b"objdump\0", 8).expect("Writing to argv[0] failed");
-    emu.memory.write_mem(argv1, b"-x\0", 3).expect("Writing to argv[0] failed");
-    emu.memory.write_mem(argv2, b"fuzz_input\0", 11).expect("Writing to argv[1] failed");
+    // Setup arguments
+    //let arguments = vec!["test2\0".to_string(), "fuzz_input\0".to_string()];
+    let arguments = vec!["objdump\0".to_string(), "-g\0".to_string(), "fuzz_input\0".to_string()];
+    let args: Vec<usize> = arguments.iter().map(|e| {
+        let addr = emu.allocate(64, Perms::READ | Perms::WRITE).expect("Allocating an argument failed");
+        emu.memory.write_mem(addr, e.as_bytes(), e.len()).expect("Writing to argv[0] failed");
+        addr
+    }).collect();
 
     // Macro to push 64-bit integers onto the stack
     macro_rules! push {
@@ -175,10 +176,10 @@ fn main() {
     push!(0u64);    // Auxp
     push!(0u64);    // Envp
     push!(0u64);    // Null-terminate Argv
-    push!(argv2);   // Argv[2] 
-    push!(argv1);   // Argv[1] 
-    push!(argv0);   // Argv[0]
-    push!(1u64);    // Argc
+    for arg in args.iter().rev() {
+        push!(*arg);
+    }
+    push!(args.len());    // Argc
 
     // Insert various hooks into binary
     insert_hooks(&sym_map, &mut emu);
@@ -222,7 +223,7 @@ fn main() {
     for received in rx {
         let elapsed_time = start.elapsed().as_secs_f64();
 
-        stats.coverage     = corpus.cov_counter.load(Ordering::SeqCst);
+        stats.coverage    += received.coverage;
         stats.total_cases += received.total_cases;
         stats.crashes     += received.crashes;
         stats.ucrashes    += received.ucrashes;
