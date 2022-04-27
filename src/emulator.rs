@@ -6,11 +6,11 @@ use crate::{
     irgraph::{IRGraph, Flag},
     emulator::FileType::{STDIN, STDOUT, STDERR},
     config::{CovMethod, COVMETHOD},
-    syscalls, Corpus, error_exit,
+    syscalls, Corpus, error_exit, LogType, log
 };
 
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
+//use std::sync::atomic::Ordering;
 use std::arch::asm;
 use std::collections::BTreeMap;
 //use std::ptr::write_volatile;
@@ -380,9 +380,7 @@ impl Emulator {
     /// code. It performs an appropriate operation based on the exit code and then continues with
     /// the loop to reenter the jit.
     pub fn run_jit(&mut self, corpus: &Corpus) -> (Option<Fault>, bool) {
-        let mut tmp_cov: Vec<u64> = Vec::with_capacity(9000);
         let mut found_new_cov: bool = false;
-        let mut cov_len: usize = 0;
 
         // Extra space when the available registers are not enough to pass sufficient 
         // information in/out of the jit
@@ -390,8 +388,36 @@ impl Emulator {
             // 0 - 0x00 - Used to extract snapshot addr
             0usize,
 
-            // 1 - 0x08 - Track which blocks are hit for coverage
-            tmp_cov.as_mut_ptr() as usize,
+            // 1 - 0x08 - Free
+            0usize,
+
+            // 2 - 0x10 - Free
+            0usize,
+
+            // 3 - 0x18 - Free
+            0usize,
+
+            // 4 - 0x20 - Free
+            0usize,
+
+            // 5 - 0x28 - has_hit_new_cov
+            0usize,
+
+            // 6 - 0x30 - Free
+            corpus.coverage_bytemap.as_ptr() as usize,
+
+            // 7 - 0x38 - Accumulated coverage hash of current input
+            0usize,
+
+            // 8 - 0x40 - Previous block
+            0usize,
+
+            // 9 - 0x48 - 
+            0usize,
+
+            // 10 - 0x50 - Used by coverage event, address that needs to be overwritten with a 1 to
+            // indicate that the coverage event has already been hit
+            0usize,
         ];
 
         loop {
@@ -437,9 +463,7 @@ impl Emulator {
                 call_dest = in(reg) func,
                 out("rax")   exit_code,
                 out("rcx")   reentry_pc,
-                in("r8")     scratchpad.as_ptr(),
-                inout("rsi") cov_len,
-                //in("r8")     tmp_cov.as_ptr() as u64,
+                in("r8")     scratchpad.as_mut_ptr(),
                 inout("r9")  self.memory.dirty_size,
                 in("r10")    self.memory.dirty.as_ptr() as u64,
                 in("r11")    self.memory.dirty_bitmap.as_ptr() as u64,
@@ -450,56 +474,12 @@ impl Emulator {
                 );
 
                 self.memory.dirty.set_len(self.memory.dirty_size as usize);
-                tmp_cov.set_len(cov_len as usize);
-                //println!("size is: {}", cov_len);
-                //println!("size is: {}", tmp_cov.len());
-                //println!("data {:x?}", scratchpad[0]);
-                //println!("data {:x?}", scratchpad[1]);
-                //println!("data {:x?}", tmp_cov);
             }
 
             self.set_reg(Register::Pc, reentry_pc);
 
-            // Different forms of supported coverage tracking
-            match COVMETHOD {
-                CovMethod::Block => { /* Block level coverage without a hit-counter */
-                    if !tmp_cov.is_empty() {
-                        // New coverage hit
-                        found_new_cov = true;
-                        corpus.cov_counter.fetch_add(1, Ordering::SeqCst);
-                        let mut cov_vec = corpus.coverage_vec.as_ref().unwrap().write();
-
-                        while let Some(v) = tmp_cov.pop() {
-                            cov_vec.push(v as usize);
-
-                            // Overwrite the jit_coverage instructions with nop-instructions
-                            let addr = self.jit.lookup(v as usize).unwrap();
-                            self.jit.nop_code(addr, Some(0xc));
-                        }
-                        cov_len = 0;
-                    }
-                },
-                CovMethod::BlockHitCounter => { /* Block level coverage with hit-counter */
-                    if !tmp_cov.is_empty() {
-                        if let Some(mut cov_map) = corpus.coverage_map.as_ref()
-                            .unwrap().try_write() {
-                            while let Some(v) = tmp_cov.pop() {
-                                if let Some(e) = cov_map.get_mut(&(v as usize)) {
-                                    // Old coverage hit, increment counter
-                                    *e += 1;
-                                } else {
-                                    // New coverage hit
-                                    corpus.cov_counter.fetch_add(1, Ordering::SeqCst);
-                                    found_new_cov = true;
-                                    cov_map.insert(v as usize, 1);
-                                }
-                            }
-                            cov_len = 0;
-                        }
-                    }
-                },
-                CovMethod::None => {},
-                _ => panic!("Coverage Method not implemented"),
+            if scratchpad[5] != 0 {
+                found_new_cov = true;
             }
 
 
@@ -552,6 +532,14 @@ impl Emulator {
                     self.snapshot_addr = scratchpad[0];
                     return (Some(Fault::Snapshot), found_new_cov);
                 },
+                6 => { /* JIT exited to track a new coverage event */
+                    // rax = code
+                    // rcx = reentry
+                    // scratch[8] = to
+                    // scratch[9] = from
+                    // scratch[10] = address to overwrite
+                    self.coverage_handler(&scratchpad);
+                },
                 8 => { /* Attempted to read memory without read permissions */
                     return (Some(Fault::ReadFault(reentry_pc)), found_new_cov);
                 },
@@ -563,6 +551,55 @@ impl Emulator {
                 },
                 _ => panic!("Invalid JIT return code: {:x}", exit_code),
             }
+        }
+    }
+
+    /// Handle a new coverage tracking event
+    fn coverage_handler(&self, scratchpad: &[usize]) {
+        match COVMETHOD {
+            //CovMethod::Block => { /* Block level coverage without a hit-counter */
+            //    if !tmp_cov.is_empty() {
+            //        // New coverage hit
+            //        found_new_cov = true;
+            //        corpus.cov_counter.fetch_add(1, Ordering::SeqCst);
+            //        let mut cov_vec = corpus.coverage_vec.as_ref().unwrap().write();
+
+            //        while let Some(v) = tmp_cov.pop() {
+            //            cov_vec.push(v as usize);
+
+            //            // Overwrite the jit_coverage instructions with nop-instructions
+            //            let addr = self.jit.lookup(v as usize).unwrap();
+            //            self.jit.nop_code(addr, Some(0xc));
+            //        }
+            //        cov_len = 0;
+            //    }
+            //},
+            //CovMethod::BlockHitCounter => { /* Block level coverage with hit-counter */
+            //    if !tmp_cov.is_empty() {
+            //        if let Some(mut cov_map) = corpus.coverage_map.as_ref()
+            //            .unwrap().try_write() {
+            //            while let Some(v) = tmp_cov.pop() {
+            //                if let Some(e) = cov_map.get_mut(&(v as usize)) {
+            //                    // Old coverage hit, increment counter
+            //                    *e += 1;
+            //                } else {
+            //                    // New coverage hit
+            //                    corpus.cov_counter.fetch_add(1, Ordering::SeqCst);
+            //                    found_new_cov = true;
+            //                    cov_map.insert(v as usize, 1);
+            //                }
+            //            }
+            //            cov_len = 0;
+            //        }
+            //    }
+            //},
+            CovMethod::Edge => {
+                println!("Edge coverage hit: to: {:x}, from: {:x}, hash: {:x}", 
+                         scratchpad[8], scratchpad[9], scratchpad[7]);
+                self.jit.nop_code(scratchpad[10], Some(0x1));
+            },
+            CovMethod::None => {},
+            _ => panic!("Coverage Method not implemented"),
         }
     }
 
@@ -619,7 +656,7 @@ impl Emulator {
         }
 
         if let Some(v) = self.functions.get(&start_pc) {
-            println!("Lifting: {}", v.1);
+            log(LogType::Neutral, &format!("Lifting: {}", v.1));
         }
 
         // These are used to determine jump locations ahead of time

@@ -3,8 +3,7 @@
 pub const COVMETHOD: CovMethod = CovMethod::None;
 
 /// Address at which the fuzzer attempts to create a snapshot once reached
-//pub const SNAPSHOT_ADDR: Option<usize> = Some(0x101e4);
-pub const SNAPSHOT_ADDR: Option<usize> = None;
+pub const SNAPSHOT_ADDR: Option<usize> = None; //Some(0x10218);
 
 pub const PERM_CHECKS: bool = true;
 

@@ -24,11 +24,23 @@ use std::time::Instant;
 use rustc_hash::FxHashMap;
 use fasthash::{xx::Hash32, FastHash};
 use parking_lot::RwLock;
-
 use rand_xoshiro::Xoroshiro64Star;
 use rand_xoshiro::rand_core::SeedableRng;
+use colored::Colorize;
 
 const SAVE_CRASHES: bool = true;
+
+pub enum LogType {
+    Neutral = 0,
+    Success = 1,
+    Failure = 2,
+}
+
+/// Small wrapper to print out colored log messages
+pub fn log(color: LogType, msg: &str) {
+    let log_symbols = ["[-]".blue(), "[+]".green(), "[!]".red()];
+    println!("{} {}", log_symbols[color as usize], msg);
+}
 
 /// Small wrapper to easily handle unrecoverable errors without panicking
 pub fn error_exit(msg: &str) -> ! {
@@ -197,7 +209,8 @@ impl Input {
             self.exec_time
         */
 
-        self.size
+        self.size;
+        150000
     }
 }
 
@@ -219,6 +232,9 @@ pub struct Corpus {
     /// Coverage vector - used by block level coverage without hit-counter
     pub coverage_vec: Option<RwLock<Vec<usize>>>,
 
+    /// Bytemap used in jits to determine if an edge has already been hit
+    pub coverage_bytemap: Vec<usize>,
+
     /// Counter that keeps track of current coverage
     pub cov_counter: AtomicUsize,
 
@@ -228,7 +244,7 @@ pub struct Corpus {
 
 impl Corpus {
     /// Start a new corpus. Initialize fields based on what type of coverage method is in use.
-    pub fn new(_size: usize) -> Self {
+    pub fn new(size: usize) -> Self {
         let (coverage_vec, coverage_map) = match COVMETHOD {
             CovMethod::Block => {
                 (Some(RwLock::new(Vec::new())), None)
@@ -242,6 +258,7 @@ impl Corpus {
             inputs:   RwLock::new(Vec::new()),
             coverage_map,
             coverage_vec,
+            coverage_bytemap: vec![0; size],
             cov_counter: AtomicUsize::new(0),
             crash_mapping: RwLock::new(FxHashMap::default()),
         }
@@ -376,6 +393,7 @@ pub fn worker(_thr_id: usize, mut emu: Emulator, mut corpus: Arc<Corpus>, tx: Se
 
             // This input found new coverage
             if case_res.1 {
+                //println!("saving new coverage: {:?}", emu.fuzz_input.clone());
                 corpus.inputs.write().push(Input::new(emu.fuzz_input.clone(), Some(exec_time)));
             }
         }

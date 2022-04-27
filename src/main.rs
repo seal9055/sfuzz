@@ -3,7 +3,8 @@ use sfuzz::{
     emulator::{Emulator, Register, Fault, ExitType},
     jit::{Jit, LibFuncs},
     config::{SNAPSHOT_ADDR, NUM_THREADS},
-    Input, Corpus, Statistics, error_exit, load_elf_segments, worker, snapshot, calibrate_seeds,
+    Input, Corpus, Statistics, error_exit, load_elf_segments, worker, snapshot,
+    log, LogType,
 };
 use std::thread;
 use std::sync::Arc;
@@ -55,54 +56,58 @@ fn free_hook(emu: &mut Emulator) -> Result<(), Fault> {
 
 /// Inserts various hooks into binary
 fn insert_hooks(sym_map: &FxHashMap<String, usize>, emu: &mut Emulator) {
-
-    // _free_r hook
     match sym_map.get("_free_r") {
         Some(v) => {
-            println!("_free_r() hooked");
+            log(LogType::Success, "_free_r hooked");
             emu.hooks.insert(*v, free_hook);
         },
-        None => { println!("_free_r does not exist in target so it could not be hooked"); }
+        None => {
+            log(LogType::Neutral, "free_r does not exist in target so it could not be hooked"); 
+        }
     }
 
-    // _malloc_r hook
     match sym_map.get("_malloc_r") {
         Some(v) => {
-            println!("_malloc_r() hooked");
+            log(LogType::Success, "_malloc_r hooked");
             emu.hooks.insert(*v, malloc_hook);
         },
-        None => { println!("_malloc_r does not exist in target so it could not be hooked"); }
+        None => {
+            log(LogType::Neutral, "malloc_r does not exist in target so it could not be hooked"); 
+        }
     }
 
-    // _calloc_r hook
     match sym_map.get("_calloc_r") {
         Some(v) => {
-            println!("_calloc_r() hooked");
+            log(LogType::Success, "_calloc_r hooked");
             emu.hooks.insert(*v, calloc_hook);
         },
-        None => { println!("_calloc_r does not exist in target so it could not be hooked"); }
+        None => {
+            log(LogType::Neutral, "_calloc_r does not exist in target so it could not be hooked"); 
+        }
     }
 
     // Hooks for strlen and strcmp are required because the default libc variants go out of bounds.
     // This is not a security issue since the functions verify that everything is properly aligned,
     // but since this fuzzer notices byte level permission violations these are required.
 
-    // strlen hook
     match sym_map.get("strlen") {
         Some(v) => {
-            println!("strlen() replaced with safe implementation");
+            log(LogType::Success, "strlen replaced with safe implementation");
             emu.custom_lib.insert(*v, LibFuncs::STRLEN);
         },
-        None => { println!("strlen() does not exist in target so it could not be hooked"); }
+        None => {
+            log(LogType::Neutral, "strlen does not exist in target so it could not be hooked"); 
+        }
     }
 
-    // strcmp hook
     match sym_map.get("strcmp") {
         Some(v) => {
-            println!("strcmp() replaced with safe implementation");
+            log(LogType::Success, "strcmp replaced with safe implementation");
             emu.custom_lib.insert(*v, LibFuncs::STRCMP);
         },
-        None => { println!("strcmp() does not exist in target so it could not be hooked"); }
+        None => { 
+            log(LogType::Neutral, "strcmp does not exist in target so it could not be hooked"); 
+        }
     }
 }
 
@@ -149,9 +154,11 @@ fn main() {
 
     // Allocate space for argv[0] & argv[1]
     let argv0 = emu.allocate(64, Perms::READ | Perms::WRITE).expect("Allocating argv[0] failed");
-    //let argv1 = emu.allocate(64, Perms::READ | Perms::WRITE).expect("Allocating argv[1] failed");
+    let argv1 = emu.allocate(64, Perms::READ | Perms::WRITE).expect("Allocating argv[1] failed");
+    let argv2 = emu.allocate(64, Perms::READ | Perms::WRITE).expect("Allocating argv[1] failed");
     emu.memory.write_mem(argv0, b"objdump\0", 8).expect("Writing to argv[0] failed");
-    //emu.memory.write_mem(argv1, b"fuzz_input\0", 11).expect("Writing to argv[1] failed");
+    emu.memory.write_mem(argv1, b"-x\0", 3).expect("Writing to argv[0] failed");
+    emu.memory.write_mem(argv2, b"fuzz_input\0", 11).expect("Writing to argv[1] failed");
 
     // Macro to push 64-bit integers onto the stack
     macro_rules! push {
@@ -168,7 +175,8 @@ fn main() {
     push!(0u64);    // Auxp
     push!(0u64);    // Envp
     push!(0u64);    // Null-terminate Argv
-    //push!(argv1);   // Argv[1] 
+    push!(argv2);   // Argv[2] 
+    push!(argv1);   // Argv[1] 
     push!(argv0);   // Argv[0]
     push!(1u64);    // Argc
 
@@ -182,15 +190,15 @@ fn main() {
     let corpus = Arc::new(corpus);
 
     // Setup snapshot fuzzing at a point before the fuzz-input is read in
-    //if let Some(addr) = SNAPSHOT_ADDR {
-    //    println!("Activated snapshot-based fuzzing");
+    if let Some(addr) = SNAPSHOT_ADDR {
+        println!("Activated snapshot-based fuzzing");
 
-    //    // Insert snapshot fuzzer exit condition
-    //    emu.exit_conds.insert(addr, ExitType::Snapshot);
+        // Insert snapshot fuzzer exit condition
+        emu.exit_conds.insert(addr, ExitType::Snapshot);
 
-    //    // Snapshot the emulator
-    //    snapshot(&mut emu, &*corpus);
-    //}
+        // Snapshot the emulator
+        snapshot(&mut emu, &*corpus);
+    }
 
     // Calibrate the emulator for the timeout. Cloning it so the real emulator state isnt changed
     //calibrate_seeds(&mut emu, &*corpus.clone());
