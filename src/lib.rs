@@ -20,7 +20,6 @@ use std::process;
 use std::sync::Arc;
 use std::sync::mpsc::Sender;
 use std::sync::atomic::AtomicUsize;
-use std::time::Instant;
 
 use rustc_hash::FxHashMap;
 use fasthash::{xx::Hash32, FastHash};
@@ -170,6 +169,9 @@ pub struct Statistics {
 
     /// Number of instructions executed
     pub instr_count: u64,
+
+    /// How often a fuzz-input times out due to taking too long
+    pub timeouts: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -180,12 +182,14 @@ pub struct Input {
     /// Size of this input
     size: usize,
 
-    /// Execution time of this seed (determined on first run)
-    exec_time: Option<usize>,
+    /// Execution time of this input (measured using the amount of instructions this input executed
+    /// since using a syscall to get the actual time is very expensive). Calibrated on startup for
+    /// initial seeds
+    exec_time: Option<u64>,
 }
 
 impl Input {
-    pub fn new(data: Vec<u8>, exec_time: Option<usize>) -> Self {
+    pub fn new(data: Vec<u8>, exec_time: Option<u64>) -> Self {
         Self {
             data: data.to_vec(),
             size: data.len(),
@@ -293,34 +297,33 @@ pub fn snapshot(emu: &mut Emulator, corpus: &Corpus) {
 }
 
 /// Callibrate how long the initial seeds take to run and use it to determine timeout
-pub fn calibrate_seeds(emu: &mut Emulator, corpus: &Corpus) {
+pub fn calibrate_seeds(emu: &mut Emulator, corpus: &Corpus) -> u64 {
     let inputs = corpus.inputs.read();
     let num_inputs = inputs.len();
-    let mut tmp = 0;
+    let mut instr_count = 0;
     drop(inputs);
 
     let original = emu.fork();
-    //let mut avg: usize = 0;
+    let mut avg: u64 = 0;
 
     for i in 0..num_inputs {
         emu.fuzz_input.extend_from_slice(&corpus.inputs.read()[i].data);
 
         // Run jit until finish and collect how long this input needed
-        let start = Instant::now();
-        emu.run_jit(&corpus, &mut tmp);
-        let elapsed = start.elapsed().subsec_nanos() as usize;
-
-        //avg += elapsed;
+        emu.run_jit(&corpus, &mut instr_count);
 
         let mut inputs = corpus.inputs.write();
-        inputs[i].exec_time = Some(elapsed);
+        inputs[i].exec_time = Some(instr_count);
+
+        avg += instr_count;
 
         emu.fuzz_input.clear();
         emu.reset(&original);
+        instr_count = 0;
     }
 
     // Timeout is the average initial seed execution time * 5
-    //(avg / num_inputs) * 5
+    (avg / num_inputs as u64) * 5
 }
 
 /// Wrapper function for each emulator, takes care of running the emulator, memory resets, etc
@@ -339,6 +342,7 @@ pub fn worker(_thr_id: usize, mut emu: Emulator, mut corpus: Arc<Corpus>, tx: Se
     let mut local_unique_crashes = 0;
     let mut local_coverage_count = 0;
     let mut local_instr_count = 0;
+    let mut local_timeouts = 0;
 
     // Current index into the input array of the corpus
     let mut input_index = 0;
@@ -348,7 +352,6 @@ pub fn worker(_thr_id: usize, mut emu: Emulator, mut corpus: Arc<Corpus>, tx: Se
         // to determine how often this input should be run before moving on to the next input
         input_index = corpus.select_seed(input_index, &mut rng).unwrap();
         let seed_energy = corpus.inputs.read()[input_index].calculate_energy();
-        let mut case_instr_count: u64 = 0;
 
         for _ in 0..seed_energy {
             // Reset the emulator state
@@ -361,8 +364,8 @@ pub fn worker(_thr_id: usize, mut emu: Emulator, mut corpus: Arc<Corpus>, tx: Se
             mutator.mutate(&mut emu.fuzz_input);
 
             // If a crash occured, save the input and increase crash count, otherwise just move on
+            let mut case_instr_count: u64 = 0;
             let case_res = emu.run_jit(&mut corpus, &mut case_instr_count);
-            let exec_time = 0;
 
             match case_res.0.unwrap() {
                 // This means that a crash is found. Determine if the crash is unique, and if so, 
@@ -385,6 +388,7 @@ pub fn worker(_thr_id: usize, mut emu: Emulator, mut corpus: Arc<Corpus>, tx: Se
                     }
                     local_total_crashes += 1;
                 },
+                Fault::Timeout => local_timeouts += 1,
                 Fault::Snapshot => panic!("Hit snapshot during execution, this should not happen"),
                 Fault::Exit => {},
                 _ => unreachable!(),
@@ -392,9 +396,9 @@ pub fn worker(_thr_id: usize, mut emu: Emulator, mut corpus: Arc<Corpus>, tx: Se
 
             // This input found new coverage
             if case_res.1 > 0 {
-                //println!("saving new coverage: {:?}", emu.fuzz_input.clone());
                 local_coverage_count += case_res.1;
-                corpus.inputs.write().push(Input::new(emu.fuzz_input.clone(), Some(exec_time)));
+                corpus.inputs.write().push(Input::new(emu.fuzz_input.clone(), 
+                                                      Some(case_instr_count)));
             }
 
             local_instr_count += case_instr_count;
@@ -403,10 +407,11 @@ pub fn worker(_thr_id: usize, mut emu: Emulator, mut corpus: Arc<Corpus>, tx: Se
         // Populate statistics that will be sent to the main thread
         let stats = Statistics {
             total_cases: seed_energy,
-            crashes: local_total_crashes,
-            ucrashes: local_unique_crashes,
-            coverage: local_coverage_count,
+            crashes:     local_total_crashes,
+            ucrashes:    local_unique_crashes,
+            coverage:    local_coverage_count,
             instr_count: local_instr_count,
+            timeouts:    local_timeouts,
         };
 
         // Send stats over to the main thread
@@ -417,5 +422,6 @@ pub fn worker(_thr_id: usize, mut emu: Emulator, mut corpus: Arc<Corpus>, tx: Se
         local_unique_crashes = 0;
         local_coverage_count = 0;
         local_instr_count = 0;
+        local_timeouts = 0;
     }
 }

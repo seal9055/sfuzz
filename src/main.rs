@@ -2,9 +2,9 @@ use sfuzz::{
     mmu::Perms,
     emulator::{Emulator, Register, Fault, ExitType},
     jit::{Jit, LibFuncs},
-    config::{SNAPSHOT_ADDR, NUM_THREADS},
+    config::{SNAPSHOT_ADDR, NUM_THREADS, OVERRIDE_TIMEOUT},
     pretty_printing::{print_stats, log, LogType},
-    Input, Corpus, Statistics, error_exit, load_elf_segments, worker, snapshot,
+    Input, Corpus, Statistics, error_exit, load_elf_segments, worker, snapshot, calibrate_seeds,
 };
 use std::thread;
 use std::sync::Arc;
@@ -188,10 +188,6 @@ fn main() {
     // Insert various hooks into binary
     insert_hooks(&sym_map, &mut emu);
 
-    // Wrap corpus in an arc so it can be shared between threads
-    //let mut tmp_corpus = corpus.clone();
-    //let mut tmp_emu = emo.clone();
-
     let corpus = Arc::new(corpus);
 
     // Setup snapshot fuzzing at a point before the fuzz-input is read in
@@ -206,7 +202,11 @@ fn main() {
     }
 
     // Calibrate the emulator for the timeout. Cloning it so the real emulator state isnt changed
-    //calibrate_seeds(&mut emu, &*corpus.clone());
+    // Alternatively configs can be used to override automatically determined timeout
+    emu.timeout = calibrate_seeds(&mut emu, &*corpus.clone());
+    if let Some(v) = OVERRIDE_TIMEOUT {
+        emu.timeout = v;
+    }
 
     let emu = Arc::new(emu);
 
@@ -223,6 +223,10 @@ fn main() {
     let start = Instant::now();
     let mut last_time = Instant::now();
 
+    // Sleep for short duration on startup before printing statistics, otherwise elapsed time might
+    // be 0, leading to a crash while printing statistics
+    thread::sleep(Duration::from_millis(1000));
+
     // Update stats structure whenever a thread sends a new message
     for received in rx {
         let elapsed_time = start.elapsed().as_secs_f64();
@@ -232,10 +236,11 @@ fn main() {
         stats.crashes     += received.crashes;
         stats.ucrashes    += received.ucrashes;
         stats.instr_count += received.instr_count;
+        stats.timeouts    += received.timeouts;
 
         // Print out updated statistics every second
-        if last_time.elapsed() >= Duration::from_millis(1000) {
-            print_stats(&term, &stats, elapsed_time);
+        if last_time.elapsed() >= Duration::from_millis(500) {
+            print_stats(&term, &stats, elapsed_time, emu.timeout, &corpus);
             last_time = Instant::now();
         }
     }

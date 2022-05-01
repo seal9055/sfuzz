@@ -17,6 +17,9 @@ pub const PERM_CHECKS: bool = true;
 /// Additional information is printed out, alongside rolling statistics
 pub const DEBUG_PRINT: bool = false;
 
+/// Manually override the automatically calibrated timeout
+pub const OVERRIDE_TIMEOUT: Option<u64> = None;
+
 #[derive(Eq, PartialEq, Copy, Clone, Debug)]
 pub enum CovMethod {
     /// Don't track coverage

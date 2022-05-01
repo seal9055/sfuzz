@@ -1,9 +1,10 @@
 use crate::{
     config::{COVMETHOD, PERM_CHECKS, SNAPSHOT_ADDR, NUM_THREADS, DEBUG_PRINT},
-    Statistics,
+    Statistics, Corpus,
 };
 
 use core::fmt;
+use std::sync::Arc;
 
 use console::Term;
 use num_format::{Locale, ToFormattedString};
@@ -61,7 +62,8 @@ pub fn log(color: LogType, msg: &str) {
     }
 }
 
-fn pretty_stats(term: &Term, stats: &Statistics, elapsed_time: f64) {
+fn pretty_stats(term: &Term, stats: &Statistics, elapsed_time: f64, timeout: u64, corpus: 
+                &Arc<Corpus>) {
     term.move_cursor_to(0, 2).unwrap();
     term.write_line(
         &format!("{}", Green("\t\t[ SFUZZ - https://github.com/seal9055/sfuzz ]\n"))
@@ -85,11 +87,13 @@ fn pretty_stats(term: &Term, stats: &Statistics, elapsed_time: f64) {
     term.write_line(&format!("   Unique Crashes: {}", stats.ucrashes)).unwrap();
     term.move_cursor_to(54, 6).unwrap();
     term.write_line(&format!("   Crashes: \t{}", stats.crashes)).unwrap();
+    term.move_cursor_to(54, 7).unwrap();
+    term.write_line(&format!("   Timeouts: \t{}", stats.timeouts)).unwrap();
 
     // Performance numbers
     term.move_cursor_down(2).unwrap();
     term.write_line(
-        &format!("\t{}\n\t   Fuzz cases per second: {:8}\n\t   \
+        &format!("\t{}\n\t   Fuzz cases per second: {:12}\n\t   \
                 Instrs per second [mil]: {:12}",
         Blue("Performance measurements"), 
         (stats.total_cases / elapsed_time as usize).to_formatted_string(&Locale::en), 
@@ -99,23 +103,34 @@ fn pretty_stats(term: &Term, stats: &Statistics, elapsed_time: f64) {
     ).unwrap();
 
     // Coverage
-    term.move_cursor_to(54, 9).unwrap();
-    term.write_line(&format!("{}", Blue("Coverage"))).unwrap();
     term.move_cursor_to(54, 10).unwrap();
+    term.write_line(&format!("{}", Blue("Coverage"))).unwrap();
+    term.move_cursor_to(54, 11).unwrap();
     term.write_line(&format!("   Coverage: {}", stats.coverage)).unwrap();
 
     // Config information
     term.move_cursor_down(2).unwrap();
     term.write_line(
         &format!("\t{}\n\t   Num Threads: {}\n\t   Coverage type: {:?}\n\t   \
-        Snapshots enabled: {}\n\t   ASAN: {}",
+        Snapshots enabled: {}\n\t   ASAN: {}\n\t   timeout: {}",
         Blue("Config"), 
         NUM_THREADS,
         COVMETHOD,
         SNAPSHOT_ADDR.is_some(),
         PERM_CHECKS,
+        timeout,
         )
     ).unwrap();
+
+    // Corpus stats
+    term.move_cursor_to(54, 14).unwrap();
+    term.write_line(&format!("{}", Blue("Corpus"))).unwrap();
+    term.move_cursor_to(54, 15).unwrap();
+    term.write_line(&format!("   Size: {}", corpus.inputs.read().len())).unwrap();
+    term.move_cursor_to(54, 16).unwrap();
+    term.write_line(&format!("   Instrs per case: {}", 
+                             (stats.instr_count / stats.total_cases as u64)
+                             )).unwrap();
 
     // Flush buffer and write to terminal
     term.flush().unwrap();
@@ -135,11 +150,12 @@ fn basic_stats(stats: &Statistics, elapsed_time: f64) {
         stats.ucrashes);
 }
 
-pub fn print_stats(term: &Term, stats: &Statistics, elapsed_time: f64) {
+pub fn print_stats(term: &Term, stats: &Statistics, elapsed_time: f64, timeout: u64, 
+                   corpus: &Arc<Corpus>) {
     if DEBUG_PRINT {
         basic_stats(stats, elapsed_time);
     } else {
-        pretty_stats(term, stats, elapsed_time);
+        pretty_stats(term, stats, elapsed_time, timeout, corpus);
     }
 
 }

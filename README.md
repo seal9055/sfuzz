@@ -17,7 +17,7 @@ what I believe is necessary for the fuzzer to become a viable choice for general
 - [X] Track edge level coverage
 - [X] Persistent mode to fuzz in small loops around target functions
 - [X] Crash deduping / unique crashes
-- [X] Update mutators to include more options and to work based off coverage feedback
+- [X] Update mutators to include more options
 - [ ] Seed Scheduling
 - [ ] Bug-fixes during code-compilation
 - [ ] Implement riscv-atomics so the JIT can use libc instead of newlib

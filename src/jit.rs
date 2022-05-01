@@ -62,6 +62,9 @@ pub struct CompileInputs<'a> {
     /// pc - exit-type mapping. If the pc is hit in the JIT, the jit is left with a corresponding 
     /// code
     pub exit_conds: &'a mut FxHashMap<usize, ExitType>,
+
+    /// Amount of instructions until a fuzz-case will be manually terminated
+    pub timeout: &'a u64,
 }
 
 /// Holds the backing that contains the just-in-time compiled code
@@ -231,6 +234,15 @@ impl Jit {
             }
         }
 
+        /// Jit exit with reentry address stored in a register
+        macro_rules! jit_exit2 {
+            ($code: expr, $reentry: expr) => {
+                asm.mov(rax, $code as u64).unwrap();
+                asm.mov(rcx, $reentry).unwrap();
+                asm.ret().unwrap();
+            }
+        }
+
         /// Generate JIT-code to setup appropriate arguments for a snapshot before leaving JIT
         /// Call + ret() used to get current rip. This is then passed on to the emulator using the 
         /// rdx register alongside the size, which then takes care of zeroing out the area.
@@ -254,15 +266,6 @@ impl Jit {
                 // Save size of the snapshot code injection that we have to later nop out
                 self.snapshot_inject_size.store(asm.assemble(0x0).unwrap().len() - start, 
                                                Ordering::SeqCst);
-            }
-        }
-
-        /// Jit exit with reentry address stored in a register
-        macro_rules! jit_exit2 {
-            ($code: expr, $reentry: expr) => {
-                asm.mov(rax, $code as u64).unwrap();
-                asm.mov(rcx, $reentry).unwrap();
-                asm.ret().unwrap();
             }
         }
 
@@ -362,16 +365,25 @@ impl Jit {
                 // This instruction requires a lookup entry to be inserted into lookup table
                 self.add_lookup(&asm.assemble(0x0).unwrap(), v);
 
-                // This instruction is the first instruction of a cfg block, so we need to track
-                // coverage if coverage-tracking is enabled
-                if COVMETHOD == CovMethod::Block || COVMETHOD == CovMethod::BlockHitCounter {
-                    if compile_inputs.leaders.get(&pc).is_some() {
+                // This instruction is the first instruction of a cfg block
+                if compile_inputs.leaders.get(&pc).is_some() {
+
+                    // Track coverage if coverage tracking is enabled
+                    if COVMETHOD == CovMethod::Block || COVMETHOD == CovMethod::BlockHitCounter {
                         new_block_coverage!(pc);
-                    }
-                } else if COVMETHOD == CovMethod::Edge {
-                    if compile_inputs.leaders.get(&pc).is_some() {
+                    } else if COVMETHOD == CovMethod::Edge {
                         new_edge_coverage!(pc);
                     }
+    
+                    // Check if this fuzz case has reached the timeout limit
+                    let mut fallthrough_timeout = asm.create_label();
+                    let v: u64 = unsafe { std::mem::transmute(compile_inputs.timeout) };
+                    asm.mov(rcx, v).unwrap();
+                    asm.mov(rcx, ptr(rcx)).unwrap();
+                    asm.cmp(rcx, rsi).unwrap();
+                    asm.ja(fallthrough_timeout).unwrap();
+                    jit_exit1!(7, 0);
+                    asm.set_label(&mut fallthrough_timeout).unwrap();
                 }
 
                 // Hit an exit condition, assemble appropriate instructions to handle the case
