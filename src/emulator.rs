@@ -5,8 +5,9 @@ use crate::{
     jit::{Jit, LibFuncs, CompileInputs},
     irgraph::{IRGraph, Flag},
     emulator::FileType::{STDIN, STDOUT, STDERR},
+    pretty_printing::{LogType, log},
     config::{CovMethod, COVMETHOD},
-    syscalls, Corpus, error_exit, LogType, log
+    syscalls, Corpus, error_exit,
 };
 
 use std::sync::Arc;
@@ -379,7 +380,7 @@ impl Emulator {
     /// Once the jit exits it collects the reentry_pc (where to continue execution), and the exit
     /// code. It performs an appropriate operation based on the exit code and then continues with
     /// the loop to reenter the jit.
-    pub fn run_jit(&mut self, corpus: &Corpus) -> (Option<Fault>, usize) {
+    pub fn run_jit(&mut self, corpus: &Corpus, instr_count: &mut u64) -> (Option<Fault>, usize) {
         // Extra space when the available registers are not enough to pass sufficient 
         // information in/out of the jit
         let mut scratchpad = [
@@ -461,6 +462,7 @@ impl Emulator {
                 call_dest = in(reg) func,
                 out("rax")   exit_code,
                 out("rcx")   reentry_pc,
+                inout("rsi") *instr_count,
                 in("r8")     scratchpad.as_mut_ptr(),
                 inout("r9")  self.memory.dirty_size,
                 in("r10")    self.memory.dirty.as_ptr() as u64,

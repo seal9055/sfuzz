@@ -3,18 +3,17 @@ use sfuzz::{
     emulator::{Emulator, Register, Fault, ExitType},
     jit::{Jit, LibFuncs},
     config::{SNAPSHOT_ADDR, NUM_THREADS},
+    pretty_printing::{print_stats, log, LogType},
     Input, Corpus, Statistics, error_exit, load_elf_segments, worker, snapshot,
-    log, LogType,
 };
 use std::thread;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use std::sync::mpsc::{self, Receiver, Sender};
-//use std::sync::atomic::Ordering;
 
 use byteorder::{LittleEndian, WriteBytesExt};
-use num_format::{Locale, ToFormattedString};
 use rustc_hash::FxHashMap;
+use console::Term;
 
 /// Hook that makes use of sfuzz's mmu to perform a memory safe malloc operation
 fn malloc_hook(emu: &mut Emulator) -> Result<(), Fault> {
@@ -135,6 +134,9 @@ fn main() {
     // Messaging objects used to transfer statistics between worker threads and main thread
     let (tx, rx): (Sender<Statistics>, Receiver<Statistics>) = mpsc::channel();
 
+    let term = Term::buffered_stdout();
+    term.clear_screen().unwrap();
+
     // Initialize corpus with every file in ./files
     let mut w = corpus.inputs.write();
     for filename in std::fs::read_dir("files").unwrap() {
@@ -159,7 +161,6 @@ fn main() {
     let args: Vec<usize> = arguments.iter().map(|e| {
         let addr = emu.allocate(64, Perms::READ | Perms::WRITE)
             .expect("Allocating an argument failed");
-        println!("len is: {}", e.len());
         emu.memory.write_mem(addr, e.as_bytes(), e.len()).expect("Writing to argv[0] failed");
         addr
     }).collect();
@@ -230,18 +231,11 @@ fn main() {
         stats.total_cases += received.total_cases;
         stats.crashes     += received.crashes;
         stats.ucrashes    += received.ucrashes;
+        stats.instr_count += received.instr_count;
 
         // Print out updated statistics every second
         if last_time.elapsed() >= Duration::from_millis(1000) {
-            println!("[{:8.2}] fuzz cases: {:12} : fcps: {:8} : coverage: {:6} : crashes: {:8} \
-                     \n\t   ucrashes: {:6}", 
-                     elapsed_time, 
-                     stats.total_cases.to_formatted_string(&Locale::en),
-                     (stats.total_cases / elapsed_time as usize).to_formatted_string(&Locale::en), 
-                     stats.coverage,
-                     stats.crashes,
-                     stats.ucrashes);
-
+            print_stats(&term, &stats, elapsed_time);
             last_time = Instant::now();
         }
     }

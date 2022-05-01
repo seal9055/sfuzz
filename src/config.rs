@@ -5,12 +5,19 @@ pub const COVMETHOD: CovMethod = CovMethod::Edge;
 /// Address at which the fuzzer attempts to create a snapshot once reached
 pub const SNAPSHOT_ADDR: Option<usize> = None; //Some(0x10218);
 
-pub const PERM_CHECKS: bool = true;
-
 /// Number of cores to run the fuzzer with
 pub const NUM_THREADS: usize = 1;
 
-#[derive(Eq, PartialEq, Copy, Clone)]
+/// Count number of instructions executed by test cases
+pub const COUNT_INSTRS: bool = true;
+
+/// Toggle-able permission checks
+pub const PERM_CHECKS: bool = true;
+
+/// Additional information is printed out, alongside rolling statistics
+pub const DEBUG_PRINT: bool = false;
+
+#[derive(Eq, PartialEq, Copy, Clone, Debug)]
 pub enum CovMethod {
     /// Don't track coverage
     None,

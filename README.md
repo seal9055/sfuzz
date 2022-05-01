@@ -14,17 +14,17 @@ what I believe is necessary for the fuzzer to become a viable choice for general
 **Task List**
 - [X] Virtualized files for in-memory fuzzing
 - [X] Byte level permission checks + hooked/safe allocators (asan)
-- [X] 2 Different modes of block-level coverage (Hitcounts & No Hitcounts)
+- [X] Track edge level coverage
 - [X] Persistent mode to fuzz in small loops around target functions
 - [X] Crash deduping / unique crashes
+- [X] Update mutators to include more options and to work based off coverage feedback
 - [ ] Seed Scheduling
-- [ ] Update mutators to include more options and to work based off coverage feedback
-- [ ] Fix the remaining few JIT-bugs
+- [ ] Bug-fixes during code-compilation
 - [ ] Implement riscv-atomics so the JIT can use libc instead of newlib
-- [ ] 2 Different modes of edge-level coverage (Hitcounts & No Hitcounts)
-- [ ] Crash exploration mode
-- [ ] CMP deconstruction to get past magic values and checksums
+- [ ] Improve some aspects of the coverage tracking
 - [ ] Proper benchmarking
+- [ ] CMP deconstruction to get past magic values and checksums
+- [ ] Crash exploration mode
 - [ ] Input-to-coverage mapping to focus mutators on useful bytes
 - [ ] Replace assembler to increase compile time's
 

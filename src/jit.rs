@@ -2,7 +2,7 @@ use crate::{
     irgraph::{IRGraph, Flag, Operation, Val},
     emulator::{Emulator, Fault, Register as PReg, ExitType},
     mmu::Perms,
-    config::{CovMethod, COVMETHOD, PERM_CHECKS},
+    config::{CovMethod, COVMETHOD, PERM_CHECKS, COUNT_INSTRS},
 };
 
 use rustc_hash::FxHashMap;
@@ -331,79 +331,6 @@ impl Jit {
             }
         }
 
-        // Insert code to note that coverage was hit
-        //macro_rules! new_edge_coverage1 {
-        //    ($pc: expr) => {
-        //        let start = asm.assemble(0x0).unwrap().len();
-        //        let mut fallthrough = asm.create_label();
-        //        let mut here = asm.create_label();
-
-        //        // Check if we have hit this edge before. Once we hit it, we return and overwrite
-        //        // the `mov al, 0` instruction with `mov al, 1`. This is a single-byte write, which
-        //        // is entirely atomic. At worst other threads will try to overreport if they hit
-        //        // the coverage prior to the overwrite, but this is not a concern. Since its only a
-        //        // single byte write, there is no potential to corrupt a specific instruction and
-        //        // thus cause a crash due to a race
-        //        asm.mov(al, 0).unwrap();
-
-        //        //asm.int3().unwrap();
-
-        //        // Get the address of the block that called this block
-        //        asm.mov(rcx, ptr(r8 + 0x30)).unwrap();
-
-        //        // Check if we have hit this coverage event before
-        //        asm.cmp(al, 0).unwrap();
-        //        asm.jne(fallthrough).unwrap();
-
-        //        // Get the current rip address to determine which bytes we need to overwrite to
-        //        // remove this coverage reporting event
-        //        asm.call(here).unwrap();
-
-        //        // Offset to the byte we are trying to overwrite to calculate the start of this
-        //        // code-block
-        //        let off = asm.assemble(0x0).unwrap().len() - start - 1;
-
-        //        asm.set_label(&mut here).unwrap();
-
-        //        // Write address we are trying to overwrite to scratch[10]
-        //        asm.pop(rbx).unwrap();
-        //        asm.sub(rbx, off as i32).unwrap();
-        //        asm.mov(ptr(r8 + 0x50), rbx).unwrap();
-
-        //        // Write to-block to scratch[8]
-        //        asm.mov(rax, $pc as u64).unwrap();
-        //        asm.mov(ptr(r8 + 0x40), rax).unwrap();
-
-        //        // Write from-block to scratch[9]
-        //        asm.mov(ptr(r8 + 0x48), rcx).unwrap();
-        //        
-        //        asm.mov(rax, 6u64).unwrap();
-        //        asm.mov(rcx, $pc as u64).unwrap();
-        //        asm.ret().unwrap();
-
-
-        //        // Fallthrough, this is the base case whenever a cfg-block transition occurs
-        //        // rcx  = from_block
-        //        // rax  = hash
-        //        // rcx ^= cur_block
-        //        // rax ^= rcx (rax = hash ^ cur_hash)
-        //        asm.set_label(&mut fallthrough).unwrap();
-        //        asm.int3().unwrap();
-
-        //        // cur_hash = from_block ^ cur_block
-        //        asm.xor(rcx, $pc as i32).unwrap();
-
-        //        // hash ^= cur_hash
-        //        asm.mov(rax, ptr(r8 + 0x38)).unwrap();
-        //        asm.xor(rax, rcx).unwrap();
-        //        asm.mov(ptr(r8 + 0x38), rax).unwrap();
-        //        
-        //        // Write current pc to from block
-        //        asm.mov(rax, $pc as u64).unwrap();
-        //        asm.mov(ptr(r8 + 0x30), rax).unwrap();
-        //    }
-        //}
-
         // Insert hook for addresses we want to hook with our own function and return
         if hooks.get(&init_pc).is_some() {
             jit_exit1!(3, init_pc);
@@ -456,6 +383,10 @@ impl Jit {
                         },
                         _ => panic!("Don't yet support other exit conditions than snapshots"),
                     }
+                }
+
+                if COUNT_INSTRS {
+                    asm.add(rsi, 1).unwrap();
                 }
             }
 

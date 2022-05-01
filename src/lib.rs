@@ -6,6 +6,7 @@ pub mod syscalls;
 pub mod irgraph;
 pub mod mutator;
 pub mod config;
+pub mod pretty_printing;
 
 extern crate iced_x86;
 
@@ -26,21 +27,8 @@ use fasthash::{xx::Hash32, FastHash};
 use parking_lot::RwLock;
 use rand_xoshiro::Xoroshiro64Star;
 use rand_xoshiro::rand_core::SeedableRng;
-use colored::Colorize;
 
 const SAVE_CRASHES: bool = true;
-
-pub enum LogType {
-    Neutral = 0,
-    Success = 1,
-    Failure = 2,
-}
-
-/// Small wrapper to print out colored log messages
-pub fn log(color: LogType, msg: &str) {
-    let log_symbols = ["[-]".blue(), "[+]".green(), "[!]".red()];
-    println!("{} {}", log_symbols[color as usize], msg);
-}
 
 /// Small wrapper to easily handle unrecoverable errors without panicking
 pub fn error_exit(msg: &str) -> ! {
@@ -179,6 +167,9 @@ pub struct Statistics {
 
     /// Number of coverage units that has been reached
     pub coverage: usize,
+
+    /// Number of instructions executed
+    pub instr_count: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -288,7 +279,8 @@ impl Corpus {
 /// Run the emulator until a Snapshot fault is returned, at which point the injected code is 
 /// overwritten with nops, and the 'advanced' emulator is returned back to main
 pub fn snapshot(emu: &mut Emulator, corpus: &Corpus) {
-    let case_res = emu.run_jit(&corpus);
+    let mut tmp = 0;
+    let case_res = emu.run_jit(&corpus, &mut tmp);
     match case_res.0.unwrap() {
         Fault::Snapshot => {
             // Overwrite the snapshot code with nops so we dont break there again.
@@ -304,6 +296,7 @@ pub fn snapshot(emu: &mut Emulator, corpus: &Corpus) {
 pub fn calibrate_seeds(emu: &mut Emulator, corpus: &Corpus) {
     let inputs = corpus.inputs.read();
     let num_inputs = inputs.len();
+    let mut tmp = 0;
     drop(inputs);
 
     let original = emu.fork();
@@ -314,7 +307,7 @@ pub fn calibrate_seeds(emu: &mut Emulator, corpus: &Corpus) {
 
         // Run jit until finish and collect how long this input needed
         let start = Instant::now();
-        emu.run_jit(&corpus);
+        emu.run_jit(&corpus, &mut tmp);
         let elapsed = start.elapsed().subsec_nanos() as usize;
 
         //avg += elapsed;
@@ -344,7 +337,8 @@ pub fn worker(_thr_id: usize, mut emu: Emulator, mut corpus: Arc<Corpus>, tx: Se
     // Locally count the number of crashes, total and unique
     let mut local_total_crashes = 0;
     let mut local_unique_crashes = 0;
-    let mut local_coverage_counter = 0;
+    let mut local_coverage_count = 0;
+    let mut local_instr_count = 0;
 
     // Current index into the input array of the corpus
     let mut input_index = 0;
@@ -354,6 +348,7 @@ pub fn worker(_thr_id: usize, mut emu: Emulator, mut corpus: Arc<Corpus>, tx: Se
         // to determine how often this input should be run before moving on to the next input
         input_index = corpus.select_seed(input_index, &mut rng).unwrap();
         let seed_energy = corpus.inputs.read()[input_index].calculate_energy();
+        let mut case_instr_count: u64 = 0;
 
         for _ in 0..seed_energy {
             // Reset the emulator state
@@ -366,7 +361,7 @@ pub fn worker(_thr_id: usize, mut emu: Emulator, mut corpus: Arc<Corpus>, tx: Se
             mutator.mutate(&mut emu.fuzz_input);
 
             // If a crash occured, save the input and increase crash count, otherwise just move on
-            let case_res = emu.run_jit(&mut corpus);
+            let case_res = emu.run_jit(&mut corpus, &mut case_instr_count);
             let exec_time = 0;
 
             match case_res.0.unwrap() {
@@ -398,9 +393,11 @@ pub fn worker(_thr_id: usize, mut emu: Emulator, mut corpus: Arc<Corpus>, tx: Se
             // This input found new coverage
             if case_res.1 > 0 {
                 //println!("saving new coverage: {:?}", emu.fuzz_input.clone());
-                local_coverage_counter += case_res.1;
+                local_coverage_count += case_res.1;
                 corpus.inputs.write().push(Input::new(emu.fuzz_input.clone(), Some(exec_time)));
             }
+
+            local_instr_count += case_instr_count;
         }
 
         // Populate statistics that will be sent to the main thread
@@ -408,7 +405,8 @@ pub fn worker(_thr_id: usize, mut emu: Emulator, mut corpus: Arc<Corpus>, tx: Se
             total_cases: seed_energy,
             crashes: local_total_crashes,
             ucrashes: local_unique_crashes,
-            coverage: local_coverage_counter,
+            coverage: local_coverage_count,
+            instr_count: local_instr_count,
         };
 
         // Send stats over to the main thread
@@ -417,6 +415,7 @@ pub fn worker(_thr_id: usize, mut emu: Emulator, mut corpus: Arc<Corpus>, tx: Se
         // Reset local statistics
         local_total_crashes = 0;
         local_unique_crashes = 0;
-        local_coverage_counter = 0;
+        local_coverage_count = 0;
+        local_instr_count = 0;
     }
 }
