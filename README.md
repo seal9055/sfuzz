@@ -21,7 +21,6 @@ against simple targets.
 
 <br>
 <p style="text-align:center;"><img src="resources/printout.png" alt="" height="75%"width="75%"/></p>
-<p style="text-align:center;"><i>Fuzzer Display</i></p>
 
 #### Description
 
@@ -45,9 +44,9 @@ some of its advantages (especially when it comes to scaling across multiple thre
 use, or as generally applicable as some of the other fuzzers out there.
 
 More details on the features/choices made for this fuzzer are listed in the files below:
-- Fuzzer implementation/features - [fuzzing.md](https://github.com/seal9055/sfuzz/tree/main/docs/fuzzing.md)
 - Memory Management - [memory_management.md](https://github.com/seal9055/sfuzz/tree/main/docs/memory_management.md)
 - Code Generation - [code_gen.md](https://github.com/seal9055/sfuzz/tree/main/docs/code_gen.md)
+- Fuzzer implementation/features - [fuzzing.md](https://github.com/seal9055/sfuzz/tree/main/docs/fuzzing.md)
 - Some simple tests - [benchmarking.md](https://github.com/seal9055/sfuzz/tree/main/docs/benchmarking.md)
 
 #### Usage
