@@ -269,19 +269,39 @@ impl Jit {
             }
         }
 
-        /// Insert code to note that coverage was hit
+        /// Insert code to check if new block-coverage was hit
+        /// r8 + 0x30 = coverage_bytemap
+        /// r8 + 0x48 = coverage_counter
         macro_rules! new_block_coverage {
             ($pc: expr) => {
-                asm.mov(rcx, ptr(r8 + 8)).unwrap();
-                asm.mov(qword_ptr(rcx + (rsi*8)), pc as i32).unwrap();
-                asm.add(rsi, 1i32).unwrap();
+                let mut fallthrough = asm.create_label();
+
+                // Extract bottom 24 bits of the current pc
+                asm.mov(rbx, ($pc as u64) & 0xffffff).unwrap();
+
+                // Use coverage bytemap to determine if edge has been hit before
+                asm.mov(rcx, ptr(r8 + 0x30)).unwrap();
+                asm.add(rcx, rbx).unwrap();
+                asm.mov(rax, byte_ptr(rcx)).unwrap();
+                asm.test(rax, rax).unwrap();
+                asm.jnz(fallthrough).unwrap();
+
+                // New block/coverage event! Update bytemap and increment coverage counter
+                asm.mov(byte_ptr(rcx), 1).unwrap();
+                asm.mov(rax, ptr(r8 + 0x48)).unwrap();
+                asm.add(eax, 1).unwrap();
+                asm.mov(ptr(r8+0x48), rax).unwrap();
+
+                // Not a new coverage case, do nothing 
+                asm.set_label(&mut fallthrough).unwrap();
             }
         }
 
-        /// Insert code to note that coverage was hit
-        /// {rcx} = r8 + 0x30 = coverage_bytemap
-        /// {rax} = r8 + 0x38 = evolving_input_hash
-        /// {rbx} = r8 + 0x40 = previous_block
+        /// Insert code to check if new edge-coverage was hit
+        /// r8 + 0x30 = coverage_bytemap
+        /// r8 + 0x38 = evolving_input_hash
+        /// r8 + 0x40 = previous_block
+        /// r8 + 0x48 = coverage_counter
         macro_rules! new_edge_coverage {
             ($pc: expr) => {
                 let mut fallthrough = asm.create_label();
@@ -315,7 +335,7 @@ impl Jit {
                 asm.test(rax, rax).unwrap();
                 asm.jnz(fallthrough).unwrap();
 
-                // New edge/coverage event! Leave JIT to track it
+                // New edge/coverage event! Update bytemap and increment coverage counter
                 asm.mov(byte_ptr(rcx), 1).unwrap();
                 asm.mov(rax, ptr(r8 + 0x48)).unwrap();
                 asm.add(eax, 1).unwrap();
@@ -369,7 +389,7 @@ impl Jit {
                 if compile_inputs.leaders.get(&pc).is_some() {
 
                     // Track coverage if coverage tracking is enabled
-                    if COVMETHOD == CovMethod::Block || COVMETHOD == CovMethod::BlockHitCounter {
+                    if COVMETHOD == CovMethod::Block {
                         new_block_coverage!(pc);
                     } else if COVMETHOD == CovMethod::Edge {
                         new_edge_coverage!(pc);

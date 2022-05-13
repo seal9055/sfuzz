@@ -1,5 +1,6 @@
-use rand_xoshiro::Xoroshiro64Star;
 use rand_xoshiro::rand_core::RngCore;
+use rand_xoshiro::Xoroshiro64Star;
+use rand_xoshiro::rand_core::SeedableRng;
 
 const MUTATE_SIMPLE: bool = false;
 
@@ -7,7 +8,7 @@ const MUTATE_SIMPLE: bool = false;
 pub enum Mutation {
     ByteReplace,
     BitFlip,
-    MagicNums,
+    MagicNum,
     SimpleArithmetic,
     RemoveBlock,
     DupBlock,
@@ -27,7 +28,7 @@ pub struct Mutator {
 }
 
 impl Mutator {
-    pub fn new(rng: Xoroshiro64Star) -> Self {
+    pub fn default() -> Self {
         // Initialize the individual strategies for the mutation_strats array alongside their
         // weight. This creates a larger array since weight is created by inserting new
         // elements into the array, but I believe that this should be much faster than
@@ -35,14 +36,14 @@ impl Mutator {
         let mut mut_strats: Vec<Mutation> = Vec::new();
         mut_strats.append(&mut (0..1000).map(|_| { Mutation::ByteReplace }).collect());
         mut_strats.append(&mut (0..1000).map(|_| { Mutation::BitFlip }).collect());
-        mut_strats.append(&mut (0..200).map(|_|  { Mutation::MagicNums }).collect());
+        mut_strats.append(&mut (0..200).map(|_|  { Mutation::MagicNum }).collect());
         mut_strats.append(&mut (0..500).map(|_|  { Mutation::SimpleArithmetic }).collect());
         mut_strats.append(&mut (0..30).map(|_|   { Mutation::RemoveBlock }).collect());
         mut_strats.append(&mut (0..30).map(|_|   { Mutation::DupBlock }).collect());
         mut_strats.append(&mut (0..10).map(|_|   { Mutation::Resize }).collect());
 
         Self {
-            rng,
+            rng: Xoroshiro64Star::seed_from_u64(0),
             mutation_strats: mut_strats,
             havoc_counter: 0,
         }
@@ -61,7 +62,7 @@ impl Mutator {
 
         if (r1 % 1000) < 950 {
             // Small corruption, 0-32 bytes
-            for _ in 0..(r2 % 32) {
+            for _ in 1..(r2 % 32) {
                 let (r1, r2) = self.get2_rand();
                 input[(r1 % input_length)] = r2 as u8;
             }
@@ -125,7 +126,7 @@ impl Mutator {
 
         if (r1 % 1000) < 950 {
             // Small corruption, 0-32 bytes, 50% chance to either add or sub a value 0-32
-            for i in 0..(r2 % 32) {
+            for i in 1..(r2 % 32) {
                 let (r1, r2) = self.get2_rand();
                 if i & 1 == 0 {
                     input[(r1 % input_length)] = 
@@ -263,7 +264,7 @@ impl Mutator {
                 let res = match mutation {
                     Mutation::ByteReplace      => self.byte_replace(input),
                     Mutation::BitFlip          => self.bit_flip(input),
-                    Mutation::MagicNums        => self.magic_nums(input),
+                    Mutation::MagicNum        => self.magic_nums(input),
                     Mutation::SimpleArithmetic => self.simple_arithmetic(input),
                     Mutation::RemoveBlock      => self.remove_block(input),
                     Mutation::DupBlock         => self.duplicate_block(input),

@@ -1,9 +1,9 @@
 
-/// Method used to track coverage
-pub const COVMETHOD: CovMethod = CovMethod::Edge;
+/// Method used to track coverage, currently only Edge coverage is implemented
+pub const COVMETHOD: CovMethod = CovMethod::None;
 
 /// Address at which the fuzzer attempts to create a snapshot once reached
-pub const SNAPSHOT_ADDR: Option<usize> = None; //Some(0x10218);
+pub const SNAPSHOT_ADDR: Option<usize> = Some(0x10218);
 
 /// Number of cores to run the fuzzer with
 pub const NUM_THREADS: usize = 1;
@@ -18,7 +18,7 @@ pub const PERM_CHECKS: bool = true;
 pub const DEBUG_PRINT: bool = false;
 
 /// Manually override the automatically calibrated timeout
-pub const OVERRIDE_TIMEOUT: Option<u64> = None;
+pub const OVERRIDE_TIMEOUT: Option<u64> = Some(10000000);
 
 #[derive(Eq, PartialEq, Copy, Clone, Debug)]
 pub enum CovMethod {

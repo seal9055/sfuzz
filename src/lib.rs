@@ -19,13 +19,11 @@ use config::{CovMethod, COVMETHOD};
 use std::process;
 use std::sync::Arc;
 use std::sync::mpsc::Sender;
-use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use rustc_hash::FxHashMap;
 use fasthash::{xx::Hash32, FastHash};
 use parking_lot::RwLock;
-use rand_xoshiro::Xoroshiro64Star;
-use rand_xoshiro::rand_core::SeedableRng;
 
 const SAVE_CRASHES: bool = true;
 
@@ -186,6 +184,9 @@ pub struct Input {
     /// since using a syscall to get the actual time is very expensive). Calibrated on startup for
     /// initial seeds
     exec_time: Option<u64>,
+
+    /// Counter incremented whenever this case hits new coverage
+    cov_finds: usize,
 }
 
 impl Input {
@@ -194,29 +195,39 @@ impl Input {
             data: data.to_vec(),
             size: data.len(),
             exec_time,
+            cov_finds: 0,
         }
     }
 
-    pub fn calculate_energy(&self) -> usize {
+    pub fn calculate_energy(&self, corpus: &Corpus) -> usize {
+        let mut energy: isize = 80000;
+        let num_inputs = corpus.inputs.read().len();
+        let avg_size = (corpus.total_size.load(Ordering::SeqCst) / num_inputs) as isize;
+        let avg_exec_time = (corpus.total_exec_time.load(Ordering::SeqCst) / num_inputs) as isize;
 
-        /*
-            self.size
-            self.exec_time
-        */
-
-        if self.size > 0 {
-            100
-        } else {
-            100
+        // Calculate if this case is sized above or below average, and by how much, and use this 
+        // to change the cases energy. Shorter cases have their enegry increased
+        let size_diff: isize = (self.size as isize) - avg_size;
+        let size_diff_percentage: f64 = (size_diff as f64) / (avg_size as f64);
+        energy = energy.saturating_add((size_diff_percentage * 100000f64) as isize);
+        
+        // Calculate if this case's execution time is above or below average, and by how much, and 
+        // use this to change the cases energy. Faster cases have their enegry increased
+        let runtime_diff: isize = (self.exec_time.unwrap() as isize) - avg_exec_time;
+        let runtime_diff_percentage: f64 = (runtime_diff as f64) / (avg_exec_time as f64);
+        energy = energy.saturating_add((runtime_diff_percentage * 100000f64) as isize);
+        
+        // For every instance of this case finding new coverage, increase energy by ~10%
+        for _ in 0..self.cov_finds {
+            energy += energy / 10;
         }
+
+        // Make sure energy remains in the 20000 - 150000 range
+        energy = core::cmp::max(energy, 20000);
+        energy = core::cmp::min(energy, 150000);
+        energy as usize
     }
 }
-
-//#[derive(Debug, Hash, Eq, PartialEq)]
-//pub struct CrashType {
-//    /// The type of fault, and the address of the crash
-//    fault_type: Fault,
-//}
 
 /// Structure that is meant to be shared between threads. Tracks fuzz inputs and coverage
 #[derive(Debug)]
@@ -238,6 +249,12 @@ pub struct Corpus {
 
     /// Unique crashes, 
     pub crash_mapping: RwLock<FxHashMap<Fault, u8>>,
+
+    /// Total size of the inputs in this corpus
+    pub total_size: AtomicUsize,
+     
+    /// Total execution time of the inputs in this corpus
+    pub total_exec_time: AtomicUsize,
 }
 
 impl Corpus {
@@ -259,24 +276,9 @@ impl Corpus {
             coverage_bytemap: vec![0; size],
             cov_counter: AtomicUsize::new(0),
             crash_mapping: RwLock::new(FxHashMap::default()),
+            total_size: AtomicUsize::new(0),
+            total_exec_time: AtomicUsize::new(0),
         }
-    }
-
-    /// Select a seed from the corpus that should be used for the next fuzz input
-    pub fn select_seed(&self, index: usize, _rng: &mut Xoroshiro64Star) -> Option<usize> {
-        //let inputs = self.inputs.read();
-        //let mut control: usize;
-        //let len = inputs.len();
-
-        //loop {
-        //    control = (rng.next_u32() as usize) % 1000;
-        //    if inputs[index].energy > control {
-        //        break;
-        //    }
-        //    index = (index + 1) % len;
-        //};
-        //Some(index)
-        Some((index + 1) % self.inputs.read().len())
     }
 }
 
@@ -298,10 +300,8 @@ pub fn snapshot(emu: &mut Emulator, corpus: &Corpus) {
 
 /// Callibrate how long the initial seeds take to run and use it to determine timeout
 pub fn calibrate_seeds(emu: &mut Emulator, corpus: &Corpus) -> u64 {
-    let inputs = corpus.inputs.read();
-    let num_inputs = inputs.len();
+    let num_inputs = corpus.inputs.read().len();
     let mut instr_count = 0;
-    drop(inputs);
 
     let original = emu.fork();
     let mut avg: u64 = 0;
@@ -331,11 +331,8 @@ pub fn worker(_thr_id: usize, mut emu: Emulator, mut corpus: Arc<Corpus>, tx: Se
     // Maintain an original copy of the passed in emulator so it can later be referenced
     let original = emu.fork();
 
-    // Initialize rng to be used for random seed selection and other purposes
-    let mut rng = Xoroshiro64Star::seed_from_u64(0);
-
     // Initialize a mutator that will be in charge of randomly corrupting input
-    let mut mutator = Mutator::new(rng.clone());
+    let mut mutator = Mutator::default();
 
     // Locally count the number of crashes, total and unique
     let mut local_total_crashes = 0;
@@ -350,8 +347,9 @@ pub fn worker(_thr_id: usize, mut emu: Emulator, mut corpus: Arc<Corpus>, tx: Se
     loop {
         // Get the next seed from the input queue and calculate its energy. This enery is then used 
         // to determine how often this input should be run before moving on to the next input
-        input_index = corpus.select_seed(input_index, &mut rng).unwrap();
-        let seed_energy = corpus.inputs.read()[input_index].calculate_energy();
+        //input_index = corpus.select_seed(input_index, &mut rng).unwrap();
+        input_index = (input_index + 1) % corpus.inputs.read().len();
+        let seed_energy = corpus.inputs.read()[input_index].calculate_energy(&corpus);
 
         for _ in 0..seed_energy {
             // Reset the emulator state
@@ -372,6 +370,7 @@ pub fn worker(_thr_id: usize, mut emu: Emulator, mut corpus: Arc<Corpus>, tx: Se
                 // save it. 
                 Fault::ReadFault(v)   |
                 Fault::WriteFault(v)  |
+                Fault::ExecFault(v)   |
                 Fault::OutOfBounds(v) => {
                     let mut crash_map = corpus.crash_mapping.write();
                     if crash_map.get(&case_res.0.unwrap()).is_none() {
@@ -380,6 +379,7 @@ pub fn worker(_thr_id: usize, mut emu: Emulator, mut corpus: Arc<Corpus>, tx: Se
                         let crash_dir = match case_res.0.unwrap() {
                             Fault::ReadFault(_)   => format!("crashes/read_{:x}_{}", v, h),
                             Fault::WriteFault(_)  => format!("crashes/write_{:x}_{}", v, h),
+                            Fault::ExecFault(_)   => format!("crashes/exec_{:x}_{}", v, h),
                             Fault::OutOfBounds(_) => format!("crashes/oob_{:x}_{}", v, h),
                             _ => unreachable!(),
                         };
@@ -396,9 +396,15 @@ pub fn worker(_thr_id: usize, mut emu: Emulator, mut corpus: Arc<Corpus>, tx: Se
 
             // This input found new coverage
             if case_res.1 > 0 {
+                let mut corp_inputs = corpus.inputs.write();
+                corp_inputs[input_index].cov_finds += 1;
                 local_coverage_count += case_res.1;
-                corpus.inputs.write().push(Input::new(emu.fuzz_input.clone(), 
-                                                      Some(case_instr_count)));
+                corp_inputs.push(Input::new(emu.fuzz_input.clone(), Some(case_instr_count)));
+
+                // Add this case's stats to an overall pool that is used to average these values
+                // and calculate the energy for each case.
+                corpus.total_size.fetch_add(emu.fuzz_input.len(), Ordering::SeqCst);
+                corpus.total_exec_time.fetch_add(case_instr_count as usize, Ordering::SeqCst);
             }
 
             local_instr_count += case_instr_count;

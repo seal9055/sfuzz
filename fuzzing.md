@@ -1,4 +1,6 @@
-## Fuzzing Reading List
+#### This document is not specific to this fuzzer, but rather just a list of resources I found helpful while developing this fuzzer alongside some simple notes on some important fuzzing related topics from these papers.
+
+### Fuzzing Reading List
     1.  Basics          https://www.fuzzingbook.org/
     2.  AFL++           https://www.usenix.org/system/files/woot20-paper-fioraldi.pdf
     3.  Afl-dev         https://lcamtuf.blogspot.com/
@@ -8,20 +10,24 @@
     7.  Valued coverage https://www.ndss-symposium.org/wp-content/uploads/2020/02/24422-paper.pdf
     8.  CFG-Seed sched  https://arxiv.org/pdf/2203.12064.pdf
     9.  Seed selection  https://dl.acm.org/doi/pdf/10.1145/3460319.3464795
-    10. Havoc           https://shadowmydx.github.io/papers/icse22-main-1314.pdf
-    11. Feedback-muts   https://link.springer.com/article/10.1007/s10664-020-09927-3
-    12. Snapshots/state https://arxiv.org/pdf/2202.03643.pdf
-    13. Snapshots/state https://github.com/fgsect/FitM/blob/main/fitm.pdf
+    10. Directed fuzz   https://dl.acm.org/doi/pdf/10.1145/3133956.3134020
+    11. Havoc           https://shadowmydx.github.io/papers/icse22-main-1314.pdf
+    12. Feedback-muts   https://link.springer.com/article/10.1007/s10664-020-09927-3
+    13. Snapshots/state https://arxiv.org/pdf/2202.03643.pdf
+    14. Snapshots/state https://github.com/fgsect/FitM/blob/main/fitm.pdf
     15. Benchmarking    https://github.com/google/fuzzbench/issues/654
     16. Benchmarking    https://hexgolems.com/2020/08/on-measuring-and-visualizing-fuzzer-performance/
     17. Crash-triaging  https://www.usenix.org/system/files/sec20-blazytko.pdf
     18. Redqueen        https://synthesis.to/papers/NDSS19-Redqueen.pdf
     19. Nautilus        https://wcventure.github.io/FuzzingPaper/Paper/NDSS19_Nautilus.pdf
-    14. Baseband-emu    https://arxiv.org/pdf/2005.07797.pdf
-    21. Hash-collisions https://chao.100871.net/papers/oakland18.pdf
-    22. Bigmap-covmap   https://alifahmed.github.io/res/BigMap_DSN.pdf
+    20. Nyx             https://www.usenix.org/system/files/sec21summer_schumilo.pdf
+    21. AFLFast         https://mboehme.github.io/paper/CCS16.pdf
+    22. Baseband-emu    https://arxiv.org/pdf/2005.07797.pdf
+    23. Cerberos        https://dl.acm.org/doi/pdf/10.1145/3338906.3338975
+    24. Hash-collisions https://chao.100871.net/papers/oakland18.pdf
+    25. Bigmap-covmap   https://alifahmed.github.io/res/BigMap_DSN.pdf
 
-## Corpus Management
+### Corpus Management
 
 ##### Corpus Minimization
     > Some fuzzers such as afl trim their corpus' to discard long inputs that take the same path as 
@@ -55,7 +61,7 @@
         - https://github.com/AFLplusplus/AFLplusplus/tree/stable/testcases
         - https://github.com/radareorg/radare2-testbins
 
-## Coverage Tracking 
+### Coverage Tracking 
 
 ##### Basic Block Coverage
     > Track coverage whenever a new basic block is hit
@@ -109,7 +115,7 @@
         executed
     > Intel PT - Hardware branch tracer
 
-## Seed Scheduling
+### Seed Scheduling
 ##### Metrics:
     > Vulnerable paths 
         - Weight of each branch is based upon vulnerable functions (eg. memcpy) it can reach and the
@@ -125,7 +131,7 @@
         - Shorter
         - More frequent coverage increases
 
-## Mutational Strategies
+### Mutational Strategies
 ##### General Approach
     > Feedback loop approach
         - Measure what type of mutations result in new coverage and use them more frequently
@@ -167,7 +173,7 @@
         runtime) of interesting strings, that can be added to the input at random positions.
     > Splicing: Combine two different inputs at random positions
 
-## Triaging Crashes
+### Triaging Crashes
 ##### Crash Exploration
     > Used to more easily understand what exactly caused a crash
     > Entirely separate mode that takes a crashing input and looks for more inputs that cause the
@@ -190,7 +196,7 @@
         functionality. This can be used to traverse the program backwards starting at the start
         location, which can often make bug triaging a lot more comfortable.
 
-## Performance
+### Performance
 ##### Persistent Mode / Snapshot Fuzzing
     > Fuzz in a short loop around the specific target functions by saving the state right before the
         execution of the target, and then basing future fuzz cases off of this specific starting
@@ -219,7 +225,7 @@
         threads, which can easily result in >40% of total execution time being wasted in random
         kernel locks.
 
-## Symbolic Execution in Fuzzing
+### Symbolic Execution in Fuzzing
 
     > Heavy symbolic analysis is still too slow for fuzzers, however using approximations one can
     gain many of the benefits without the massive performance hit
@@ -257,7 +263,7 @@
         but has mostly been replaced in fuzzers by techniques that accomplish similar goals without
         the massive performance overhead that proper taint-tracking results in.
 
-## Benchmarking Fuzzers
+### Benchmarking Fuzzers
     > When profiling new algorithms in fuzzers, algorithmic performance (eg. coverage/cases) is much
         more relevant than timed performance (eg. coverage/time) due to the high variances that can
         occur using random fuzz-inputs. Time-performance is the most important aspect for finished
@@ -300,7 +306,7 @@
     > State-aware coverage tracking: Measure which target states of a specific stateful target the
         fuzzer manages to hit.
 
-## Grammar-based Fuzzing
+### Grammar-based Fuzzing
     > Many applications that require highly structured inputs (eg. compilers) make fuzzing using
         mutational fuzzer implementations difficult. Grammar fuzzers in comparison generate input
         from scratch instead of modifying existing input. When fuzzing a javascript interpreter for
@@ -308,7 +314,7 @@
         as fuzz input. This greatly reduces the number of fuzz cases that would otherwise be
         immediately thrown out due to syntax errors with mutational engines.
 
-## Misc
+### Misc
 
 ##### Crash Amplification
     > The goal of fuzzing is usually to find potentially exploitable bugs on a target.
