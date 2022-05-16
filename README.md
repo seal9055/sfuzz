@@ -99,7 +99,7 @@ This list represents a set of features that I plan on implementing in the future
 
 #### References
 
-* All papers listed in [fuzzing.md](https://github.com/seal9055/sfuzz/fuzzing.md)
+* All papers listed in [fuzzing.md](https://github.com/seal9055/sfuzz/blob/main/fuzzing.md)
 * Emulation based fuzzing - Brandon Falk [GamozoLabs](https://gamozolabs.github.io/)
 * Intel Software Developer Manuals
 * RISCV User ISA specification
