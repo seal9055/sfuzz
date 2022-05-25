@@ -748,10 +748,12 @@ impl Jit {
                                 Val::Reg(v) => {
                                     let r_in2 = get_reg_64!(v, 1);
                                     asm.add(to_32(r_in1), to_32(r_in2)).unwrap();
+                                    // RISCV requires signextension on 32-bit instructions
+                                    asm.movsxd(r_in1, to_32(r_in1)).unwrap();
                                 },
                                 Val::Imm(v) => {
                                     asm.add(to_32(r_in1), v).unwrap();
-                                    // RISCV requires signextension on 32-bit instructions on imm's
+                                    // RISCV requires signextension on 32-bit instructions
                                     asm.movsxd(r_in1, to_32(r_in1)).unwrap();
                                 },
                                 _ => unreachable!(),
@@ -791,10 +793,12 @@ impl Jit {
                                 Val::Reg(v) => {
                                     let r_in2 = get_reg_64!(v, 1);
                                     asm.sub(to_32(r_in1), to_32(r_in2)).unwrap();
+                                    // RISCV requires signextension on 32-bit instructions
+                                    asm.movsxd(r_in1, to_32(r_in1)).unwrap();
                                 },
                                 Val::Imm(v) => {
                                     asm.sub(to_32(r_in1), v).unwrap();
-                                    // RISCV requires signextension on 32-bit instructions on imm's
+                                    // RISCV requires signextension on 32-bit instructions
                                     asm.movsxd(r_in1, to_32(r_in1)).unwrap();
                                 },
                                 _ => unreachable!(),
@@ -835,10 +839,12 @@ impl Jit {
                                     let r_in2 = get_reg_64!(v, 1);
                                     asm.mov(rcx, r_in2).unwrap();
                                     asm.shl(to_32(r_in1), cl).unwrap();
+                                    // RISCV requires signextension on 32-bit instructions
+                                    asm.movsxd(r_in1, to_32(r_in1)).unwrap();
                                 },
                                 Val::Imm(v) => {
                                     asm.shl(to_32(r_in1), v).unwrap();
-                                    // RISCV requires signextension on 32-bit instructions on imm's
+                                    // RISCV requires signextension on 32-bit instructions
                                     asm.movsxd(r_in1, to_32(r_in1)).unwrap();
                                 },
                                 _ => unreachable!(),
@@ -880,10 +886,12 @@ impl Jit {
                                     let r_in2 = get_reg_64!(v, 1);
                                     asm.mov(rcx, r_in2).unwrap();
                                     asm.shr(to_32(r_in1), cl).unwrap();
+                                    // RISCV requires signextension on 32-bit instructions
+                                    asm.movsxd(r_in1, to_32(r_in1)).unwrap();
                                 },
                                 Val::Imm(v) => {
                                     asm.shr(to_32(r_in1), v).unwrap();
-                                    // RISCV requires signextension on 32-bit instructions on imm's
+                                    // RISCV requires signextension on 32-bit instructions
                                     asm.movsxd(r_in1, to_32(r_in1)).unwrap();
                                 },
                                 _ => unreachable!(),
@@ -925,10 +933,12 @@ impl Jit {
                                     let r_in2 = get_reg_64!(v, 1);
                                     asm.mov(rcx, r_in2).unwrap();
                                     asm.sar(to_32(r_in1), cl).unwrap();
+                                    // RISCV requires signextension on 32-bit instructions
+                                    asm.movsxd(r_in1, to_32(r_in1)).unwrap();
                                 },
                                 Val::Imm(v) => {
                                     asm.sar(to_32(r_in1), v).unwrap();
-                                    // RISCV requires signextension on 32-bit instructions on imm's
+                                    // RISCV requires signextension on 32-bit instructions
                                     asm.movsxd(r_in1, to_32(r_in1)).unwrap();
                                 },
                                 _ => unreachable!(),

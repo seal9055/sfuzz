@@ -1,9 +1,9 @@
 
 /// Method used to track coverage, currently only Edge coverage is implemented
-pub const COVMETHOD: CovMethod = CovMethod::None;
+pub const COVMETHOD: CovMethod = CovMethod::Edge;
 
 /// Address at which the fuzzer attempts to create a snapshot once reached
-pub const SNAPSHOT_ADDR: Option<usize> = Some(0x10218);
+pub const SNAPSHOT_ADDR: Option<usize> = None;
 
 /// Number of cores to run the fuzzer with
 pub const NUM_THREADS: usize = 1;

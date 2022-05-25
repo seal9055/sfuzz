@@ -196,21 +196,16 @@ pub fn write(emu: &mut Emulator) -> Option<Fault> {
         return None;
     }
 
-    println!("buf is at: {:X}", buf);
-    println!("len is: {}", count);
-
-    if true {
+    if false {
         let file = file.unwrap();
         if file.ftype == STDOUT || file.ftype == STDERR {
             let mut read_data = vec![0u8; count];
             emu.memory.read_into(buf, &mut read_data, count, Perms::READ).unwrap();
 
-            let s = std::str::from_utf8(&read_data).unwrap();
-            print!("{}", s);
-            //match std::str::from_utf8(&read_data) {
-            //    Ok(v) => print!("{}", v),
-            //    Err(_) => print!("{:?}", read_data),
-            //}
+            match std::str::from_utf8(&read_data) {
+                Ok(v) => print!("{}", v),
+                Err(_) => print!("{:?}", read_data),
+            }
         } else {
             panic!("Write to unsupported file occured");
         }

@@ -200,32 +200,33 @@ impl Input {
     }
 
     pub fn calculate_energy(&self, corpus: &Corpus) -> usize {
-        let mut energy: isize = 80000;
-        let num_inputs = corpus.inputs.read().len();
-        let avg_size = (corpus.total_size.load(Ordering::SeqCst) / num_inputs) as isize;
-        let avg_exec_time = (corpus.total_exec_time.load(Ordering::SeqCst) / num_inputs) as isize;
+        //let mut energy: isize = 80000;
+        //let num_inputs = corpus.inputs.read().len();
+        //let avg_size = (corpus.total_size.load(Ordering::SeqCst) / num_inputs) as isize;
+        //let avg_exec_time = (corpus.total_exec_time.load(Ordering::SeqCst) / num_inputs) as isize;
 
-        // Calculate if this case is sized above or below average, and by how much, and use this 
-        // to change the cases energy. Shorter cases have their enegry increased
-        let size_diff: isize = (self.size as isize) - avg_size;
-        let size_diff_percentage: f64 = (size_diff as f64) / (avg_size as f64);
-        energy = energy.saturating_add((size_diff_percentage * 100000f64) as isize);
-        
-        // Calculate if this case's execution time is above or below average, and by how much, and 
-        // use this to change the cases energy. Faster cases have their enegry increased
-        let runtime_diff: isize = (self.exec_time.unwrap() as isize) - avg_exec_time;
-        let runtime_diff_percentage: f64 = (runtime_diff as f64) / (avg_exec_time as f64);
-        energy = energy.saturating_add((runtime_diff_percentage * 100000f64) as isize);
-        
-        // For every instance of this case finding new coverage, increase energy by ~10%
-        for _ in 0..self.cov_finds {
-            energy += energy / 10;
-        }
+        //// Calculate if this case is sized above or below average, and by how much, and use this 
+        //// to change the cases energy. Shorter cases have their enegry increased
+        //let size_diff: isize = (self.size as isize) - avg_size;
+        //let size_diff_percentage: f64 = (size_diff as f64) / (avg_size as f64);
+        //energy = energy.saturating_add((size_diff_percentage * 100000f64) as isize);
+        //
+        //// Calculate if this case's execution time is above or below average, and by how much, and 
+        //// use this to change the cases energy. Faster cases have their enegry increased
+        //let runtime_diff: isize = (self.exec_time.unwrap() as isize) - avg_exec_time;
+        //let runtime_diff_percentage: f64 = (runtime_diff as f64) / (avg_exec_time as f64);
+        //energy = energy.saturating_add((runtime_diff_percentage * 100000f64) as isize);
+        //
+        //// For every instance of this case finding new coverage, increase energy by ~10%
+        //for _ in 0..self.cov_finds {
+        //    energy += energy / 10;
+        //}
 
-        // Make sure energy remains in the 20000 - 150000 range
-        energy = core::cmp::max(energy, 20000);
-        energy = core::cmp::min(energy, 150000);
-        energy as usize
+        //// Make sure energy remains in the 20000 - 150000 range
+        //energy = core::cmp::max(energy, 20000);
+        //energy = core::cmp::min(energy, 150000);
+        //energy as usize
+        500
     }
 }
 
