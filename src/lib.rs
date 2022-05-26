@@ -1,3 +1,8 @@
+//! # SFUZZ
+//!
+//! This is a performance and scaling focused blackbox fuzzer that makes use of RISC-V to x86_64 
+//! binary translations and a custom JIT-compilation engine. The fuzzer is still in development, 
+//! but currently successfuly runs against simple targets. 
 pub mod emulator;
 pub mod mmu;
 pub mod riscv;
@@ -14,12 +19,13 @@ use elfparser::{self, ARCH64, ELFMAGIC, LITTLEENDIAN, TYPEEXEC, RISCV};
 use emulator::{Emulator, Register, Fault};
 use mutator::Mutator;
 use my_libs::sorted_vec::*;
-use config::{CovMethod, COVMETHOD};
+use config::{CovMethod, COVMETHOD, FULL_TRACE};
 
 use std::process;
 use std::sync::Arc;
 use std::sync::mpsc::Sender;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::arch::asm;
 
 use rustc_hash::FxHashMap;
 use fasthash::{xx::Hash32, FastHash};
@@ -127,7 +133,7 @@ pub fn load_elf_segments(filename: &str, emu_inst: &mut Emulator)
         // hashmap we are returning
         if sym_entry.sym_info == 0x2 || sym_entry.sym_info == 0x12 {
             symbol_map.insert(sym_name.to_string(), sym_entry.sym_value);
-            function_listing.insert((sym_entry.sym_value, sym_entry.sym_size), 
+            function_listing.insert((sym_entry.sym_value, sym_entry.sym_size),
                                     sym_entry.sym_value as isize);
             func_names.insert(sym_entry.sym_value, sym_name.to_string());
         }
@@ -200,33 +206,32 @@ impl Input {
     }
 
     pub fn calculate_energy(&self, corpus: &Corpus) -> usize {
-        //let mut energy: isize = 80000;
-        //let num_inputs = corpus.inputs.read().len();
-        //let avg_size = (corpus.total_size.load(Ordering::SeqCst) / num_inputs) as isize;
-        //let avg_exec_time = (corpus.total_exec_time.load(Ordering::SeqCst) / num_inputs) as isize;
+        let mut energy: isize = 80000;
+        let num_inputs = corpus.inputs.read().len();
+        let avg_size = (corpus.total_size.load(Ordering::SeqCst) / num_inputs) as isize;
+        let avg_exec_time = (corpus.total_exec_time.load(Ordering::SeqCst) / num_inputs) as isize;
 
-        //// Calculate if this case is sized above or below average, and by how much, and use this 
-        //// to change the cases energy. Shorter cases have their enegry increased
-        //let size_diff: isize = (self.size as isize) - avg_size;
-        //let size_diff_percentage: f64 = (size_diff as f64) / (avg_size as f64);
-        //energy = energy.saturating_add((size_diff_percentage * 100000f64) as isize);
-        //
-        //// Calculate if this case's execution time is above or below average, and by how much, and 
-        //// use this to change the cases energy. Faster cases have their enegry increased
-        //let runtime_diff: isize = (self.exec_time.unwrap() as isize) - avg_exec_time;
-        //let runtime_diff_percentage: f64 = (runtime_diff as f64) / (avg_exec_time as f64);
-        //energy = energy.saturating_add((runtime_diff_percentage * 100000f64) as isize);
-        //
-        //// For every instance of this case finding new coverage, increase energy by ~10%
-        //for _ in 0..self.cov_finds {
-        //    energy += energy / 10;
-        //}
+        // Calculate if this case is sized above or below average, and by how much, and use this
+        // to change the cases energy. Shorter cases have their enegry increased
+        let size_diff: isize = (self.size as isize) - avg_size;
+        let size_diff_percentage: f64 = (size_diff as f64) / (avg_size as f64);
+        energy = energy.saturating_add((size_diff_percentage * 100000f64) as isize);
+        
+        // Calculate if this case's execution time is above or below average, and by how much, and
+        // use this to change the cases energy. Faster cases have their enegry increased
+        let runtime_diff: isize = (self.exec_time.unwrap() as isize) - avg_exec_time;
+        let runtime_diff_percentage: f64 = (runtime_diff as f64) / (avg_exec_time as f64);
+        energy = energy.saturating_add((runtime_diff_percentage * 100000f64) as isize);
+        
+        // For every instance of this case finding new coverage, increase energy by ~10%
+        for _ in 0..self.cov_finds {
+            energy += energy / 10;
+        }
 
-        //// Make sure energy remains in the 20000 - 150000 range
-        //energy = core::cmp::max(energy, 20000);
-        //energy = core::cmp::min(energy, 150000);
-        //energy as usize
-        500
+        // Make sure energy remains in the 20000 - 150000 range
+        energy = core::cmp::max(energy, 20000);
+        energy = core::cmp::min(energy, 150000);
+        energy as usize
     }
 }
 
@@ -248,12 +253,12 @@ pub struct Corpus {
     /// Counter that keeps track of current coverage
     pub cov_counter: AtomicUsize,
 
-    /// Unique crashes, 
+    /// Unique crashes,
     pub crash_mapping: RwLock<FxHashMap<Fault, u8>>,
 
     /// Total size of the inputs in this corpus
     pub total_size: AtomicUsize,
-     
+
     /// Total execution time of the inputs in this corpus
     pub total_exec_time: AtomicUsize,
 }
@@ -283,11 +288,21 @@ impl Corpus {
     }
 }
 
-/// Run the emulator until a Snapshot fault is returned, at which point the injected code is 
+/// Run the emulator until a Snapshot fault is returned, at which point the injected code is
 /// overwritten with nops, and the 'advanced' emulator is returned back to main
 pub fn snapshot(emu: &mut Emulator, corpus: &Corpus) {
+    // Setup data-structures for tracing, unnecessary for calibration, but required for run_jit
+    // function
+    let mut trace_arr: Vec<u64> = if FULL_TRACE {
+        vec![0u64; 1024 * 1024 * 64]
+    } else {
+        Vec::new()
+    };
+    let mut trace_arr_len: usize = 0;
     let mut tmp = 0;
-    let case_res = emu.run_jit(&corpus, &mut tmp);
+
+    // Run jit until finish and collect how long this input needed
+    let case_res = emu.run_jit(corpus, &mut tmp, &mut trace_arr, &mut trace_arr_len);
     match case_res.0.unwrap() {
         Fault::Snapshot => {
             // Overwrite the snapshot code with nops so we dont break there again.
@@ -310,8 +325,17 @@ pub fn calibrate_seeds(emu: &mut Emulator, corpus: &Corpus) -> u64 {
     for i in 0..num_inputs {
         emu.fuzz_input.extend_from_slice(&corpus.inputs.read()[i].data);
 
+        // Setup data-structures for tracing, unnecessary for calibration, but required for run_jit
+        // function
+        let mut trace_arr: Vec<u64> = if FULL_TRACE {
+            vec![0u64; 1024 * 1024 * 64]
+        } else {
+            Vec::new()
+        };
+        let mut trace_arr_len: usize = 0;
+
         // Run jit until finish and collect how long this input needed
-        emu.run_jit(&corpus, &mut instr_count);
+        emu.run_jit(corpus, &mut instr_count, &mut trace_arr, &mut trace_arr_len);
 
         let mut inputs = corpus.inputs.write();
         inputs[i].exec_time = Some(instr_count);
@@ -327,8 +351,57 @@ pub fn calibrate_seeds(emu: &mut Emulator, corpus: &Corpus) -> u64 {
     (avg / num_inputs as u64) * 5
 }
 
+/// Emit trace for the entire program execution. This is formatted the same way as gdb + qemu's
+/// `info register` command, so diff files can be generated for debugging purposes. (Some slight
+/// output formatting on gdb's part is required, and stack addresses will differ between this jit
+/// and qemu
+fn emit_trace(trace_arr: &[u64], trace_arr_len: usize) {
+    let mut i = 0;
+    let mut s = Vec::new();
+    println!("emitting trace...");
+    while i < trace_arr_len {
+        s.push(format!("ra 0x{:x}", trace_arr[i+1]));
+        s.push(format!("sp 0x{:x}", trace_arr[i+2]));
+        s.push(format!("gp 0x{:x}", trace_arr[i+3]));
+        s.push(format!("tp 0x{:x}", trace_arr[i+4]));
+        s.push(format!("t0 0x{:x}", trace_arr[i+5]));
+        s.push(format!("t1 0x{:x}", trace_arr[i+6]));
+        s.push(format!("t2 0x{:x}", trace_arr[i+7]));
+        s.push(format!("fp 0x{:x}", trace_arr[i+8]));
+        s.push(format!("s1 0x{:x}", trace_arr[i+9]));
+        s.push(format!("a0 0x{:x}", trace_arr[i+10]));
+        s.push(format!("a1 0x{:x}", trace_arr[i+11]));
+        s.push(format!("a2 0x{:x}", trace_arr[i+12]));
+        s.push(format!("a3 0x{:x}", trace_arr[i+13]));
+        s.push(format!("a4 0x{:x}", trace_arr[i+14]));
+        s.push(format!("a5 0x{:x}", trace_arr[i+15]));
+        s.push(format!("a6 0x{:x}", trace_arr[i+16]));
+        s.push(format!("a7 0x{:x}", trace_arr[i+17]));
+        s.push(format!("s2 0x{:x}", trace_arr[i+18]));
+        s.push(format!("s3 0x{:x}", trace_arr[i+19]));
+        s.push(format!("s4 0x{:x}", trace_arr[i+20]));
+        s.push(format!("s5 0x{:x}", trace_arr[i+21]));
+        s.push(format!("s6 0x{:x}", trace_arr[i+22]));
+        s.push(format!("s7 0x{:x}", trace_arr[i+23]));
+        s.push(format!("s8 0x{:x}", trace_arr[i+24]));
+        s.push(format!("s9 0x{:x}", trace_arr[i+25]));
+        s.push(format!("s10 0x{:x}", trace_arr[i+26]));
+        s.push(format!("s11 0x{:x}", trace_arr[i+27]));
+        s.push(format!("t3 0x{:x}", trace_arr[i+28]));
+        s.push(format!("t4 0x{:x}", trace_arr[i+29]));
+        s.push(format!("t5 0x{:x}", trace_arr[i+30]));
+        s.push(format!("t6 0x{:x}", trace_arr[i+31]));
+        s.push(format!("pc 0x{:x}", trace_arr[i+32]));
+        s.push(String::new());
+
+        let v = s.join("\n");
+        std::fs::write("trace", v).unwrap();
+        i+=33;
+    }
+}
+
 /// Wrapper function for each emulator, takes care of running the emulator, memory resets, etc
-pub fn worker(_thr_id: usize, mut emu: Emulator, mut corpus: Arc<Corpus>, tx: Sender<Statistics>) {
+pub fn worker(_thr_id: usize, mut emu: Emulator, corpus: Arc<Corpus>, tx: Sender<Statistics>) {
     // Maintain an original copy of the passed in emulator so it can later be referenced
     let original = emu.fork();
 
@@ -345,8 +418,33 @@ pub fn worker(_thr_id: usize, mut emu: Emulator, mut corpus: Arc<Corpus>, tx: Se
     // Current index into the input array of the corpus
     let mut input_index = 0;
 
+    // Allocated memory to trace the jit execution
+    let mut first_trace: bool = true;
+    let mut trace_arr: Vec<u64> = if FULL_TRACE {
+        vec![0u64; 1024 * 1024 * 64]
+    } else {
+        Vec::new()
+    };
+
+    // Save callee saved registers so that they can later be restored. This shouldn't really matter
+    // while fuzzing since this function should never return, but still good to have
+    let mut callee_saved_regs = vec![0u64; 8];
+    unsafe {
+        asm!(r#"
+            mov [{0}], rbx
+            mov [{0} + 0x8], rsp
+            mov [{0} + 0x10], rbp
+            mov [{0} + 0x18], r12
+            mov [{0} + 0x20], r13
+            mov [{0} + 0x28], r14
+            mov [{0} + 0x30], r15
+        "#,
+        in(reg) callee_saved_regs.as_mut_ptr(),
+        );
+    }
+
     loop {
-        // Get the next seed from the input queue and calculate its energy. This enery is then used 
+        // Get the next seed from the input queue and calculate its energy. This enery is then used
         // to determine how often this input should be run before moving on to the next input
         //input_index = corpus.select_seed(input_index, &mut rng).unwrap();
         input_index = (input_index + 1) % corpus.inputs.read().len();
@@ -362,13 +460,21 @@ pub fn worker(_thr_id: usize, mut emu: Emulator, mut corpus: Arc<Corpus>, tx: Se
             // Mutate the previously chosen seed
             mutator.mutate(&mut emu.fuzz_input);
 
-            // If a crash occured, save the input and increase crash count, otherwise just move on
+            // Execute actual fuzz case and save off status
             let mut case_instr_count: u64 = 0;
-            let case_res = emu.run_jit(&mut corpus, &mut case_instr_count);
+            let mut trace_arr_len: usize = 0;
+            let case_res = emu.run_jit(&corpus, &mut case_instr_count, &mut trace_arr,
+                                       &mut trace_arr_len);
+
+            // Write out a trace on the first fuzz case if requested
+            if FULL_TRACE && first_trace {
+                first_trace = false;
+                emit_trace(&trace_arr, trace_arr_len);
+            }
 
             match case_res.0.unwrap() {
-                // This means that a crash is found. Determine if the crash is unique, and if so, 
-                // save it. 
+                // This means that a crash is found. Determine if the crash is unique, and if so,
+                // save it.
                 Fault::ReadFault(v)   |
                 Fault::WriteFault(v)  |
                 Fault::ExecFault(v)   |
@@ -430,5 +536,21 @@ pub fn worker(_thr_id: usize, mut emu: Emulator, mut corpus: Arc<Corpus>, tx: Se
         local_coverage_count = 0;
         local_instr_count = 0;
         local_timeouts = 0;
+    }
+
+    // Restore callee saved registers before returning
+    #[allow(unreachable_code)]
+    unsafe {
+        asm!(r#"
+            mov rbx, [{0}]
+            mov rsp, [{0} + 0x8]
+            mov rbp, [{0} + 0x10]
+            mov r12, [{0} + 0x18]
+            mov r13, [{0} + 0x20]
+            mov r14, [{0} + 0x28]
+            mov r15, [{0} + 0x30]
+        "#,
+        in(reg) callee_saved_regs.as_ptr(),
+        );
     }
 }

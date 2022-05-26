@@ -50,6 +50,7 @@ pub fn fstat(emu: &mut Emulator) -> Option<Fault> {
         return None;
     }
 
+    // qemu output for the syscall + correct input lengths
     if file.unwrap().ftype == FileType::FUZZINPUT {
         let stat: Stat = Stat {
             st_dev:           0x803,

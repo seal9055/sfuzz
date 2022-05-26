@@ -10,10 +10,8 @@ use crate::{
 };
 
 use std::sync::Arc;
-//use std::sync::atomic::Ordering;
 use std::arch::asm;
 use std::collections::BTreeMap;
-//use std::ptr::write_volatile;
 
 use rustc_hash::FxHashMap;
 use iced_x86::code_asm::*;
@@ -387,7 +385,8 @@ impl Emulator {
     /// Once the jit exits it collects the reentry_pc (where to continue execution), and the exit
     /// code. It performs an appropriate operation based on the exit code and then continues with
     /// the loop to reenter the jit.
-    pub fn run_jit(&mut self, corpus: &Corpus, instr_count: &mut u64) -> (Option<Fault>, usize) {
+    pub fn run_jit(&mut self, corpus: &Corpus, instr_count: &mut u64, trace_arr: &mut [u64], 
+                   trace_arr_len: &mut usize) -> (Option<Fault>, usize) {
         // Extra space when the available registers are not enough to pass sufficient 
         // information in/out of the jit
         let mut scratchpad = [
@@ -403,10 +402,10 @@ impl Emulator {
             // 3 - 0x18 - Free
             0usize,
 
-            // 4 - 0x20 - Free
-            0usize,
+            // 4 - 0x20 - Trace
+            trace_arr.as_mut_ptr() as usize,
 
-            // 5 - 0x28 Free
+            // 5 - 0x28 Trace Size
             0usize,
 
             // 6 - 0x30 - Coverage byte-map
@@ -485,6 +484,7 @@ impl Emulator {
             }
 
             self.set_reg(Register::Pc, reentry_pc);
+            *trace_arr_len = scratchpad[5];
 
             // Take action based on the exit code returned by JIT
             match exit_code {
@@ -556,55 +556,6 @@ impl Emulator {
         }
     }
 
-    // Handle a new coverage tracking event
-    //fn coverage_handler(&self, scratchpad: &[usize]) {
-    //    match COVMETHOD {
-    //        //CovMethod::Block => { /* Block level coverage without a hit-counter */
-    //        //    if !tmp_cov.is_empty() {
-    //        //        // New coverage hit
-    //        //        scratchpad[9] = true;
-    //        //        corpus.cov_counter.fetch_add(1, Ordering::SeqCst);
-    //        //        let mut cov_vec = corpus.coverage_vec.as_ref().unwrap().write();
-
-    //        //        while let Some(v) = tmp_cov.pop() {
-    //        //            cov_vec.push(v as usize);
-
-    //        //            // Overwrite the jit_coverage instructions with nop-instructions
-    //        //            let addr = self.jit.lookup(v as usize).unwrap();
-    //        //            self.jit.nop_code(addr, Some(0xc));
-    //        //        }
-    //        //        cov_len = 0;
-    //        //    }
-    //        //},
-    //        //CovMethod::BlockHitCounter => { /* Block level coverage with hit-counter */
-    //        //    if !tmp_cov.is_empty() {
-    //        //        if let Some(mut cov_map) = corpus.coverage_map.as_ref()
-    //        //            .unwrap().try_write() {
-    //        //            while let Some(v) = tmp_cov.pop() {
-    //        //                if let Some(e) = cov_map.get_mut(&(v as usize)) {
-    //        //                    // Old coverage hit, increment counter
-    //        //                    *e += 1;
-    //        //                } else {
-    //        //                    // New coverage hit
-    //        //                    corpus.cov_counter.fetch_add(1, Ordering::SeqCst);
-    //        //                    scratchpad[9] = true;
-    //        //                    cov_map.insert(v as usize, 1);
-    //        //                }
-    //        //            }
-    //        //            cov_len = 0;
-    //        //        }
-    //        //    }
-    //        //},
-    //        CovMethod::Edge => {
-    //            println!("Edge coverage hit: to: {:x}, from: {:x}, hash: {:x}", 
-    //                     scratchpad[8], scratchpad[9], scratchpad[7]);
-    //            self.jit.nop_code(scratchpad[10], Some(0x1));
-    //        },
-    //        CovMethod::None => {},
-    //        _ => panic!("Coverage Method not implemented"),
-    //    }
-    //}
-
     /// Debug-print register-state on each instruction
     fn debug_jit(&mut self, pc: usize) {
         let opcode: u32 = self.memory.read_at(pc, Perms::READ | Perms::EXECUTE).map_err(|_|
@@ -652,7 +603,8 @@ impl Emulator {
         while pc < end_pc {
             let opcodes: u32 = self.memory.read_at(pc, Perms::READ | Perms::EXECUTE).map_err(|_|
                 Fault::ExecFault(pc)).unwrap();
-            let instr = decode_instr(opcodes).expect(&format!("Error occured at {:#0X}", pc));
+            let instr = decode_instr(opcodes).unwrap_or_else(|_| 
+                                                             panic!("Error occured at {:#0X}", pc));
             instrs.push(instr);
             pc +=4;
         }
@@ -848,25 +800,3 @@ impl Emulator {
         }
     }
 }
-
-/*
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn temporary() {
-        let shared = Arc::new(Shared::new(16 * 1024 * 1024));
-        let mut emu = Emulator::new(1024 * 1024, shared);
-
-        let addr = emu.allocate(0x40, Perms::READ | Perms::WRITE | Perms::EXECUTE).unwrap();
-        emu.set_reg(Register::Pc, addr);
-
-        let data = std::fs::read("tests/output").unwrap();
-        emu.memory.write_mem(addr, &data, data.len()).unwrap();
-
-        println!("size: {}", data.len());
-        emu.run_jit();
-    }
-}
-*/

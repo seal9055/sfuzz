@@ -187,10 +187,6 @@ impl Mmu {
         self.set_permissions(segment.vaddr as usize, segment.memsz, Perms::WRITE)?;
         self.write_mem(segment.vaddr, data, segment.filesz as usize).ok()?;
 
-        //let print_perms = vec!["", "X", "W", "WX", "R", "RX", "RW", "RWX"];
-        //println!("[{:#0x} - {:#0x}] : {}", segment.vaddr, segment.vaddr + segment.memsz, 
-        //         print_perms[segment.flags as usize]);
-
         // ELF files can contain padding that needs to be loaded into memory but does not exist
         // in the file on disk, we still need to fill it up in memory though
         let padding = vec![0u8; (segment.memsz - segment.filesz) as usize];

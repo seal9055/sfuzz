@@ -9,12 +9,14 @@ use std::sync::Arc;
 use console::Term;
 use num_format::{Locale, ToFormattedString};
 
+/// Different log-types that can be used to print out messages in different colors
 pub enum LogType {
     Neutral = 0,
     Success = 1,
     Failure = 2,
 }
 
+/// Color a string green
 pub struct Green(pub &'static str);
 impl fmt::Display for Green {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result { 
@@ -25,6 +27,7 @@ impl fmt::Display for Green {
     }
 }
 
+/// Color a string blue
 pub struct Blue(pub &'static str);
 impl fmt::Display for Blue {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result { 
@@ -35,6 +38,7 @@ impl fmt::Display for Blue {
     }
 }
 
+/// Color a string red
 pub struct Red(pub &'static str);
 impl fmt::Display for Red {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result { 
@@ -62,6 +66,7 @@ pub fn log(color: LogType, msg: &str) {
     }
 }
 
+/// Print out statistics in a nicely formated static screen
 fn pretty_stats(term: &Term, stats: &Statistics, elapsed_time: f64, timeout: u64, corpus: 
                 &Arc<Corpus>) {
     term.move_cursor_to(0, 2).unwrap();
@@ -136,6 +141,7 @@ fn pretty_stats(term: &Term, stats: &Statistics, elapsed_time: f64, timeout: u64
     term.flush().unwrap();
 }
 
+/// Simple debug view of statistics
 fn basic_stats(stats: &Statistics, elapsed_time: f64) {
     println!(
         "[{:8.2}] fuzz cases: {:12} : fcps: {:8} : coverage: {:6} : crashes: {:8} \
@@ -150,6 +156,7 @@ fn basic_stats(stats: &Statistics, elapsed_time: f64) {
         stats.ucrashes);
 }
 
+/// Wrapper for actual stat-printing functions
 pub fn print_stats(term: &Term, stats: &Statistics, elapsed_time: f64, timeout: u64, 
                    corpus: &Arc<Corpus>) {
     if DEBUG_PRINT {

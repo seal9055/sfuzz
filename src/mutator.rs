@@ -189,7 +189,7 @@ impl Mutator {
         let idx = self.rng.next_u32() as usize % input_length;
 
         // Extract block to be dup'd and split the input at a random location
-        let mut v = input[start..end].to_vec().clone();
+        let mut v = input[start..end].to_vec();
         let mut p2 = input.split_off(idx);
 
         // Rebuild the input [(0..idx) + v + (idx..end)]

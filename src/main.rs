@@ -127,7 +127,7 @@ fn main() {
     let mut stats = Statistics::default();
 
     // Insert loadable segments into emulator address space and retrieve symbol table information
-    let sym_map = load_elf_segments("./test_cases/test3", &mut emu).unwrap_or_else(||{
+    let sym_map = load_elf_segments("./test_cases/simple_test", &mut emu).unwrap_or_else(||{
         error_exit("Unrecoverable error while loading elf segments");
     });
 
@@ -155,9 +155,7 @@ fn main() {
     emu.set_reg(Register::Sp, (stack + (1024 * 1024)) - 8);
 
     // Setup arguments
-    //let arguments = vec!["test_cases/simple_test\0".to_string(), "fuzz_input\0".to_string()];
-    //let arguments = vec!["objdump\0".to_string(), "-x\0".to_string(), "fuzz_input\0".to_string()];
-    let arguments = vec!["test3\0".to_string()];
+    let arguments = vec!["test_cases/simple_test\0".to_string(), "fuzz_input\0".to_string()];
     let args: Vec<usize> = arguments.iter().map(|e| {
         let addr = emu.allocate(64, Perms::READ | Perms::WRITE)
             .expect("Allocating an argument failed");
@@ -203,7 +201,7 @@ fn main() {
 
     // Calibrate the emulator for the timeout. Cloning it so the real emulator state isnt changed
     // Alternatively configs can be used to override automatically determined timeout
-    //emu.timeout = calibrate_seeds(&mut emu, &*corpus.clone());
+    emu.timeout = calibrate_seeds(&mut emu, &*corpus.clone());
     if let Some(v) = OVERRIDE_TIMEOUT {
         emu.timeout = v;
     }

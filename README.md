@@ -88,7 +88,6 @@ This list represents a set of features that I plan on implementing in the future
 - [X] Crash deduping / unique crashes
 - [X] Update mutators to include more options
 - [X] Seed Scheduling
-- [ ] Fix some bugs that stop sfuzz from working against more complicated targets
 - [ ] Implement riscv-atomics so the JIT can use libc instead of newlib
 - [ ] Proper benchmarking
 - [ ] CMP deconstruction to get past magic values and checksums

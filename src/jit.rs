@@ -2,7 +2,7 @@ use crate::{
     irgraph::{IRGraph, Flag, Operation, Val},
     emulator::{Emulator, Fault, Register as PReg, ExitType},
     mmu::Perms,
-    config::{CovMethod, COVMETHOD, PERM_CHECKS, COUNT_INSTRS},
+    config::{CovMethod, COVMETHOD, PERM_CHECKS, COUNT_INSTRS, FULL_TRACE},
 };
 
 use rustc_hash::FxHashMap;
@@ -28,23 +28,6 @@ pub fn alloc_rwx(size: usize) -> &'static mut [u8] {
     }
 }
 
-/// Allocate RWX memory for Windows systems
-#[cfg(target_os="windows")]
-pub fn alloc_rwx(size: usize) -> &'static mut [u8] {
-    extern {
-        fn VirtualAlloc(lpAddress: *const u8, dwSize: usize,
-                        flAllocationType: u32, flProtect: u32) -> *mut u8;
-    }
-
-    unsafe {
-        // Alloc RWX and MAP_PRIVATE | MAP_ANON on windows
-        let ret = VirtualAlloc(0 as *const _, size, 0x1000 | 0x2000, 0x40);
-        assert!(!ret.is_null());
-
-        std::slice::from_raw_parts_mut(ret, size)
-    }
-}
-
 #[derive(Clone, Debug, Copy)]
 pub enum LibFuncs {
     STRLEN,
@@ -59,7 +42,7 @@ pub struct CompileInputs<'a> {
     /// Starting address of each CFG block
     pub leaders: FxHashMap<usize, usize>,
 
-    /// pc - exit-type mapping. If the pc is hit in the JIT, the jit is left with a corresponding 
+    /// pc - exit-type mapping. If the pc is hit in the JIT, the jit is left with a corresponding
     /// code
     pub exit_conds: &'a mut FxHashMap<usize, ExitType>,
 
@@ -159,10 +142,10 @@ impl Jit {
     /// r13 : Memory
     /// r14 : Memory mapped register array
     /// r15 : Jit lookup array
-    pub fn compile(&self, 
-                   irgraph: &IRGraph, 
-                   hooks: &FxHashMap<usize, fn(&mut Emulator) -> Result<(), Fault>>, 
-                   custom_lib: &FxHashMap<usize, LibFuncs>, 
+    pub fn compile(&self,
+                   irgraph: &IRGraph,
+                   hooks: &FxHashMap<usize, fn(&mut Emulator) -> Result<(), Fault>>,
+                   custom_lib: &FxHashMap<usize, LibFuncs>,
                    compile_inputs: &mut CompileInputs,
                    ) -> Option<usize> {
 
@@ -174,11 +157,6 @@ impl Jit {
 
         // Temporary registers used to load spilled registers into
         let regs_64 = [rbx, rcx];
-
-        //TODO early return to fix race condition bug
-        //if let Some(v) = self.lookup(init_pc) {
-        //    return Some(v);
-        //}
 
         /// Returns the destination register for an operation
         macro_rules! get_reg_64 {
@@ -214,18 +192,7 @@ impl Jit {
             }
         }
 
-        /// Forcibly extract an immediate from the `Val` enum
-        //macro_rules! extract_imm64 {
-        //    ($reg: expr) => {
-        //        match $reg {
-        //            Val::Reg(_) => panic!("extract_imm32 called with a register"),
-        //            Val::Imm(v) => v as i64,
-        //            Val::Imm64(v) => v,
-        //        }
-        //    }
-        //}
-
-        /// Jit exit with reentry address stored in an immediate 
+        /// Jit exit with reentry address stored in an immediate
         macro_rules! jit_exit1 {
             ($code: expr, $reentry: expr) => {
                 asm.mov(rax, $code as u64).unwrap();
@@ -244,7 +211,7 @@ impl Jit {
         }
 
         /// Generate JIT-code to setup appropriate arguments for a snapshot before leaving JIT
-        /// Call + ret() used to get current rip. This is then passed on to the emulator using the 
+        /// Call + ret() used to get current rip. This is then passed on to the emulator using the
         /// rdx register alongside the size, which then takes care of zeroing out the area.
         macro_rules! snapshot {
             ($reentry: expr) => {
@@ -264,7 +231,7 @@ impl Jit {
                 asm.ret().unwrap();
 
                 // Save size of the snapshot code injection that we have to later nop out
-                self.snapshot_inject_size.store(asm.assemble(0x0).unwrap().len() - start, 
+                self.snapshot_inject_size.store(asm.assemble(0x0).unwrap().len() - start,
                                                Ordering::SeqCst);
             }
         }
@@ -292,7 +259,7 @@ impl Jit {
                 asm.add(eax, 1).unwrap();
                 asm.mov(ptr(r8+0x48), rax).unwrap();
 
-                // Not a new coverage case, do nothing 
+                // Not a new coverage case, do nothing
                 asm.set_label(&mut fallthrough).unwrap();
             }
         }
@@ -362,8 +329,8 @@ impl Jit {
 
         // String library functions such as strlen() or strcmp() contain optimizations that go out
         // of bounds because they always attempt to read 8 bytes at a time. This causes issues for
-        // the byte-level permission checks that detect a bug. Since I don't want to incurr the 
-        // performance overhead of hooking all of them, I instead jit custom implementations of 
+        // the byte-level permission checks that detect a bug. Since I don't want to incurr the
+        // performance overhead of hooking all of them, I instead jit custom implementations of
         // these functions written in assembly
         if let Some(v) = custom_lib.get(&init_pc) {
             let b = self.compile_lib(init_pc, *v);
@@ -375,15 +342,34 @@ impl Jit {
             if let Some(v) = instr.pc {
                 pc = v;
 
-                // Debug-print register-state on each instruction
-                //if first {
-                //    first = false;
-                //} else {
-                //    //jit_exit1!(4, v);
-                //}
-
                 // This instruction requires a lookup entry to be inserted into lookup table
                 self.add_lookup(&asm.assemble(0x0).unwrap(), v);
+
+                // Push registers to trace array at beginning of each instruction
+                if FULL_TRACE {
+                    let mut loop_start = asm.create_label();
+                    asm.mov(rax, ptr(r8+0x20)).unwrap();    // Trace array
+                    asm.mov(rbx, ptr(r8+0x28)).unwrap();    // Trace array-size
+                    asm.xor(rcx, rcx).unwrap();             // loop-counter
+
+                    asm.set_label(&mut loop_start).unwrap();
+
+                    asm.mov(rdx, ptr(r14 + (rcx * 8))).unwrap();
+                    asm.mov(ptr((rbx * 8) + rax), rdx).unwrap();
+                    asm.inc(rcx).unwrap();
+                    asm.inc(rbx).unwrap();
+                    asm.cmp(rcx, 32).unwrap();
+                    asm.jne(loop_start).unwrap();
+
+                    asm.inc(rbx).unwrap();
+                    asm.mov(ptr(r8+0x28), rbx).unwrap();
+
+                    // Manually set pc
+                    asm.dec(rbx).unwrap();
+                    asm.mov(rcx, pc as u64).unwrap();
+                    asm.shl(rbx, 3).unwrap();
+                    asm.mov(ptr(rbx + rax), rcx).unwrap();
+                }
 
                 // This instruction is the first instruction of a cfg block
                 if compile_inputs.leaders.get(&pc).is_some() {
@@ -394,7 +380,7 @@ impl Jit {
                     } else if COVMETHOD == CovMethod::Edge {
                         new_edge_coverage!(pc);
                     }
-    
+
                     // Check if this fuzz case has reached the timeout limit
                     let mut fallthrough_timeout = asm.create_label();
                     let v: u64 = unsafe { std::mem::transmute(compile_inputs.timeout) };
@@ -644,7 +630,7 @@ impl Jit {
 
                     // Retrieve instruction operand size and retrieve memory permission bits
                     let sz = match instr.flags {
-                        0b0001000001 => { 
+                        0b0001000001 => {
                             asm.mov(rax, byte_ptr(r_in1 + r12)).unwrap();
                             1
                         },
@@ -1272,7 +1258,7 @@ mod tests {
                 out("r9") result2,
                 out("r10") result3,
                 out("r11") result4,
-                in("r15") jit.lookup_arr.read().unwrap().as_ptr() as u64,
+                in("r15") jit.lookup_arr.as_ptr() as u64,
                 );
         }
 
