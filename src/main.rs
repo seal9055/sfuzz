@@ -7,7 +7,7 @@ use sfuzz::{
     Input, Corpus, Statistics, error_exit, load_elf_segments, worker, snapshot, calibrate_seeds,
 };
 use std::thread;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use std::sync::mpsc::{self, Receiver, Sender};
 
@@ -116,18 +116,21 @@ fn main() {
     // Thead-shared jit backing
     let jit = Arc::new(Jit::new(16 * 1024 * 1024));
 
+    // Thread-shared mutex that is used to lock compilation
+    let prevent_rc: Arc<Mutex<usize>> = Arc::new(Mutex::new(0));
+
     // Thread-shared structure that holds fuzz-inputs and coverage information
-    let corpus: Corpus = Corpus::new(16*1024*1024);
+    let mut corpus: Corpus = Corpus::new(16*1024*1024);
 
     // Each thread gets its own forked emulator. The jit-cache is shared between them however
-    let mut emu = Emulator::new(64 * 1024 * 1024, jit);
+    let mut emu = Emulator::new(64 * 1024 * 1024, jit, prevent_rc);
 
     // Statistics structure. This is kept local to the main thread and updated via message passing 
     // from the worker threads
     let mut stats = Statistics::default();
 
     // Insert loadable segments into emulator address space and retrieve symbol table information
-    let sym_map = load_elf_segments("./test_cases/simple_test", &mut emu).unwrap_or_else(||{
+    let sym_map = load_elf_segments("./test_cases/harder_test", &mut emu).unwrap_or_else(||{
         error_exit("Unrecoverable error while loading elf segments");
     });
 
@@ -155,7 +158,7 @@ fn main() {
     emu.set_reg(Register::Sp, (stack + (1024 * 1024)) - 8);
 
     // Setup arguments
-    let arguments = vec!["test_cases/simple_test\0".to_string(), "fuzz_input\0".to_string()];
+    let arguments = vec!["test_cases/harder_test\0".to_string(), "fuzz_input\0".to_string()];
     let args: Vec<usize> = arguments.iter().map(|e| {
         let addr = emu.allocate(64, Perms::READ | Perms::WRITE)
             .expect("Allocating an argument failed");
@@ -186,8 +189,6 @@ fn main() {
     // Insert various hooks into binary
     insert_hooks(&sym_map, &mut emu);
 
-    let corpus = Arc::new(corpus);
-
     // Setup snapshot fuzzing at a point before the fuzz-input is read in
     if let Some(addr) = SNAPSHOT_ADDR {
         println!("Activated snapshot-based fuzzing");
@@ -196,17 +197,23 @@ fn main() {
         emu.exit_conds.insert(addr, ExitType::Snapshot);
 
         // Snapshot the emulator
-        snapshot(&mut emu, &*corpus);
+        snapshot(&mut emu, &corpus);
     }
 
-    // Calibrate the emulator for the timeout. Cloning it so the real emulator state isnt changed
+    // Calibrate the emulator for the timeout.
     // Alternatively configs can be used to override automatically determined timeout
-    emu.timeout = calibrate_seeds(&mut emu, &*corpus.clone());
+    emu.timeout = calibrate_seeds(&mut emu, &corpus);
     if let Some(v) = OVERRIDE_TIMEOUT {
         emu.timeout = v;
     }
 
+    // Reset coverage collected during initial callibration so it is in a default state once
+    // fuzzing actually starts. This also removes the coverage generated while capturing the
+    // initial snapshot
+    corpus.reset_coverage();
+
     let emu = Arc::new(emu);
+    let corpus = Arc::new(corpus);
 
     // Spawn worker threads to do the actual fuzzing
     for thr_id in 0..NUM_THREADS {

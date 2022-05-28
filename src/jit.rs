@@ -76,7 +76,8 @@ impl Jit {
     }
 
     /// Write opcodes to the JIT backing buffer and add a mapping to lookup table
-    pub fn add_jitblock(&self, code: &[u8], pc: Option<usize>) -> usize {
+    pub fn add_jitblock(&self, code: &[u8], pc: Option<usize>, 
+            local_lookup_map: Option<FxHashMap<usize, usize>>) -> usize {
         let mut jit = self.jit_backing.lock().unwrap();
 
         let jit_inuse = jit.1;
@@ -86,6 +87,11 @@ impl Jit {
 
         // add mapping
         if let Some(v) = pc {
+            if let Some(lookup_map) = local_lookup_map {
+                for mapping in lookup_map {
+                    self.lookup_arr[mapping.0].store(mapping.1, Ordering::SeqCst);
+                }
+            }
             self.lookup_arr[v / 4].store(addr, Ordering::SeqCst);
         }
 
@@ -108,26 +114,32 @@ impl Jit {
         for i in 0..len {
             jit.0[(i+offset)] = 0x90;
         }
-
     }
 
-    /// Look up jit address corresponding to a translated instruction
-    pub fn lookup(&self, pc: usize) -> Option<usize> {
+    /// Look up jit address corresponding to a translated instruction. If a local_lookup_map is
+    /// provided, also check if the address is mapped there
+    pub fn lookup(&self, pc: usize, local_lookup_map: Option<&FxHashMap<usize, usize>>)
+            -> Option<usize> {
         let addr = self.lookup_arr.get(pc / 4).unwrap().load(Ordering::SeqCst);
         if addr == 0 {
-            Option::None
+            if let Some(lookup_map) = local_lookup_map {
+                lookup_map.get(&(pc / 4)).copied()
+            } else {
+                Option::None
+            }
         } else {
             Some(addr)
         }
     }
 
-    /// Add a new mapping to the lookup table without actually inserting code into jit
-    pub fn add_lookup(&self, code: &[u8], pc: usize) {
+    /// Add a new mapping to the local lookup table. This has the benefit of providing lookup
+    /// mappings that can be used during compilation, but aren't presented to other threads until
+    /// after the code is compiled
+    pub fn add_local_lookup(&self, local_lookup_arr: &mut FxHashMap<usize, usize>, 
+                            code: &[u8], pc: usize) {
         let jit = self.jit_backing.lock().unwrap();
-
         let cur_jit_addr = jit.0.as_ptr() as usize + jit.1;
-
-        self.lookup_arr[pc / 4].store(cur_jit_addr + code.len(), Ordering::SeqCst);
+        local_lookup_arr.insert(pc / 4, cur_jit_addr + code.len());
     }
 
     /// rdi, rbx, rcx, rbp, rsp : in use by compiler
@@ -149,6 +161,7 @@ impl Jit {
                    compile_inputs: &mut CompileInputs,
                    ) -> Option<usize> {
 
+        // Assembler object
         let mut asm = CodeAssembler::new(64).unwrap();
 
         // Address of function start
@@ -157,6 +170,15 @@ impl Jit {
 
         // Temporary registers used to load spilled registers into
         let regs_64 = [rbx, rcx];
+
+        // Early return if this function has already been compiled by a different thread while we
+        // were waiting on the lock
+        if let Some(v) = self.lookup(init_pc, None) {
+            return Some(v);
+        }
+
+        // Non thread-shared lookup-map that is used to save lookups while compiling.
+        let mut local_lookup_map: FxHashMap<usize, usize> = FxHashMap::default();
 
         /// Returns the destination register for an operation
         macro_rules! get_reg_64 {
@@ -215,24 +237,46 @@ impl Jit {
         /// rdx register alongside the size, which then takes care of zeroing out the area.
         macro_rules! snapshot {
             ($reentry: expr) => {
-                let start = asm.assemble(0x0).unwrap().len();
-                let mut here = asm.create_label();
+                // The assembler unfortunately complains about unused labels when attempting to
+                // assemble the original `asm` structure to find the offsets, so instead these
+                // values are calculated on a temporary asm structure first
+                let (end, off) = {
+                    let mut tmp_asm = CodeAssembler::new(64).unwrap();
+                    let mut here = tmp_asm.create_label();
 
-                asm.mov(rax, 5u64).unwrap();
-                asm.mov(rcx, $reentry as u64).unwrap();
-                asm.call(here).unwrap();
+                    tmp_asm.mov(rax, 5u64).unwrap();
+                    tmp_asm.mov(rcx, $reentry as u64).unwrap();
+                    tmp_asm.call(here).unwrap();
 
-                let off = asm.assemble(0x0).unwrap().len() - start;
+                    tmp_asm.set_label(&mut here).unwrap();
+                    tmp_asm.nop().unwrap();
+                    let off = tmp_asm.assemble(0x0).unwrap().len();
+                    tmp_asm.pop(rbx).unwrap();
+                    tmp_asm.sub(rbx, off as i32).unwrap();
+                    tmp_asm.mov(ptr(r8), rbx).unwrap();
+                    tmp_asm.ret().unwrap();
 
-                asm.set_label(&mut here).unwrap();
-                asm.pop(rbx).unwrap();
-                asm.sub(rbx, off as i32).unwrap();
-                asm.mov(ptr(r8), rbx).unwrap();
-                asm.ret().unwrap();
+                    let end = tmp_asm.assemble(0x0).unwrap().len();
+                    (end, off)
+                };
+
+                // At this point the code is now inserted into the actual asm structure
+                {
+                    let mut here = asm.create_label();
+
+                    asm.mov(rax, 5u64).unwrap();
+                    asm.mov(rcx, $reentry as u64).unwrap();
+                    asm.call(here).unwrap();
+
+                    asm.set_label(&mut here).unwrap();
+                    asm.pop(rbx).unwrap();
+                    asm.sub(rbx, off as i32).unwrap();
+                    asm.mov(ptr(r8), rbx).unwrap();
+                    asm.ret().unwrap();
+                }
 
                 // Save size of the snapshot code injection that we have to later nop out
-                self.snapshot_inject_size.store(asm.assemble(0x0).unwrap().len() - start,
-                                               Ordering::SeqCst);
+                self.snapshot_inject_size.store(end, Ordering::SeqCst);
             }
         }
 
@@ -324,7 +368,8 @@ impl Jit {
         // Insert hook for addresses we want to hook with our own function and return
         if hooks.get(&init_pc).is_some() {
             jit_exit1!(3, init_pc);
-            return Some(self.add_jitblock(&asm.assemble(0x0).unwrap(), Some(init_pc)));
+            return Some(
+                self.add_jitblock(&asm.assemble(0x0).unwrap(), Some(init_pc), None));
         }
 
         // String library functions such as strlen() or strcmp() contain optimizations that go out
@@ -337,13 +382,12 @@ impl Jit {
             return b;
         }
 
-        //let mut first = true;
         for instr in &irgraph.instrs {
             if let Some(v) = instr.pc {
                 pc = v;
 
                 // This instruction requires a lookup entry to be inserted into lookup table
-                self.add_lookup(&asm.assemble(0x0).unwrap(), v);
+                self.add_local_lookup(&mut local_lookup_map, &asm.assemble(0x0).unwrap(), v);
 
                 // Push registers to trace array at beginning of each instruction
                 if FULL_TRACE {
@@ -403,6 +447,7 @@ impl Jit {
                     }
                 }
 
+                // Increment instruction counter
                 if COUNT_INSTRS {
                     asm.add(rsi, 1).unwrap();
                 }
@@ -495,7 +540,7 @@ impl Jit {
                     asm.nop().unwrap();
                 },
                 Operation::Jmp(addr) => {
-                    if let Some(jit_addr) = self.lookup(addr) {
+                    if let Some(jit_addr) = self.lookup(addr, Some(&local_lookup_map)) {
                         asm.mov(rbx, jit_addr as u64).unwrap();
                         asm.jmp(rbx).unwrap();
                     } else {
@@ -1066,7 +1111,7 @@ impl Jit {
         }
 
         // Actually compile the function and return the address it is compiled at
-        Some(self.add_jitblock(&asm.assemble(0x0).unwrap(), Some(init_pc)))
+        Some(self.add_jitblock(&asm.assemble(0x0).unwrap(), Some(init_pc), Some(local_lookup_map)))
     }
 
     // TODO permission checks
@@ -1130,7 +1175,7 @@ impl Jit {
         asm.mov(rbx, ptr(r15 + rbx)).unwrap();
         asm.jmp(rbx).unwrap();
 
-        Some(self.add_jitblock(&asm.assemble(0x0).unwrap(), Some(pc)))
+        Some(self.add_jitblock(&asm.assemble(0x0).unwrap(), Some(pc), None))
     }
 
     // TODO permission checks
@@ -1162,7 +1207,7 @@ impl Jit {
         asm.mov(rbx, ptr(r15 + rbx)).unwrap();
         asm.jmp(rbx).unwrap();
 
-        Some(self.add_jitblock(&asm.assemble(0x0).unwrap(), Some(pc)))
+        Some(self.add_jitblock(&asm.assemble(0x0).unwrap(), Some(pc), None))
     }
 
     fn compile_lib(&self, pc: usize, func: LibFuncs) -> Option<usize> {
@@ -1193,20 +1238,21 @@ mod tests {
     fn add_lookup_test() {
         let jit = Jit::new(16 * 1024 * 1024);
         let mut asm = CodeAssembler::new(64).unwrap();
+        let mut local_lookup_map: FxHashMap<usize, usize> = FxHashMap::default();
 
         asm.add(rax, rax).unwrap();
         asm.sub(rax, rax).unwrap();
         asm.ret().unwrap();
 
-        jit.add_lookup(&asm.assemble(0x0).unwrap(), 0x1234);
-        jit.add_lookup(&asm.assemble(0x0).unwrap(), 0x4444);
-        jit.add_lookup(&asm.assemble(0x0).unwrap(), 0x9055);
-        jit.add_lookup(&asm.assemble(0x0).unwrap(), 0x1000);
+        jit.add_local_lookup(&mut local_lookup_map, &asm.assemble(0x0).unwrap(), 0x1234);
+        jit.add_local_lookup(&mut local_lookup_map, &asm.assemble(0x0).unwrap(), 0x4444);
+        jit.add_local_lookup(&mut local_lookup_map, &asm.assemble(0x0).unwrap(), 0x9055);
+        jit.add_local_lookup(&mut local_lookup_map, &asm.assemble(0x0).unwrap(), 0x1000);
 
-        jit.lookup(0x1234).unwrap();
-        jit.lookup(0x4444).unwrap();
-        jit.lookup(0x9055).unwrap();
-        jit.lookup(0x1000).unwrap();
+        jit.lookup(0x1234, Some(&local_lookup_map)).unwrap();
+        jit.lookup(0x4444, Some(&local_lookup_map)).unwrap();
+        jit.lookup(0x9055, Some(&local_lookup_map)).unwrap();
+        jit.lookup(0x1000, Some(&local_lookup_map)).unwrap();
     }
 
     #[test]
@@ -1223,16 +1269,17 @@ mod tests {
         jit.add_jitblock(&asm.assemble(0x0).unwrap(), Some(0x9055));
         jit.add_jitblock(&asm.assemble(0x0).unwrap(), Some(0x1000));
 
-        jit.lookup(0x1234).unwrap();
-        jit.lookup(0x4444).unwrap();
-        jit.lookup(0x9055).unwrap();
-        jit.lookup(0x1000).unwrap();
+        jit.lookup(0x1234, None).unwrap();
+        jit.lookup(0x4444, None).unwrap();
+        jit.lookup(0x9055, None).unwrap();
+        jit.lookup(0x1000, None).unwrap();
     }
 
     #[test]
     fn asm_lookup() {
         let jit = Jit::new(16 * 1024 * 1024);
         let mut asm = CodeAssembler::new(64).unwrap();
+        let mut local_lookup_map: FxHashMap<usize, usize> = FxHashMap::default();
         let mut result1: usize;
         let mut result2: usize;
         let mut result3: usize;
@@ -1242,10 +1289,10 @@ mod tests {
         asm.sub(rax, rax).unwrap();
         asm.ret().unwrap();
 
-        jit.add_lookup(&asm.assemble(0x0).unwrap(), 0x1234);
-        jit.add_lookup(&asm.assemble(0x0).unwrap(), 0x4444);
-        jit.add_lookup(&asm.assemble(0x0).unwrap(), 0x9055);
-        jit.add_lookup(&asm.assemble(0x0).unwrap(), 0x1000);
+        jit.add_local_lookup(&mut local_lookup_map, &asm.assemble(0x0).unwrap(), 0x1234);
+        jit.add_local_lookup(&mut local_lookup_map, &asm.assemble(0x0).unwrap(), 0x4444);
+        jit.add_local_lookup(&mut local_lookup_map, &asm.assemble(0x0).unwrap(), 0x9055);
+        jit.add_local_lookup(&mut local_lookup_map, &asm.assemble(0x0).unwrap(), 0x1000);
 
         unsafe {
                 asm!(r#"

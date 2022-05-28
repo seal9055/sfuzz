@@ -197,6 +197,7 @@ pub fn write(emu: &mut Emulator) -> Option<Fault> {
         return None;
     }
 
+    // Set to true if you wish to see the actual stdout output of this syscall
     if false {
         let file = file.unwrap();
         if file.ftype == STDOUT || file.ftype == STDERR {

@@ -6,17 +6,18 @@ use crate::{
     irgraph::{IRGraph, Flag},
     emulator::FileType::{STDIN, STDOUT, STDERR},
     pretty_printing::{LogType, log},
+    config::NUM_THREADS,
     syscalls, Corpus, error_exit,
 };
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::arch::asm;
 use std::collections::BTreeMap;
 
 use rustc_hash::FxHashMap;
 use iced_x86::code_asm::*;
 
-/// 33 RISCV Registers + 2 Extra temporary registers that the IR needs
+/// 33 RISCV Registers
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Ord, PartialOrd)]
 #[repr(usize)]
 pub enum Register {
@@ -53,8 +54,6 @@ pub enum Register {
     T5,
     T6,
     Pc,
-    Z1,
-    Z2
 }
 
 impl Register {
@@ -124,27 +123,7 @@ pub enum Fault {
     Timeout,
 }
 
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct State {
-    /// Target registers
-    regs: [usize; 33],
-
-    // Timeout used to determine when to early-terminate a fuzz-case
-    //pub timeout: usize,
-}
-
-impl Default for State {
-    fn default() -> Self {
-        State {
-            regs: [0; 33],
-            // Initialize to high number so initial seeds don't hit it during calibration. This 
-            // timeout is immediately overwritten during calibration
-            //timeout: 1048576 * 1048576 * 1048576,
-        }
-    }
-}
-
+/// Different types of exit-conditions for the fuzzer
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum ExitType {
     /// Leave JIT to create snapshot at this address
@@ -153,10 +132,11 @@ pub enum ExitType {
     /// Leave JIT reporting success-case
     Success,
 
-    /// Exit jit as if exit() was called
+    /// Exit JIT as if exit() was called
     Exit,
 }
 
+/// Different types of files that the fuzzer supports
 #[derive(Copy, Debug, Clone, Eq, PartialEq)]
 pub enum FileType {
     /// STDIN (0)
@@ -178,6 +158,7 @@ pub enum FileType {
     INVALID,
 }
 
+/// Memoery mapped file implementation
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct File {
     /// Filetype of this file
@@ -212,8 +193,8 @@ pub struct Emulator {
     /// Memory backing for the emulator, contains actual memory bytes and permissions
     pub memory: Mmu,
 
-    /// Describes the current state of the emulator
-    pub state: State,
+    /// The register-state of this emulator
+    pub regs: [usize; 33],
 
     /// These are used to hook specific addresses. Can be used for debug purposes or to redirect
     /// important functions such as malloc/free to our own custom implementations
@@ -243,14 +224,18 @@ pub struct Emulator {
 
     /// If a fuzz case reaches this amount of instructions it will be manually terminated
     pub timeout: u64,
+
+    /// Thread-shared mutex that is used to lock compilation so that only one thread can compile
+    /// code at a time
+    pub prevent_rc: Arc<Mutex<usize>>,
 }
 
 impl Emulator {
     /// Create a new emulator that has access to the shared jit backing
-    pub fn new(size: usize, jit: Arc<Jit>) -> Self {
+    pub fn new(size: usize, jit: Arc<Jit>, prevent_rc: Arc<Mutex<usize>>) -> Self {
         Emulator {
             memory:     Mmu::new(size),
-            state:      State::default(),
+            regs:       [0; 33],
             hooks:      FxHashMap::default(),
             custom_lib: FxHashMap::default(),
             fd_list:    vec![File::new(STDIN), File::new(STDOUT), File::new(STDERR)],
@@ -260,6 +245,7 @@ impl Emulator {
             exit_conds: FxHashMap::default(),
             snapshot_addr: 0,
             timeout: 0xffffffffffffffff,
+            prevent_rc,
         }
     }
 
@@ -268,7 +254,7 @@ impl Emulator {
     pub fn fork(&self) -> Self {
         Emulator {
             memory:     self.memory.fork(),
-            state:      self.state,
+            regs:       self.regs,
             hooks:      self.hooks.clone(),
             custom_lib: self.custom_lib.clone(),
             fd_list:    self.fd_list.clone(),
@@ -278,13 +264,14 @@ impl Emulator {
             exit_conds: self.exit_conds.clone(),
             snapshot_addr: self.snapshot_addr,
             timeout: self.timeout,
+            prevent_rc: self.prevent_rc.clone(),
         }
     }
 
     /// Reset the entire state of this emulator (memory & registers)
     pub fn reset(&mut self, original: &Self) {
         self.memory.reset(&original.memory);
-        self.state.regs = original.state.regs;
+        self.regs = original.regs;
 
         self.fd_list.clear();
         self.fd_list.extend_from_slice(&original.fd_list);
@@ -301,14 +288,14 @@ impl Emulator {
     pub fn set_reg(&mut self, reg: Register, val: usize) {
         assert!((reg as usize) < 33);
         if reg == Register::Zero { panic!("Can't set zero-register"); }
-        self.state.regs[reg as usize] = val;
+        self.regs[reg as usize] = val;
     }
 
     /// Get the value stored in a register
     pub fn get_reg(&self, reg: Register) -> usize {
         assert!((reg as usize) < 33);
         if reg == Register::Zero { return 0; }
-        self.state.regs[reg as usize]
+        self.regs[reg as usize]
     }
 
     /// Load a segment from the elf binary into the emulator memory
@@ -324,57 +311,6 @@ impl Emulator {
     /// Free a previously allocated memory region
     pub fn free(&mut self, addr: usize) -> Result<(), Fault> {
         self.memory.free(addr)
-    }
-
-    /// Print out memory mapped registers
-    pub fn dump_regs(&self) {
-        println!("ZE  {:#018X}  ra  {:#018X}  sp  {:#018X}  gp  {:#018X}", 
-                 self.get_reg(Register::Zero),
-                 self.get_reg(Register::Ra),
-                 self.get_reg(Register::Sp),
-                 self.get_reg(Register::Gp));
-
-        println!("tp  {:#018X}  t0  {:#018X}  t1  {:#018X}  t2  {:#018X}",
-                 self.get_reg(Register::Tp),
-                 self.get_reg(Register::T0),
-                 self.get_reg(Register::T1),
-                 self.get_reg(Register::T2));
-
-        println!("s0  {:#018X}  s1  {:#018X}  a0  {:#018X}  a1  {:#018X}",
-                 self.get_reg(Register::S0),
-                 self.get_reg(Register::S1),
-                 self.get_reg(Register::A0),
-                 self.get_reg(Register::A1));
-
-        println!("a2  {:#018X}  a3  {:#018X}  a4  {:#018X}  a5  {:#018X}",
-                 self.get_reg(Register::A2),
-                 self.get_reg(Register::A3),
-                 self.get_reg(Register::A4),
-                 self.get_reg(Register::A5));
-
-        println!("a6  {:#018X}  a7  {:#018X}  s2  {:#018X}  s3  {:#018X}",
-                 self.get_reg(Register::A6),
-                 self.get_reg(Register::A7),
-                 self.get_reg(Register::S2),
-                 self.get_reg(Register::S3));
-
-        println!("s4  {:#018X}  s5  {:#018X}  s6  {:#018X}  s7  {:#018X}",
-                 self.get_reg(Register::S4),
-                 self.get_reg(Register::S5),
-                 self.get_reg(Register::S6),
-                 self.get_reg(Register::S7));
-
-        println!("s8  {:#018X}  s9  {:#018X}  s10 {:#018X}  s11 {:#018X}",
-                 self.get_reg(Register::S8),
-                 self.get_reg(Register::S9),
-                 self.get_reg(Register::S10),
-                 self.get_reg(Register::S11));
-
-        println!("t3  {:#018X}  t4  {:#018X}  t5  {:#018X}  t6  {:#018X}",
-                 self.get_reg(Register::T3),
-                 self.get_reg(Register::T4),
-                 self.get_reg(Register::T5),
-                 self.get_reg(Register::T6));
     }
 
     /// Runs the jit until exit/crash. It checks if the code at `pc` has already been compiled. If
@@ -434,7 +370,7 @@ impl Emulator {
 
             // Determine address of the jit-backing code for the current function, either by lookup,
             // or by compiling the function if it hasn't yet been compiled
-            let jit_addr = match (*self.jit).lookup(pc) {
+            let jit_addr = match (*self.jit).lookup(pc, None) {
                 Option::None => {
                     // IR instructions + labels at start of each control block
                     let irgraph = self.lift_func(pc).unwrap();
@@ -448,9 +384,17 @@ impl Emulator {
                         timeout: &self.timeout,
                     };
 
-                    // Compile the previously lifted function
+                    // Compile the previously lifted function. The lock is shared between all
+                    // threads and ensures that only one thread can compile code & insert it into
+                    // the shared JIT mapping at a time. 
+                    //
+                    // It is done this way instead of locking the entire JIT so that the threads
+                    // can still all access the JIT backing without issues or locks as long as they
+                    // don't need to compile new code.
+                    let mut v = self.prevent_rc.lock().unwrap();
                     let ret = self.jit.compile(&irgraph, &self.hooks, &self.custom_lib, 
                                                &mut inputs);
+                    *v += 1;
                     ret.unwrap()
                 },
                 Some(addr) => addr
@@ -476,7 +420,7 @@ impl Emulator {
                 in("r11")    self.memory.dirty_bitmap.as_ptr() as u64,
                 in("r12")    self.memory.permissions.as_ptr() as u64,
                 in("r13")    self.memory.memory.as_ptr() as u64,
-                in("r14")    self.state.regs.as_ptr() as u64,
+                in("r14")    self.regs.as_ptr() as u64,
                 in("r15")    self.jit.lookup_arr.as_ptr() as u64,
                 );
 
@@ -528,9 +472,6 @@ impl Emulator {
                         error_exit("Attempted to hook invalid function");
                     }
                 },
-                4 => { /* Debug function, huge performance cost, only use while debugging */
-                    self.debug_jit(reentry_pc);
-                },
                 5 => { /* JIT exited to setup a snapshot */
                     self.snapshot_addr = scratchpad[0];
                     return (Some(Fault::Snapshot), scratchpad[9]);
@@ -554,16 +495,6 @@ impl Emulator {
                 _ => panic!("Invalid JIT return code: {:x}", exit_code),
             }
         }
-    }
-
-    /// Debug-print register-state on each instruction
-    fn debug_jit(&mut self, pc: usize) {
-        let opcode: u32 = self.memory.read_at(pc, Perms::READ | Perms::EXECUTE).map_err(|_|
-            Fault::ExecFault(pc)).unwrap();
-        let instr = decode_instr(opcode);
-
-        println!("\n{:#X}  {:?}", pc, instr);
-        self.dump_regs();
     }
 
     /// Returns a BTreeMap of pc value's at which a label should be created
@@ -610,7 +541,9 @@ impl Emulator {
         }
 
         if let Some(v) = self.functions.get(&start_pc) {
-            log(LogType::Neutral, &format!("Lifting: {}", v.1));
+            if NUM_THREADS == 1 {
+                log(LogType::Neutral, &format!("Lifting: {}", v.1));
+            }
         }
 
         // These are used to determine jump locations ahead of time

@@ -6,7 +6,7 @@ pub const COVMETHOD: CovMethod = CovMethod::Edge;
 pub const SNAPSHOT_ADDR: Option<usize> = None;
 
 /// Number of cores to run the fuzzer with
-pub const NUM_THREADS: usize = 1;
+pub const NUM_THREADS: usize = 16;
 
 /// Count number of instructions executed by test cases
 pub const COUNT_INSTRS: bool = true;
@@ -14,7 +14,8 @@ pub const COUNT_INSTRS: bool = true;
 /// Toggle-able permission checks
 pub const PERM_CHECKS: bool = true;
 
-/// Additional information is printed out, alongside rolling statistics
+/// Additional information is printed out, alongside rolling statistics. Some parts of this only
+/// work while running single-threaded
 pub const DEBUG_PRINT: bool = false;
 
 /// Manually override the automatically calibrated timeout
@@ -32,12 +33,6 @@ pub enum CovMethod {
     /// Track block level coverage without hit-counters (basically free performance wise)
     Block,
 
-    /// Track block level coverage with hit-counters (30% performance hit)
-    BlockHitCounter,
-
     /// Track edge level coverage without hit-counters
     Edge,
-
-    /// Track edge level coverage with hit-counters
-    EdgeHitCounter,
 }

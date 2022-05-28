@@ -19,7 +19,7 @@ use elfparser::{self, ARCH64, ELFMAGIC, LITTLEENDIAN, TYPEEXEC, RISCV};
 use emulator::{Emulator, Register, Fault};
 use mutator::Mutator;
 use my_libs::sorted_vec::*;
-use config::{CovMethod, COVMETHOD, FULL_TRACE};
+use config::FULL_TRACE;
 
 use std::process;
 use std::sync::Arc;
@@ -241,19 +241,13 @@ pub struct Corpus {
     /// Actual byte-backing for the fuzz-inputs
     pub inputs: RwLock<Vec<Input>>,
 
-    /// Coverage map - used by block level coverage with hit-counter
-    pub coverage_map: Option<RwLock<FxHashMap<usize, usize>>>,
-
-    /// Coverage vector - used by block level coverage without hit-counter
-    pub coverage_vec: Option<RwLock<Vec<usize>>>,
-
     /// Bytemap used in jits to determine if an edge has already been hit
     pub coverage_bytemap: Vec<usize>,
 
     /// Counter that keeps track of current coverage
     pub cov_counter: AtomicUsize,
 
-    /// Unique crashes,
+    /// Used to dedup crashses and only save off unique crashes
     pub crash_mapping: RwLock<FxHashMap<Fault, u8>>,
 
     /// Total size of the inputs in this corpus
@@ -266,25 +260,22 @@ pub struct Corpus {
 impl Corpus {
     /// Start a new corpus. Initialize fields based on what type of coverage method is in use.
     pub fn new(size: usize) -> Self {
-        let (coverage_vec, coverage_map) = match COVMETHOD {
-            CovMethod::Block => {
-                (Some(RwLock::new(Vec::new())), None)
-            },
-            CovMethod::BlockHitCounter => {
-                (None, Some(RwLock::new(FxHashMap::default())))
-            },
-            _ => (None, None)
-        };
         Self {
-            inputs:   RwLock::new(Vec::new()),
-            coverage_map,
-            coverage_vec,
+            inputs:           RwLock::new(Vec::new()),
             coverage_bytemap: vec![0; size],
-            cov_counter: AtomicUsize::new(0),
-            crash_mapping: RwLock::new(FxHashMap::default()),
-            total_size: AtomicUsize::new(0),
-            total_exec_time: AtomicUsize::new(0),
+            cov_counter:      AtomicUsize::new(0),
+            crash_mapping:    RwLock::new(FxHashMap::default()),
+            total_size:       AtomicUsize::new(0),
+            total_exec_time:  AtomicUsize::new(0),
         }
+    }
+
+    /// During initial calibration coverage is gained without being tracked for the statistics, so
+    /// the coverage map is reset after initial calibration to more accurately represent collected
+    /// coverage
+    pub fn reset_coverage(&mut self) {
+        self.coverage_bytemap = vec![0; self.coverage_bytemap.len()];
+        self.cov_counter = AtomicUsize::new(0);
     }
 }
 

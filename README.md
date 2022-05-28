@@ -2,8 +2,9 @@
 Start date: Dec, 2021
 
 This is a performance and scaling focused blackbox fuzzer that makes use of RISC-V to x86\_64 binary translations
-and a custom JIT-compilation engine. The fuzzer is still in development, but currently successfuly runs
-against simple targets.
+and a custom JIT-compilation engine. The fuzzer runs successfully against simple targets and has
+been tested against both custom programs highlighting short/longer cases and a couple of binutils
+binaries.
 <br>
 
 #### Features
