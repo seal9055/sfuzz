@@ -1,12 +1,12 @@
 #![feature(variant_count)]
 #![feature(once_cell)]
 
-pub mod rand;
-pub mod types;
+pub mod rng;
+pub mod compile;
 
-use rand::Rand;
-use types::{Stmt, Expr};
+use rng::Rng;
 
+use std::fmt;
 use std::lazy::SyncLazy;
 
 /// This program takes an input file via argv[1], this variable specifies the amount of bytes that
@@ -16,18 +16,280 @@ const INPUT_SIZE: usize = 100;
 
 /// Maximum depth that scopes can go too before early returning. Without this blocks would
 /// recursively create new blocks until a stack overflow occurs
-const MAX_DEPTH: usize = 5;
+const MAX_DEPTH: usize = 3;
+
+/// Determines the amount of functions that are created outside of `main`
+const NUM_FUNCTIONS: usize = 1;
+
+/// Minimum and maximum sizes for buffer allocations in the program.
+const MIN_ALLOC_SIZE: usize = 0x20;
+const MAX_ALLOC_SIZE: usize = 0x100;
+
+/// Maximum length for strings that can be used in comparisons. This needs to be smaller than
+/// `INPUT_SIZE`
+const MAX_STRING_LEN: usize = 0x20;
+
+/// Index into the provided user input
+#[derive(Debug, Clone, Copy)]
+pub struct Index(usize);
+
+impl fmt::Display for Index {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
 
 /// Create an rng object on program startup
-pub static RNG: SyncLazy<Rand> = SyncLazy::new(|| {
-    Rand::new()
+pub static RNG: SyncLazy<Rng> = SyncLazy::new(|| {
+    Rng::new()
 });
 
+#[derive(Debug, Clone)]
+pub enum Value {
+    Number(usize),
+    StringLiteral(String),
+    Arr(Vec<Value>),
+}
+
+impl fmt::Display for Value {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Value::Number(v) => write!(f, "{}", v),
+            Value::StringLiteral(v) => write!(f, "\"{}\"", v),
+            _ => unreachable!(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum Type {
+    Void,
+    Number,
+    Str,
+    Argv,
+}
+
+impl fmt::Display for Type {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Type::Void => write!(f, "void"),
+            Type::Number => write!(f, "int"),
+            Type::Str => write!(f, "char *"),
+            _ => unreachable!(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+enum Expr {
+    /// Index into input-array and 8-bit value
+    ByteCmp(Index, u8), 
+
+    /// Index into input-array and variable containing an 8-bit Value
+    VarByteCmp(Index, String), 
+
+    /// Index into input-array and 16-bit value
+    WordCmp(Index, u16), 
+
+    /// Index into input-array and variable containing a 16-bit Value
+    VarWordCmp(Index, String), 
+
+    /// Index into input-array and 32-bit value
+    DWordCmp(Index, u32), 
+
+    /// Index into input-array and variable containing a 32-bit Value
+    VarDWordCmp(Index, String), 
+
+    /// Index into input-array and 64-bit value to be used for comparison operation
+    QWordCmp(Index, u64), 
+
+    /// Index into input-array and variable containing a 64-bit Value
+    VarQWordCmp(Index, String), 
+
+    /// Index into input-array and a ByteString used for comparison operation
+    StrCmp(Index, Value), 
+
+    /// Index into input-array and a ByteString used for comparison operation with a variable
+    VarStrCmp(Index, String), 
+}
+
+impl Expr {
+    /// Return a random Expression
+    fn get_rand_expr(vars: &Vec<(String, Type)>) -> Self {
+        let num_entries = std::mem::variant_count::<Expr>();
+        let rstr = std::str::from_utf8(&RNG.next_string(16, 0x61, 0x7b)).unwrap().to_string();
+        let rnum = RNG.gen();
+
+
+        let num_vars = vars.iter().filter(|e| e.1 == Type::Number)
+            .map(|e| e.0.clone()).collect::<Vec<String>>();
+
+        let str_vars = vars.iter().filter(|e| e.1 == Type::Str)
+            .map(|e| e.0.clone()).collect::<Vec<String>>();
+
+        loop {
+            match RNG.next_num(num_entries) {
+                0 => {
+                    return Expr::ByteCmp(Index(RNG.next_num(INPUT_SIZE)), rnum as u8);
+                },
+                1 => {
+                    if num_vars.is_empty() { continue; }
+                    return Expr::VarByteCmp(Index(RNG.next_num(INPUT_SIZE)), 
+                                            num_vars[RNG.next_num(num_vars.len())].clone());
+                },
+                2 => {
+                    return Expr::WordCmp(Index(RNG.next_num(INPUT_SIZE)), rnum as u16);
+                },
+                3 => {
+                    if num_vars.is_empty() { continue; }
+                    return Expr::VarWordCmp(Index(RNG.next_num(INPUT_SIZE)), 
+                                            num_vars[RNG.next_num(num_vars.len())].clone());
+                },
+                4 => {
+                    return Expr::DWordCmp(Index(RNG.next_num(INPUT_SIZE)), rnum as u32);
+                },
+                5 => {
+                    if num_vars.is_empty() { continue; }
+                    return Expr::VarDWordCmp(Index(RNG.next_num(INPUT_SIZE)), 
+                                            num_vars[RNG.next_num(num_vars.len())].clone());
+                },
+                6 => {
+                    return Expr::QWordCmp(Index(RNG.next_num(INPUT_SIZE)), rnum as u64);
+                },
+                7 => {
+                    if num_vars.is_empty() { continue; }
+                    return Expr::VarQWordCmp(Index(RNG.next_num(INPUT_SIZE)), 
+                                            num_vars[RNG.next_num(num_vars.len())].clone());
+                },
+                8 => {
+                    return Expr::StrCmp(Index(RNG.next_num(INPUT_SIZE-MAX_STRING_LEN)), 
+                                  Value::StringLiteral(rstr));
+                }
+                9 => {
+                    if str_vars.is_empty() { continue; }
+                    return Expr::VarStrCmp(Index(RNG.next_num(INPUT_SIZE-MAX_STRING_LEN)), 
+                                    str_vars[RNG.next_num(str_vars.len())].clone());
+                }
+                _ => unreachable!(),
+            };
+        }
+    }
+}
+
+impl fmt::Display for Expr {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Expr::VarByteCmp(a, b) |
+            Expr::VarWordCmp(a, b) |
+            Expr::VarDWordCmp(a, b) |
+            Expr::VarQWordCmp(a, b) |
+            Expr::VarStrCmp(a, b) => {
+                write!(f, "buf[{}] == {}", a, b)
+            },
+            Expr::ByteCmp(a, b) => write!(f, "buf[{}] == {}", a, b),
+            Expr::WordCmp(a, b) => write!(f, "(unsigned) (atol(buf + {}) & 0xffff) == {}", a, b),
+            Expr::DWordCmp(a, b) => write!(f, "(unsigned) atol(buf + {}) == {}", a, b),
+            Expr::QWordCmp(a, b) => write!(f, "(unsigned) atoll(buf + {}) == {}ULL", a, b),
+            Expr::StrCmp(a, b) => write!(f, "&buf[{}] == {}", a, b),
+        }
+    }
+}
+
+const NUM_SIMPLE_OPS: usize = 2;
+const NUM_COMPLEX_OPS: usize = 1;
+
+/// Operations that can occur in the code
+#[derive(Debug, Clone)]
+enum Operation {
+    // Simple Operations
+    // These are operations that occur at the start of a block, and solely exist to setup some
+    // random local variables that can then later be used my some more complex operations
+    
+    /// Add input[.0] to .1 and assign it to a variable
+    AddInts(Type, String, Index, usize),
+
+    /// Subtract input[.0] from .1 and assign it to a variable
+    SubInts(Type, String, Index, usize),
+
+    // Complex Operations
+    // These are operations that occur at the start of a block, and solely exist to setup some
+    // random local variables that can then later be used my some more complex operations
+
+    /// If expression alongside a true-block
+    If(Expr, Block),
+
+    // All operations below this point should not be returned by the `get_rand_op()` function, and
+    // are solely used for special cases such as program initialization or inserting crashes
+    
+    /// Used in `main` to allocate the input buffer based on argv
+    AllocInputBuf,
+
+    /// Used to check that argv was properly provided in main
+    ArgvCheck,
+
+    /// Used to open the file provided by argv in main
+    OpenFile,
+
+    /// Used to read in the fuzz-input from the provided file
+    ReadFile,
+
+    /// Used in `main` to call generated functions
+    CallFunc(String, Type, Vec<Type>),
+
+    /// Insert a crash
+    Crash,
+}
+
+impl fmt::Display for Operation {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Operation::AddInts(a, b, c, d) => write!(f, "{} {} = buf[{}] + {}", a, b, c, d),
+            Operation::SubInts(a, b, c, d) => write!(f, "{} {} = buf[{}] - {}", a, b, c, d),
+            Operation::If(a, _) => write!(f, "if ({}) ", a),
+            Operation::AllocInputBuf => write!(f, "buf = malloc({})", INPUT_SIZE),
+            Operation::ArgvCheck => write!(f, "if (argc != 2) return"),
+            Operation::OpenFile => write!(f, "FILE *fd = fopen(argv[1], \"r\")"),
+            Operation::ReadFile => write!(f, "fgets(buf, {}, fd)", INPUT_SIZE),
+            Operation::Crash => write!(f, "*(unsigned long*)0x{:x} = 0", RNG.gen()),
+            Operation::CallFunc(a, _, _) => write!(f, "{}()", a),
+        }
+    }
+}
+
+impl Operation {
+    /// Return a random simple operation
+    fn get_simple_op() -> Self {
+        let var_name = std::str::from_utf8(&RNG.next_string(16, 0x61, 0x7b)).unwrap().to_string();
+
+        match RNG.next_num(NUM_SIMPLE_OPS)  {
+            0 => Operation::AddInts(Type::Number, var_name,
+                    Index(RNG.next_num(INPUT_SIZE)), RNG.gen_range(MIN_ALLOC_SIZE, MAX_ALLOC_SIZE)),
+            1 => Operation::SubInts(Type::Number, var_name,
+                    Index(RNG.next_num(INPUT_SIZE)), RNG.gen_range(MIN_ALLOC_SIZE, MAX_ALLOC_SIZE)),
+            _ => unreachable!(),
+        }
+    }
+
+    /// Return a random more complex operation
+    fn get_complex_op(remaining_depth: usize, vars: &Vec<(String, Type)>) -> Self {
+        let _var_name = std::str::from_utf8(&RNG.next_string(16, 0x41, 0x7b)).unwrap().to_string();
+
+        match RNG.next_num(NUM_COMPLEX_OPS)  {
+            0 => Operation::If(Expr::get_rand_expr(vars), 
+                               Block::init_new_block(remaining_depth - 1)),
+            _ => unreachable!(),
+        }
+    }
+}
 
 /// Scoped block
 #[derive(Debug, Default, Clone)]
-struct Block {
+pub struct Block {
     action_list: Vec<Operation>,
+
+    /// (Name, Type)
+    variables: Vec<(String, Type)>,
 }
 
 impl Block {
@@ -35,25 +297,52 @@ impl Block {
     pub fn init_new_block(remaining_depth: usize) -> Self {
         let mut block = Block::default();
 
-        // Early return if maximum depth has been reached
+        // Insert a crash and early return if maximum depth has been reached
         if remaining_depth == 0 {
+            block.action_list.push(Operation::Crash);
             return block;
         }
 
-        for _ in 0..(5 + RNG.next_num(5)) {
-            block.action_list.push(Operation::get_rand_op(remaining_depth));
+        // Start by inserting some simple operations to setup some variables that can later be used
+        for _ in 0..RNG.gen_range(2, 5) {
+            let op = Operation::get_simple_op();
+
+            // If this operation produces a value, add it to this blocks variables
+            match &op {
+                Operation::AddInts(typ, name, ..) |
+                Operation::SubInts(typ, name, ..) => {
+                    block.variables.push((name.clone(), *typ));
+                },
+                _ => {},
+            }
+            block.action_list.push(op);
+        }
+
+        // Next insert some more complex operations
+        for _ in 0..RNG.gen_range(2, 5) {
+            let op = Operation::get_complex_op(remaining_depth, &block.variables);
+            block.action_list.push(op);
         }
         block
     }
 
     pub fn init_main_block(functions: &[Function]) -> Self {
         let mut block = Block::default();
-        block.action_list.push(Operation::AllocBuf);
 
+        // Allocate a global buffer to hold argv and write fuzz-input it
+        block.action_list.push(Operation::ArgvCheck);
+        block.action_list.push(Operation::OpenFile);
+        block.action_list.push(Operation::AllocInputBuf);
+        block.action_list.push(Operation::ReadFile);
+
+        // Create a call to all functions
         for func in functions {
-            block.action_list.push(Operation::CallFunc(func.clone()));
+            block.action_list.push(Operation::CallFunc(
+                        func.name.clone(),
+                        func.typ,
+                        func.arguments.iter().map(|e| e.0).collect(),
+                    ));
         }
-
         block
     }
 }
@@ -62,7 +351,7 @@ impl Block {
 pub struct Function {
     name: String,
     typ: Type,
-    arguments: Vec<Value>,
+    arguments: Vec<(Type, String)>,
     body: Block,
 }
 
@@ -76,12 +365,13 @@ impl Function {
         }
     }
 
-    /// Main function is a special case since it needs to setup initialization routines
+    /// Create main function. It has a special case since it requires additional initialization 
+    /// routines
     pub fn create_main(functions: &[Function]) -> Self {
         Function {
             name: "main".to_string(),
             typ:  Type::Void,
-            arguments: Vec::new(),
+            arguments: vec![(Type::Number, "argc".to_string()), (Type::Argv, "argv".to_string())],
             body: Block::init_main_block(functions), 
         }
     }
@@ -98,8 +388,8 @@ impl Program {
     pub fn create_program() -> Program {
         let mut program = Program::default();
 
-        // Create 1-5 random functions that can be called from main
-        for i in 0..RNG.gen_range(1, 2) {
+        // Create random generated functions that can be called from main
+        for i in 0..NUM_FUNCTIONS {
             let func_name = format!("func_{}", i+1);
             program.function_list.push(Function::new(&func_name, MAX_DEPTH));
         }
@@ -113,12 +403,5 @@ impl Program {
     pub fn add_function(&mut self, func: Function) {
         self.function_list.push(func);
     }
-}
-
-
-/// Compile the previously generated program to an elf binary
-pub fn compile(program: Program) {
-    println!("Received the following program: {:#?}", program);
-    // Start by loading argv[1] into global variable called buf
 }
 

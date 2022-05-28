@@ -1,6 +1,6 @@
-
 use program_generator::{
-    Program, compile
+    compile::compile,
+    Program, 
 };
 
 fn main() {

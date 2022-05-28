@@ -1,8 +1,3 @@
-/// Trait to return random value from an enum
-trait Randomness {
-    fn get_rand_op(remaining_depth: usize) -> Self;
-}
-
 #[derive(Debug, Clone)]
 enum Value {
     Number(u64),
@@ -13,15 +8,22 @@ enum Value {
 
 #[derive(Debug, Clone)]
 enum Type {
-    Void
+    Void, 
+    Bool,
 }
 
 /// Operations that can occur in the code
 #[derive(Debug, Clone)]
-enum Operation {
+enum Expr {
     AddInts(usize, usize),
     SubInts(usize, usize),
-    If(Expr, Block),
+
+    // These enums are used for comparison operations in if/while statements. 
+    // (Index into input-array, value to compare against)
+    ByteCmp(usize, u8), 
+    WordCmp(usize, u16), 
+    DWordCmp(usize, u32), 
+    QWordCmp(usize, u64), 
 
     // All operations below this point should not be returned by the `get_rand_op()` function, and
     // are solely used for special cases such as program initialization or inserting crashes
@@ -30,50 +32,10 @@ enum Operation {
     AllocBuf,
 
     /// Used in `main` to call generated functions
-    CallFunc(Function),
-}
-
-impl Randomness for Operation {
-    /// Return a random operation
-    fn get_rand_op(remaining_depth: usize) -> Self {
-        let num_entries = std::mem::variant_count::<Operation>();
-        let (r1, r2) = RNG.get2_rand();
-        match RNG.next_num(num_entries)  {
-            0 => Operation::AddInts(r1, r2),
-            1 => Operation::SubInts(r1, r2),
-            2 => Operation::If(Expr::get_rand_op(remaining_depth), 
-                               Block::init_new_block(remaining_depth - 1)),
-            _ => Operation::AddInts(r1, r2),
-        }
-    }
-}
-#[derive(Debug, Clone)]
-enum Expr {
-    /// Index into input-array and 8-bit value
-    ByteCmp(usize, u8), 
-
-    /// Index into input-array and 16-bit value
-    WordCmp(usize, u16), 
-
-    /// Index into input-array and 32-bit value
-    DWordCmp(usize, u32), 
-
-    /// Index into input-array and 64-bit value to be used for comparison operation
-    QWordCmp(usize, u64), 
-}
-
-impl Randomness for Expr {
-    /// Return a random Expression
-    fn get_rand_op(_remaining_depth: usize) -> Self {
-        let num_entries = std::mem::variant_count::<Expr>();
-        let (r1, r2) = RNG.get2_rand();
-        match RNG.next_num(num_entries) {
-            0 => Expr::ByteCmp(r1 % INPUT_SIZE, r2 as u8),
-            1 => Expr::WordCmp(r1 % INPUT_SIZE, r2 as u16),
-            2 => Expr::DWordCmp(r1 % INPUT_SIZE, r2 as u32),
-            3 => Expr::QWordCmp(r1 % INPUT_SIZE, r2 as u64),
-            _ => unreachable!(),
-        }
+    FunctionCall {
+        callee: Box<Expr>,
+        typ: Type,
+        arguments: Vec<Expr>,
     }
 }
 
@@ -83,5 +45,11 @@ pub enum Stmt {
     Expression(Expr),
 
     /// Name, return type, arguments, body
-    Function(String, Type, Vec<Expr>, Block)
+    Function(String, Value, Vec<Expr>, Vec<Stmt>),
+
+    /// Vector of statements that make up the actual block
+    Block(Vec<Stmt>),
+
+    /// expression + true and (optionally) false blocks
+    If(Expr, Box<Stmt>, Option<Box<Stmt>>),
 }
