@@ -22,7 +22,8 @@ pub const DEBUG_PRINT: bool = false;
 pub const OVERRIDE_TIMEOUT: Option<u64> = None;
 
 /// Collect a full register trace of program execution, for large programs, it can take several
-/// hours to write out a single case, only enable when debugging the JIT
+/// hours to write out a single case, only enable when debugging the JIT. Only works when fuzzer is
+/// being run single-threaded
 pub const FULL_TRACE: bool = false;
 
 #[derive(Eq, PartialEq, Copy, Clone, Debug)]

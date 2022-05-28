@@ -19,7 +19,7 @@ use elfparser::{self, ARCH64, ELFMAGIC, LITTLEENDIAN, TYPEEXEC, RISCV};
 use emulator::{Emulator, Register, Fault};
 use mutator::Mutator;
 use my_libs::sorted_vec::*;
-use config::FULL_TRACE;
+use config::{FULL_TRACE, NUM_THREADS};
 
 use std::process;
 use std::sync::Arc;
@@ -458,7 +458,7 @@ pub fn worker(_thr_id: usize, mut emu: Emulator, corpus: Arc<Corpus>, tx: Sender
                                        &mut trace_arr_len);
 
             // Write out a trace on the first fuzz case if requested
-            if FULL_TRACE && first_trace {
+            if FULL_TRACE && first_trace && NUM_THREADS == 1 {
                 first_trace = false;
                 emit_trace(&trace_arr, trace_arr_len);
             }
