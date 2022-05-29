@@ -182,6 +182,8 @@ impl Expr {
 
 impl fmt::Display for Expr {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let signs = ["==", "<", "<=", ">", ">="];
+        let s = signs[RNG.next_num(signs.len())];
         match self {
             Expr::VarByteCmp(a, b) |
             Expr::VarWordCmp(a, b) |
@@ -191,9 +193,9 @@ impl fmt::Display for Expr {
                 write!(f, "buf[{}] == {}", a, b)
             },
             Expr::ByteCmp(a, b) => write!(f, "buf[{}] == {}", a, b),
-            Expr::WordCmp(a, b) => write!(f, "(unsigned) (atol(buf + {}) & 0xffff) == {}", a, b),
-            Expr::DWordCmp(a, b) => write!(f, "(unsigned) atol(buf + {}) == {}", a, b),
-            Expr::QWordCmp(a, b) => write!(f, "(unsigned) atoll(buf + {}) == {}ULL", a, b),
+            Expr::WordCmp(a, b) => write!(f, "(unsigned) (atol(buf + {}) & 0xffff) {} {}", a, s, b),
+            Expr::DWordCmp(a, b) => write!(f, "(unsigned) atol(buf + {}) {} {}", a, s, b),
+            Expr::QWordCmp(a, b) => write!(f, "(unsigned) atoll(buf + {}) {} {}ULL", a, s, b),
             Expr::StrCmp(a, b) => write!(f, "strcmp(&buf[{}], {})", a, b),
         }
     }
