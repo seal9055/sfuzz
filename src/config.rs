@@ -16,7 +16,7 @@ pub const PERM_CHECKS: bool = true;
 
 /// Additional information is printed out, alongside rolling statistics. Some parts of this only
 /// work while running single-threaded
-pub const DEBUG_PRINT: bool = false;
+pub const DEBUG_PRINT: bool = true;
 
 /// Manually override the automatically calibrated timeout
 pub const OVERRIDE_TIMEOUT: Option<u64> = None;

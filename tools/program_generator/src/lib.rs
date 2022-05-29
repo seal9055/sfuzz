@@ -12,14 +12,14 @@ use std::lazy::SyncLazy;
 /// This program takes an input file via argv[1], this variable specifies the amount of bytes that
 /// are read in and available for use from the input, larger values should make finding the bugs a
 /// little harder
-const INPUT_SIZE: usize = 100;
+const INPUT_SIZE: usize = 5000;
 
 /// Maximum depth that scopes can go too before early returning. Without this blocks would
 /// recursively create new blocks until a stack overflow occurs
-const MAX_DEPTH: usize = 3;
+const MAX_DEPTH: usize = 4;
 
 /// Determines the amount of functions that are created outside of `main`
-const NUM_FUNCTIONS: usize = 1;
+const NUM_FUNCTIONS: usize = 2;
 
 /// Minimum and maximum sizes for buffer allocations in the program.
 const MIN_ALLOC_SIZE: usize = 0x20;
@@ -39,12 +39,12 @@ impl fmt::Display for Index {
     }
 }
 
-
 /// Create an rng object on program startup
 pub static RNG: SyncLazy<Rng> = SyncLazy::new(|| {
     Rng::new()
 });
 
+/// Supported values
 #[derive(Debug, Clone)]
 pub enum Value {
     Number(usize),
@@ -62,12 +62,14 @@ impl fmt::Display for Value {
     }
 }
 
+/// Supported types
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum Type {
     Void,
     Number,
     Str,
     Argv,
+    Buffer,
 }
 
 impl fmt::Display for Type {
@@ -81,6 +83,7 @@ impl fmt::Display for Type {
     }
 }
 
+/// Expressions that are used in if-statements
 #[derive(Debug, Clone)]
 enum Expr {
     /// Index into input-array and 8-bit value
@@ -191,13 +194,13 @@ impl fmt::Display for Expr {
             Expr::WordCmp(a, b) => write!(f, "(unsigned) (atol(buf + {}) & 0xffff) == {}", a, b),
             Expr::DWordCmp(a, b) => write!(f, "(unsigned) atol(buf + {}) == {}", a, b),
             Expr::QWordCmp(a, b) => write!(f, "(unsigned) atoll(buf + {}) == {}ULL", a, b),
-            Expr::StrCmp(a, b) => write!(f, "&buf[{}] == {}", a, b),
+            Expr::StrCmp(a, b) => write!(f, "strcmp(&buf[{}], {})", a, b),
         }
     }
 }
 
 const NUM_SIMPLE_OPS: usize = 2;
-const NUM_COMPLEX_OPS: usize = 1;
+const NUM_COMPLEX_OPS: usize = 2;
 
 /// Operations that can occur in the code
 #[derive(Debug, Clone)]
@@ -219,6 +222,9 @@ enum Operation {
     /// If expression alongside a true-block
     If(Expr, Block),
 
+    /// Memcpy operation into a previously allocated buffer
+    MemCpy(String, Index, String),
+
     // All operations below this point should not be returned by the `get_rand_op()` function, and
     // are solely used for special cases such as program initialization or inserting crashes
     
@@ -237,6 +243,12 @@ enum Operation {
     /// Used in `main` to call generated functions
     CallFunc(String, Type, Vec<Type>),
 
+    /// Allocate a new buffer on the function stack, (var-name, size)
+    AllocStackBuf(String, usize),
+
+    /// Allocate a new buffer on the heap, (var-name, size)
+    AllocHeapBuf(String, usize),
+
     /// Insert a crash
     Crash,
 }
@@ -252,6 +264,9 @@ impl fmt::Display for Operation {
             Operation::OpenFile => write!(f, "FILE *fd = fopen(argv[1], \"r\")"),
             Operation::ReadFile => write!(f, "fgets(buf, {}, fd)", INPUT_SIZE),
             Operation::Crash => write!(f, "*(unsigned long*)0x{:x} = 0", RNG.gen()),
+            Operation::AllocStackBuf(a, b) => write!(f, "char {}[{}]", a, b),
+            Operation::AllocHeapBuf(a, b) => write!(f, "char *{} = malloc({})", a, b),
+            Operation::MemCpy(a, b, c) => write!(f, "memcpy({}, buf+{}, {})", a, b, c),
             Operation::CallFunc(a, _, _) => write!(f, "{}()", a),
         }
     }
@@ -275,18 +290,36 @@ impl Operation {
     fn get_complex_op(remaining_depth: usize, vars: &Vec<(String, Type)>) -> Self {
         let _var_name = std::str::from_utf8(&RNG.next_string(16, 0x41, 0x7b)).unwrap().to_string();
 
-        match RNG.next_num(NUM_COMPLEX_OPS)  {
-            0 => Operation::If(Expr::get_rand_expr(vars), 
-                               Block::init_new_block(remaining_depth - 1)),
-            _ => unreachable!(),
+        let buf_vars = vars.iter().filter(|e| e.1 == Type::Buffer)
+            .map(|e| e.0.clone()).collect::<Vec<String>>();
+
+        let num_vars = vars.iter().filter(|e| e.1 == Type::Number)
+            .map(|e| e.0.clone()).collect::<Vec<String>>();
+
+        loop {
+            match RNG.next_num(NUM_COMPLEX_OPS)  {
+                0 => { 
+                    return Operation::If(Expr::get_rand_expr(vars), 
+                                   Block::init_new_block(remaining_depth - 1));
+                },
+                1 => { 
+                    if buf_vars.is_empty() || num_vars.is_empty() { continue; }
+                    return Operation::MemCpy(
+                        buf_vars[RNG.next_num(buf_vars.len())].clone(), 
+                        Index(RNG.next_num(INPUT_SIZE-MAX_ALLOC_SIZE)),
+                        num_vars[RNG.next_num(num_vars.len())].clone(), 
+                        );
+                },
+                _ => unreachable!(),
+            }
         }
     }
 }
 
-/// Scoped block
+/// Scoped block with allocated variables and a list of statements to be executed
 #[derive(Debug, Default, Clone)]
 pub struct Block {
-    action_list: Vec<Operation>,
+    stmt_list: Vec<Operation>,
 
     /// (Name, Type)
     variables: Vec<(String, Type)>,
@@ -299,9 +332,18 @@ impl Block {
 
         // Insert a crash and early return if maximum depth has been reached
         if remaining_depth == 0 {
-            block.action_list.push(Operation::Crash);
+            block.stmt_list.push(Operation::Crash);
             return block;
         }
+
+        // Allocate some buffers for this block that can be used in future operations
+        let var_name1 = std::str::from_utf8(&RNG.next_string(16, 0x61, 0x7b)).unwrap().to_string();
+        let var_name2 = std::str::from_utf8(&RNG.next_string(16, 0x61, 0x7b)).unwrap().to_string();
+        let size = RNG.gen_range(MIN_ALLOC_SIZE, MAX_ALLOC_SIZE);
+        block.stmt_list.push(Operation::AllocStackBuf(var_name1.clone(), size));
+        block.stmt_list.push(Operation::AllocHeapBuf(var_name2.clone(), size));
+        block.variables.push((var_name1, Type::Buffer));
+        block.variables.push((var_name2, Type::Buffer));
 
         // Start by inserting some simple operations to setup some variables that can later be used
         for _ in 0..RNG.gen_range(2, 5) {
@@ -315,29 +357,31 @@ impl Block {
                 },
                 _ => {},
             }
-            block.action_list.push(op);
+            block.stmt_list.push(op);
         }
 
         // Next insert some more complex operations
-        for _ in 0..RNG.gen_range(2, 5) {
+        for _ in 0..RNG.gen_range(5, 10) {
             let op = Operation::get_complex_op(remaining_depth, &block.variables);
-            block.action_list.push(op);
+            block.stmt_list.push(op);
         }
         block
     }
 
+    /// Create the main block. This just handles initial setup and calls the functions that should
+    /// be fuzzed
     pub fn init_main_block(functions: &[Function]) -> Self {
         let mut block = Block::default();
 
         // Allocate a global buffer to hold argv and write fuzz-input it
-        block.action_list.push(Operation::ArgvCheck);
-        block.action_list.push(Operation::OpenFile);
-        block.action_list.push(Operation::AllocInputBuf);
-        block.action_list.push(Operation::ReadFile);
+        block.stmt_list.push(Operation::ArgvCheck);
+        block.stmt_list.push(Operation::OpenFile);
+        block.stmt_list.push(Operation::AllocInputBuf);
+        block.stmt_list.push(Operation::ReadFile);
 
         // Create a call to all functions
         for func in functions {
-            block.action_list.push(Operation::CallFunc(
+            block.stmt_list.push(Operation::CallFunc(
                         func.name.clone(),
                         func.typ,
                         func.arguments.iter().map(|e| e.0).collect(),
@@ -347,6 +391,7 @@ impl Block {
     }
 }
 
+/// Intermediate representation of functions
 #[derive(Debug, Clone)]
 pub struct Function {
     name: String,
@@ -395,13 +440,9 @@ impl Program {
         }
 
         // Create main function
-        program.add_function(Function::create_main(&program.function_list));
+        program.function_list.push(Function::create_main(&program.function_list));
 
         program
-    }
-
-    pub fn add_function(&mut self, func: Function) {
-        self.function_list.push(func);
     }
 }
 

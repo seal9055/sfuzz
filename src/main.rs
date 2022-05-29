@@ -130,7 +130,7 @@ fn main() {
     let mut stats = Statistics::default();
 
     // Insert loadable segments into emulator address space and retrieve symbol table information
-    let sym_map = load_elf_segments("./test_cases/harder_test", &mut emu).unwrap_or_else(||{
+    let sym_map = load_elf_segments("./test_cases/generated_program", &mut emu).unwrap_or_else(||{
         error_exit("Unrecoverable error while loading elf segments");
     });
 
@@ -158,7 +158,7 @@ fn main() {
     emu.set_reg(Register::Sp, (stack + (1024 * 1024)) - 8);
 
     // Setup arguments
-    let arguments = vec!["test_cases/harder_test\0".to_string(), "fuzz_input\0".to_string()];
+    let arguments = vec!["test_cases/generated_program\0".to_string(), "fuzz_input\0".to_string()];
     let args: Vec<usize> = arguments.iter().map(|e| {
         let addr = emu.allocate(64, Perms::READ | Perms::WRITE)
             .expect("Allocating an argument failed");

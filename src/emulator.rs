@@ -528,8 +528,8 @@ impl Emulator {
         let mut instrs: Vec<Instr> = Vec::new();
 
         let start_pc = pc;
-
-        let end_pc   = start_pc + self.functions.get(&pc).unwrap().0;
+        let end_pc = start_pc + self.functions.get(&pc)
+            .expect(&format!("Failed to lift function located at 0x{:X}", pc)).0;
 
         while pc < end_pc {
             let opcodes: u32 = self.memory.read_at(pc, Perms::READ | Perms::EXECUTE).map_err(|_|

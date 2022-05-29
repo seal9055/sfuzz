@@ -193,6 +193,10 @@ pub struct Input {
 
     /// Counter incremented whenever this case hits new coverage
     cov_finds: usize,
+
+    /// Counter incremented whenever a mutation on this case finds a new crash. Frequent crashes
+    /// reduce priority
+    crashes: usize,
 }
 
 impl Input {
@@ -202,6 +206,7 @@ impl Input {
             size: data.len(),
             exec_time,
             cov_finds: 0,
+            crashes: 0,
         }
     }
 
@@ -227,6 +232,10 @@ impl Input {
         for _ in 0..self.cov_finds {
             energy += energy / 10;
         }
+
+        // Reduce energy if this case has already found a massive amount of crashes since it might
+        // be permanently stuck on a similarly crashing path
+        energy = energy.saturating_sub(self.crashes as isize);
 
         // Make sure energy remains in the 20000 - 150000 range
         energy = core::cmp::max(energy, 20000);
@@ -470,6 +479,10 @@ pub fn worker(_thr_id: usize, mut emu: Emulator, corpus: Arc<Corpus>, tx: Sender
                 Fault::WriteFault(v)  |
                 Fault::ExecFault(v)   |
                 Fault::OutOfBounds(v) => {
+                    // Increment crash counter for this case
+                    let mut corp_inputs = corpus.inputs.write();
+                    corp_inputs[input_index].crashes += 1;
+
                     let mut crash_map = corpus.crash_mapping.write();
                     if crash_map.get(&case_res.0.unwrap()).is_none() {
                         crash_map.insert(case_res.0.unwrap(), 0);
@@ -504,7 +517,6 @@ pub fn worker(_thr_id: usize, mut emu: Emulator, corpus: Arc<Corpus>, tx: Sender
                 corpus.total_size.fetch_add(emu.fuzz_input.len(), Ordering::SeqCst);
                 corpus.total_exec_time.fetch_add(case_instr_count as usize, Ordering::SeqCst);
             }
-
             local_instr_count += case_instr_count;
         }
 
