@@ -1,5 +1,8 @@
-use crate::mmu::Perms;
-use crate::emulator::{Emulator, Register, FileType::{self, STDOUT, STDERR, INVALID}, Fault};
+use crate::{
+    mmu::Perms,
+    emulator::{Emulator, Register, FileType::{self, STDOUT, STDERR, INVALID}, Fault},
+    config::FUZZ_INPUT,
+};
 
 // Helper Structs for syscalls {{{
 
@@ -144,7 +147,7 @@ pub fn open(emu: &mut Emulator) -> Option<Fault> {
         cur += 1;
     }
 
-    if buf == b"fuzz_input\0" {
+    if buf == FUZZ_INPUT.get().unwrap().as_bytes() {
         emu.alloc_file(FileType::FUZZINPUT);
     } else {
         emu.alloc_file(FileType::OTHER);

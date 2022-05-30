@@ -1,19 +1,22 @@
+#![feature(once_cell)]
+
 use sfuzz::{
     mmu::Perms,
     emulator::{Emulator, Register, Fault, ExitType},
     jit::{Jit, LibFuncs},
-    config::{SNAPSHOT_ADDR, NUM_THREADS, OVERRIDE_TIMEOUT},
     pretty_printing::{print_stats, log, LogType},
     Input, Corpus, Statistics, error_exit, load_elf_segments, worker, snapshot, calibrate_seeds,
+    config::{handle_cli, Cli, SNAPSHOT_ADDR, OVERRIDE_TIMEOUT, NUM_THREADS},
 };
 use std::thread;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
 use std::sync::mpsc::{self, Receiver, Sender};
+use std::time::{Duration, Instant};
 
 use byteorder::{LittleEndian, WriteBytesExt};
 use rustc_hash::FxHashMap;
 use console::Term;
+use clap::Parser;
 
 /// Hook that makes use of sfuzz's mmu to perform a memory safe malloc operation
 fn malloc_hook(emu: &mut Emulator) -> Result<(), Fault> {
@@ -48,7 +51,7 @@ fn calloc_hook(emu: &mut Emulator) -> Result<(), Fault> {
 fn free_hook(emu: &mut Emulator) -> Result<(), Fault> {
     let ptr = emu.get_reg(Register::A1);
 
-    emu.memory.free(ptr).unwrap();
+    emu.memory.free(ptr)?;
     emu.set_reg(Register::Pc, emu.get_reg(Register::Ra));
     Ok(())
 }
@@ -112,11 +115,11 @@ fn insert_hooks(sym_map: &FxHashMap<String, usize>, emu: &mut Emulator) {
 
 /// Setup the root emulator's segments and stack before cloning the emulator into multiple threads
 /// to run multiple emulators at the same time
-fn main() {
+fn main() -> std::io::Result<()> {
     // Thead-shared jit backing
     let jit = Arc::new(Jit::new(16 * 1024 * 1024));
 
-    // Thread-shared mutex that is used to lock compilation
+    // Thread-shared mutex that is used to lock JIT-compilation
     let prevent_rc: Arc<Mutex<usize>> = Arc::new(Mutex::new(0));
 
     // Thread-shared structure that holds fuzz-inputs and coverage information
@@ -129,22 +132,26 @@ fn main() {
     // from the worker threads
     let mut stats = Statistics::default();
 
-    // Insert loadable segments into emulator address space and retrieve symbol table information
-    let sym_map = load_elf_segments("./test_cases/harder_test", &mut emu).unwrap_or_else(||{
-        error_exit("Unrecoverable error while loading elf segments");
-    });
-
     // Messaging objects used to transfer statistics between worker threads and main thread
     let (tx, rx): (Sender<Statistics>, Receiver<Statistics>) = mpsc::channel();
 
     let term = Term::buffered_stdout();
-    term.clear_screen().unwrap();
+    term.clear_screen()?;
 
-    // Initialize corpus with every file in ./files
+    // Parse commandline-args and set config variables based on them
+    let mut args = Cli::parse();
+    handle_cli(&mut args);
+
+    // Insert loadable segments into emulator address space and retrieve symbol table information
+    let sym_map = load_elf_segments(&args.fuzzed_app[0], &mut emu).unwrap_or_else(||{
+        error_exit("Unrecoverable error while loading elf segments");
+    });
+
+    // Initialize corpus with files from input directory
     let mut w = corpus.inputs.write();
-    for filename in std::fs::read_dir("files").unwrap() {
-        let filename = filename.unwrap().path();
-        let data = std::fs::read(filename).unwrap();
+    for filename in std::fs::read_dir(args.input_dir)? {
+        let filename = filename?.path();
+        let data = std::fs::read(filename)?;
 
         // Add the corpus input to the corpus
         w.push(Input::new(data, None));
@@ -158,20 +165,20 @@ fn main() {
     emu.set_reg(Register::Sp, (stack + (1024 * 1024)) - 8);
 
     // Setup arguments
-    let arguments = vec!["test_cases/harder_test\0".to_string(), "fuzz_input\0".to_string()];
-    let argv: Vec<usize> = arguments.iter().map(|e| {
+    //let arguments = vec!["test_cases/harder_test\0".to_string(), "fuzz_input\0".to_string()];
+    let argv: Vec<usize> = args.fuzzed_app.iter().map(|e| {
         let addr = emu.allocate(64, Perms::READ | Perms::WRITE)
             .expect("Allocating an argument failed");
         emu.memory.write_mem(addr, e.as_bytes(), e.len()).expect("Writing to argv[0] failed");
         addr
     }).collect();
-    
+
     // Macro to push 64-bit integers onto the stack
     macro_rules! push {
         ($expr:expr) => {
             let sp = emu.get_reg(Register::Sp) - 8;
             let mut wtr = vec![];
-            wtr.write_u64::<LittleEndian>($expr as u64).unwrap();
+            wtr.write_u64::<LittleEndian>($expr as u64)?;
             emu.memory.write_mem(sp, &wtr, 8).unwrap();
             emu.set_reg(Register::Sp, sp);
         }
@@ -190,11 +197,11 @@ fn main() {
     insert_hooks(&sym_map, &mut emu);
 
     // Setup snapshot fuzzing at a point before the fuzz-input is read in
-    if let Some(addr) = SNAPSHOT_ADDR {
+    if let Some(addr) = SNAPSHOT_ADDR.get().unwrap() {
         println!("Activated snapshot-based fuzzing");
 
         // Insert snapshot fuzzer exit condition
-        emu.exit_conds.insert(addr, ExitType::Snapshot);
+        emu.exit_conds.insert(*addr, ExitType::Snapshot);
 
         // Snapshot the emulator
         snapshot(&mut emu, &corpus);
@@ -203,8 +210,8 @@ fn main() {
     // Calibrate the emulator for the timeout.
     // Alternatively configs can be used to override automatically determined timeout
     emu.timeout = calibrate_seeds(&mut emu, &corpus);
-    if let Some(v) = OVERRIDE_TIMEOUT {
-        emu.timeout = v;
+    if let Some(v) = OVERRIDE_TIMEOUT.get().unwrap() {
+        emu.timeout = *v;
     }
 
     // Reset coverage collected during initial callibration so it is in a default state once
@@ -216,7 +223,7 @@ fn main() {
     let corpus = Arc::new(corpus);
 
     // Spawn worker threads to do the actual fuzzing
-    for thr_id in 0..NUM_THREADS {
+    for thr_id in 0..*NUM_THREADS.get().unwrap() {
         let emu_cp = emu.fork();
         let corpus = corpus.clone();
         let tx = tx.clone();
@@ -227,6 +234,7 @@ fn main() {
     // Continuous statistic tracking via message passing in main thread
     let start = Instant::now();
     let mut last_time = Instant::now();
+    let mut last_cov_event: f64 = 0.0;
 
     // Sleep for short duration on startup before printing statistics, otherwise elapsed time might
     // be 0, leading to a crash while printing statistics
@@ -235,6 +243,11 @@ fn main() {
     // Update stats structure whenever a thread sends a new message
     for received in rx {
         let elapsed_time = start.elapsed().as_secs_f64();
+
+        // Check if we got new coverage
+        if received.coverage != 0 {
+            last_cov_event = elapsed_time;
+        }
 
         stats.coverage    += received.coverage;
         stats.total_cases += received.total_cases;
@@ -245,8 +258,10 @@ fn main() {
 
         // Print out updated statistics every second
         if last_time.elapsed() >= Duration::from_millis(500) {
-            print_stats(&term, &stats, elapsed_time, emu.timeout, &corpus);
+            print_stats(&term, &stats, elapsed_time, emu.timeout, &corpus, last_cov_event);
             last_time = Instant::now();
         }
     }
+
+    Ok(())
 }

@@ -3,6 +3,9 @@
 //! This is a performance and scaling focused blackbox fuzzer that makes use of RISC-V to x86_64 
 //! binary translations and a custom JIT-compilation engine. The fuzzer is still in development, 
 //! but currently successfuly runs against simple targets. 
+
+#![feature(once_cell)]
+
 pub mod emulator;
 pub mod mmu;
 pub mod riscv;
@@ -19,7 +22,7 @@ use elfparser::{self, ARCH64, ELFMAGIC, LITTLEENDIAN, TYPEEXEC, RISCV};
 use emulator::{Emulator, Register, Fault};
 use mutator::Mutator;
 use my_libs::sorted_vec::*;
-use config::{FULL_TRACE, NUM_THREADS};
+use config::{FULL_TRACE, OUTPUT_DIR};
 
 use std::process;
 use std::sync::Arc;
@@ -194,9 +197,13 @@ pub struct Input {
     /// Counter incremented whenever this case hits new coverage
     cov_finds: usize,
 
-    /// Counter incremented whenever a mutation on this case finds a new crash. Frequent crashes
-    /// reduce priority
+    /// Counter incremented whenever a mutation on this case finds a crash. Frequent crashes
+    /// reduce energy
     crashes: usize,
+
+    /// Counter incremented whenever a mutation on this case finds a new crash. Unlike similar
+    /// crashes, new unique crashes increase a cases energy
+    ucrashes: usize,
 }
 
 impl Input {
@@ -207,6 +214,7 @@ impl Input {
             exec_time,
             cov_finds: 0,
             crashes: 0,
+            ucrashes: 0,
         }
     }
 
@@ -230,6 +238,11 @@ impl Input {
         
         // For every instance of this case finding new coverage, increase energy by ~10%
         for _ in 0..self.cov_finds {
+            energy += energy / 10;
+        }
+
+        // For every instance of this case finding a new unique crash, increase energy by ~10%
+        for _ in 0..self.ucrashes {
             energy += energy / 10;
         }
 
@@ -293,7 +306,7 @@ impl Corpus {
 pub fn snapshot(emu: &mut Emulator, corpus: &Corpus) {
     // Setup data-structures for tracing, unnecessary for calibration, but required for run_jit
     // function
-    let mut trace_arr: Vec<u64> = if FULL_TRACE {
+    let mut trace_arr: Vec<u64> = if *FULL_TRACE.get().unwrap() {
         vec![0u64; 1024 * 1024 * 64]
     } else {
         Vec::new()
@@ -327,7 +340,7 @@ pub fn calibrate_seeds(emu: &mut Emulator, corpus: &Corpus) -> u64 {
 
         // Setup data-structures for tracing, unnecessary for calibration, but required for run_jit
         // function
-        let mut trace_arr: Vec<u64> = if FULL_TRACE {
+        let mut trace_arr: Vec<u64> = if *FULL_TRACE.get().unwrap() {
             vec![0u64; 1024 * 1024 * 64]
         } else {
             Vec::new()
@@ -420,7 +433,7 @@ pub fn worker(_thr_id: usize, mut emu: Emulator, corpus: Arc<Corpus>, tx: Sender
 
     // Allocated memory to trace the jit execution
     let mut first_trace: bool = true;
-    let mut trace_arr: Vec<u64> = if FULL_TRACE {
+    let mut trace_arr: Vec<u64> = if *FULL_TRACE.get().unwrap() {
         vec![0u64; 1024 * 1024 * 64]
     } else {
         Vec::new()
@@ -467,7 +480,7 @@ pub fn worker(_thr_id: usize, mut emu: Emulator, corpus: Arc<Corpus>, tx: Sender
                                        &mut trace_arr_len);
 
             // Write out a trace on the first fuzz case if requested
-            if FULL_TRACE && first_trace && NUM_THREADS == 1 {
+            if *FULL_TRACE.get().unwrap() && first_trace {
                 first_trace = false;
                 emit_trace(&trace_arr, trace_arr_len);
             }
@@ -479,22 +492,26 @@ pub fn worker(_thr_id: usize, mut emu: Emulator, corpus: Arc<Corpus>, tx: Sender
                 Fault::WriteFault(v)  |
                 Fault::ExecFault(v)   |
                 Fault::OutOfBounds(v) => {
-                    // Increment crash counter for this case
-                    let mut corp_inputs = corpus.inputs.write();
-                    corp_inputs[input_index].crashes += 1;
-
                     let mut crash_map = corpus.crash_mapping.write();
                     if crash_map.get(&case_res.0.unwrap()).is_none() {
                         crash_map.insert(case_res.0.unwrap(), 0);
                         let h = Hash32::hash(&emu.fuzz_input);
-                        let crash_dir = match case_res.0.unwrap() {
-                            Fault::ReadFault(_)   => format!("crashes/read_{:x}_{}", v, h),
-                            Fault::WriteFault(_)  => format!("crashes/write_{:x}_{}", v, h),
-                            Fault::ExecFault(_)   => format!("crashes/exec_{:x}_{}", v, h),
-                            Fault::OutOfBounds(_) => format!("crashes/oob_{:x}_{}", v, h),
+                        let crash_file = match case_res.0.unwrap() {
+                            Fault::ReadFault(_)   => {
+                                format!("{}/crashes/read_{:x}_{}", OUTPUT_DIR.get().unwrap(), v, h)
+                            },
+                            Fault::WriteFault(_)   => {
+                                format!("{}/crashes/write_{:x}_{}", OUTPUT_DIR.get().unwrap(), v, h)
+                            },
+                            Fault::ExecFault(_)   => {
+                                format!("{}/crashes/exec_{:x}_{}", OUTPUT_DIR.get().unwrap(), v, h)
+                            },
+                            Fault::OutOfBounds(_)   => {
+                                format!("{}/crashes/oob_{:x}_{}", OUTPUT_DIR.get().unwrap(), v, h)
+                            },
                             _ => unreachable!(),
                         };
-                        if SAVE_CRASHES { std::fs::write(&crash_dir, &emu.fuzz_input).unwrap(); }
+                        if SAVE_CRASHES { std::fs::write(&crash_file, &emu.fuzz_input).unwrap(); }
                         local_unique_crashes += 1;
                     }
                     local_total_crashes += 1;
@@ -519,6 +536,11 @@ pub fn worker(_thr_id: usize, mut emu: Emulator, corpus: Arc<Corpus>, tx: Sender
             }
             local_instr_count += case_instr_count;
         }
+
+        // Increment crash counter for this case
+        let mut corp_inputs = corpus.inputs.write();
+        corp_inputs[input_index].crashes += local_total_crashes;
+        corp_inputs[input_index].ucrashes += local_unique_crashes;
 
         // Populate statistics that will be sent to the main thread
         let stats = Statistics {

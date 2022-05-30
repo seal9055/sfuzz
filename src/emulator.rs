@@ -540,7 +540,7 @@ impl Emulator {
         }
 
         if let Some(v) = self.functions.get(&start_pc) {
-            if NUM_THREADS == 1 {
+            if *NUM_THREADS.get().unwrap() == 1 {
                 log(LogType::Neutral, &format!("Lifting: {}", v.1));
             }
         }

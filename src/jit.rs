@@ -2,7 +2,7 @@ use crate::{
     irgraph::{IRGraph, Flag, Operation, Val},
     emulator::{Emulator, Fault, Register as PReg, ExitType},
     mmu::Perms,
-    config::{CovMethod, COVMETHOD, PERM_CHECKS, COUNT_INSTRS, FULL_TRACE},
+    config::{CovMethod, COV_METHOD, NO_PERM_CHECKS, FULL_TRACE},
 };
 
 use rustc_hash::FxHashMap;
@@ -390,7 +390,7 @@ impl Jit {
                 self.add_local_lookup(&mut local_lookup_map, &asm.assemble(0x0).unwrap(), v);
 
                 // Push registers to trace array at beginning of each instruction
-                if FULL_TRACE {
+                if *FULL_TRACE.get().unwrap() {
                     let mut loop_start = asm.create_label();
                     asm.mov(rax, ptr(r8+0x20)).unwrap();    // Trace array
                     asm.mov(rbx, ptr(r8+0x28)).unwrap();    // Trace array-size
@@ -419,9 +419,9 @@ impl Jit {
                 if compile_inputs.leaders.get(&pc).is_some() {
 
                     // Track coverage if coverage tracking is enabled
-                    if COVMETHOD == CovMethod::Block {
+                    if *COV_METHOD.get().unwrap() == CovMethod::Block {
                         new_block_coverage!(pc);
-                    } else if COVMETHOD == CovMethod::Edge {
+                    } else if *COV_METHOD.get().unwrap() == CovMethod::Edge {
                         new_edge_coverage!(pc);
                     }
 
@@ -448,9 +448,7 @@ impl Jit {
                 }
 
                 // Increment instruction counter
-                if COUNT_INSTRS {
-                    asm.add(rsi, 1).unwrap();
-                }
+                asm.add(rsi, 1).unwrap();
             }
 
             match instr.op {
@@ -609,7 +607,7 @@ impl Jit {
                     // Set the permissions mask based on size
                     let mask = (0..sz).fold(0u64, |acc, i| acc + ((Perms::WRITE as u64) << (8*i)));
 
-                    if PERM_CHECKS {
+                    if !NO_PERM_CHECKS.get().unwrap() {
                         // rcx is permissions mask that checks that `size` bits have Perms::Write
                         // rax contains the accessed memory permissions
                         asm.mov(rcx, mask).unwrap();
@@ -710,7 +708,7 @@ impl Jit {
                     // Set the permissions mask based on size
                     let mask = (0..sz).fold(0u64, |acc, i| acc + ((Perms::READ as u64) << (8*i)));
 
-                    if PERM_CHECKS {
+                    if !NO_PERM_CHECKS.get().unwrap() {
                         // rcx is permissions mask that checks that `size` bits have Perms::Read
                         // rax contains the accessed memory permissions
                         asm.mov(rcx, mask).unwrap();

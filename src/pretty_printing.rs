@@ -1,5 +1,5 @@
 use crate::{
-    config::{COVMETHOD, PERM_CHECKS, SNAPSHOT_ADDR, NUM_THREADS, DEBUG_PRINT},
+    config::{COV_METHOD, NO_PERM_CHECKS, SNAPSHOT_ADDR, NUM_THREADS, DEBUG_PRINT},
     Statistics, Corpus,
 };
 
@@ -51,7 +51,7 @@ impl fmt::Display for Red {
 
 /// Small wrapper to print out colored log messages
 pub fn log(color: LogType, msg: &str) {
-    if DEBUG_PRINT {
+    if *DEBUG_PRINT.get().unwrap() {
         match color {
             LogType::Neutral => {
                 println!("{} {}", Blue("[-]"), msg);
@@ -68,7 +68,7 @@ pub fn log(color: LogType, msg: &str) {
 
 /// Print out statistics in a nicely formated static screen
 fn pretty_stats(term: &Term, stats: &Statistics, elapsed_time: f64, timeout: u64, corpus: 
-                &Arc<Corpus>) {
+                &Arc<Corpus>, last_cov: f64) {
     term.move_cursor_to(0, 2).unwrap();
     term.write_line(
         &format!("{}", Green("\t\t[ SFUZZ - https://github.com/seal9055/sfuzz ]\n"))
@@ -114,6 +114,9 @@ fn pretty_stats(term: &Term, stats: &Statistics, elapsed_time: f64, timeout: u64
     term.write_line(&format!("{}", Blue("Coverage"))).unwrap();
     term.move_cursor_to(54, 11).unwrap();
     term.write_line(&format!("   Coverage: {}", stats.coverage)).unwrap();
+    term.move_cursor_to(54, 12).unwrap();
+    term.write_line(&format!("   Time since last cov [sec]: {:6.2}", elapsed_time - last_cov))
+        .unwrap();
 
     // Config information
     term.move_cursor_down(2).unwrap();
@@ -121,10 +124,10 @@ fn pretty_stats(term: &Term, stats: &Statistics, elapsed_time: f64, timeout: u64
         &format!("\t{}\n\t   Num Threads: {}\n\t   Coverage type: {:?}\n\t   \
         Snapshots enabled: {}\n\t   ASAN: {}\n\t   timeout: {}",
         Blue("Config"), 
-        NUM_THREADS,
-        COVMETHOD,
-        SNAPSHOT_ADDR.is_some(),
-        PERM_CHECKS,
+        NUM_THREADS.get().unwrap(),
+        COV_METHOD.get().unwrap(),
+        SNAPSHOT_ADDR.get().unwrap().is_some(),
+        !NO_PERM_CHECKS.get().unwrap(),
         timeout.to_formatted_string(&Locale::en),
         )
     ).unwrap();
@@ -162,10 +165,10 @@ fn basic_stats(stats: &Statistics, elapsed_time: f64) {
 
 /// Wrapper for actual stat-printing functions
 pub fn print_stats(term: &Term, stats: &Statistics, elapsed_time: f64, timeout: u64, 
-                   corpus: &Arc<Corpus>) {
-    if DEBUG_PRINT {
+                   corpus: &Arc<Corpus>, last_cov: f64) {
+    if *DEBUG_PRINT.get().unwrap() {
         basic_stats(stats, elapsed_time);
     } else {
-        pretty_stats(term, stats, elapsed_time, timeout, corpus);
+        pretty_stats(term, stats, elapsed_time, timeout, corpus, last_cov);
     }
 }

@@ -11,6 +11,7 @@ panic = 'abort'
 [dependencies]
 elfparser = { git = "https://github.com/seal9055/local_crates/", branch = "main" }
 my_libs = { git = "https://github.com/seal9055/local_crates/", branch = "main" }
+clap = { version = "3.1.18", features = ["derive"] }
 rustc-hash = "1.1.0"
 num-traits = "0.2.14"
 byteorder = "1.4.3"
@@ -19,6 +20,7 @@ num-format = "0.4.0"
 parking_lot = "0.12.0"
 rand_xoshiro = "0.6.0"
 console = "0.15.0"
+parse_int = "0.6.0"
 
 [dependencies.iced-x86]
 version = "1.15.0"
