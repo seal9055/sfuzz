@@ -6,7 +6,7 @@ pub const COVMETHOD: CovMethod = CovMethod::Edge;
 pub const SNAPSHOT_ADDR: Option<usize> = None;
 
 /// Number of cores to run the fuzzer with
-pub const NUM_THREADS: usize = 16;
+pub const NUM_THREADS: usize = 1;
 
 /// Count number of instructions executed by test cases
 pub const COUNT_INSTRS: bool = true;
@@ -16,7 +16,7 @@ pub const PERM_CHECKS: bool = true;
 
 /// Additional information is printed out, alongside rolling statistics. Some parts of this only
 /// work while running single-threaded
-pub const DEBUG_PRINT: bool = true;
+pub const DEBUG_PRINT: bool = false;
 
 /// Manually override the automatically calibrated timeout
 pub const OVERRIDE_TIMEOUT: Option<u64> = None;

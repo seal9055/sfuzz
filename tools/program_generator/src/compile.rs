@@ -3,7 +3,7 @@ use crate::{
 };
 
 /// Prints out the generated program to stdout
-const DEBUG_PRINT: bool = true;
+const DEBUG_PRINT: bool = false;
 
 /// Can be set to false to not actually write cases to disk & compile while debugging
 const WRITE_TO_DISK: bool = true;

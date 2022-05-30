@@ -340,12 +340,12 @@ impl Block {
 
         // Allocate some buffers for this block that can be used in future operations
         let var_name1 = std::str::from_utf8(&RNG.next_string(16, 0x61, 0x7b)).unwrap().to_string();
-        let var_name2 = std::str::from_utf8(&RNG.next_string(16, 0x61, 0x7b)).unwrap().to_string();
+        //let var_name2 = std::str::from_utf8(&RNG.next_string(16, 0x61, 0x7b)).unwrap().to_string();
         let size = RNG.gen_range(MIN_ALLOC_SIZE, MAX_ALLOC_SIZE);
         block.stmt_list.push(Operation::AllocStackBuf(var_name1.clone(), size));
-        block.stmt_list.push(Operation::AllocHeapBuf(var_name2.clone(), size));
+        //block.stmt_list.push(Operation::AllocHeapBuf(var_name2.clone(), size));
         block.variables.push((var_name1, Type::Buffer));
-        block.variables.push((var_name2, Type::Buffer));
+        //block.variables.push((var_name2, Type::Buffer));
 
         // Start by inserting some simple operations to setup some variables that can later be used
         for _ in 0..RNG.gen_range(2, 5) {

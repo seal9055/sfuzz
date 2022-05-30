@@ -89,11 +89,11 @@ This list represents a set of features that I plan on implementing in the future
 - [X] Crash deduping / unique crashes
 - [X] Update mutators to include more options
 - [X] Seed Scheduling
-- [ ] Implement riscv-atomics so the JIT can use libc instead of newlib
+- [X] Add some tooling around the fuzzer
 - [ ] Proper benchmarking
 - [ ] CMP deconstruction to get past magic values and checksums
 - [ ] Crash exploration mode
-- [ ] Input-to-coverage mapping to focus mutators on useful bytes
+- [ ] Implement riscv-atomics so the JIT can use libc instead of newlib
 - [ ] Replace assembler to increase compile time's
 - [ ] JIT optimizations, and another attempt at register allocation
 

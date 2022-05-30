@@ -130,7 +130,7 @@ fn main() {
     let mut stats = Statistics::default();
 
     // Insert loadable segments into emulator address space and retrieve symbol table information
-    let sym_map = load_elf_segments("./test_cases/generated_program", &mut emu).unwrap_or_else(||{
+    let sym_map = load_elf_segments("./test_cases/harder_test", &mut emu).unwrap_or_else(||{
         error_exit("Unrecoverable error while loading elf segments");
     });
 
@@ -158,8 +158,8 @@ fn main() {
     emu.set_reg(Register::Sp, (stack + (1024 * 1024)) - 8);
 
     // Setup arguments
-    let arguments = vec!["test_cases/generated_program\0".to_string(), "fuzz_input\0".to_string()];
-    let args: Vec<usize> = arguments.iter().map(|e| {
+    let arguments = vec!["test_cases/harder_test\0".to_string(), "fuzz_input\0".to_string()];
+    let argv: Vec<usize> = arguments.iter().map(|e| {
         let addr = emu.allocate(64, Perms::READ | Perms::WRITE)
             .expect("Allocating an argument failed");
         emu.memory.write_mem(addr, e.as_bytes(), e.len()).expect("Writing to argv[0] failed");
@@ -178,13 +178,13 @@ fn main() {
     }
 
     // Setup argc, argv & envp
-    push!(0u64);    // Auxp
-    push!(0u64);    // Envp
-    push!(0u64);    // Null-terminate Argv
-    for arg in args.iter().rev() {
+    push!(0u64);            // Auxp
+    push!(0u64);            // Envp
+    push!(0u64);            // Null-terminate Argv
+    for arg in argv.iter().rev() {
         push!(*arg);
     }
-    push!(args.len());    // Argc
+    push!(argv.len());    // Argc
 
     // Insert various hooks into binary
     insert_hooks(&sym_map, &mut emu);
