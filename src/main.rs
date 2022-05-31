@@ -6,7 +6,7 @@ use sfuzz::{
     jit::{Jit, LibFuncs},
     pretty_printing::{print_stats, log, LogType},
     Input, Corpus, Statistics, error_exit, load_elf_segments, worker, snapshot, calibrate_seeds,
-    config::{handle_cli, Cli, SNAPSHOT_ADDR, OVERRIDE_TIMEOUT, NUM_THREADS},
+    config::{handle_cli, Cli, SNAPSHOT_ADDR, OVERRIDE_TIMEOUT, NUM_THREADS, MAX_GUEST_ADDR},
 };
 use std::thread;
 use std::sync::{Arc, Mutex};
@@ -126,7 +126,7 @@ fn main() -> std::io::Result<()> {
     let mut corpus: Corpus = Corpus::new(16*1024*1024);
 
     // Each thread gets its own forked emulator. The jit-cache is shared between them however
-    let mut emu = Emulator::new(64 * 1024 * 1024, jit, prevent_rc);
+    let mut emu = Emulator::new(MAX_GUEST_ADDR, jit, prevent_rc);
 
     // Statistics structure. This is kept local to the main thread and updated via message passing 
     // from the worker threads

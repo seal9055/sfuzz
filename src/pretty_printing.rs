@@ -5,6 +5,7 @@ use crate::{
 
 use core::fmt;
 use std::sync::Arc;
+use std::time::Duration;
 
 use console::Term;
 use num_format::{Locale, ToFormattedString};
@@ -74,12 +75,17 @@ fn pretty_stats(term: &Term, stats: &Statistics, elapsed_time: f64, timeout: u64
         &format!("{}", Green("\t\t[ SFUZZ - https://github.com/seal9055/sfuzz ]\n"))
     ).unwrap();
 
+    let duration    = Duration::from_secs_f64(elapsed_time);
+    let elapsed_sec = duration.as_secs() % 60;
+    let elapsed_min = (duration.as_secs() / 60) % 60;
+    let elapsed_hr  = (duration.as_secs() / 60) / 60;
+
     // Progress information
     term.write_line(
-        &format!("\t{}\n\t   Run time [sec]: {:8.2}\n\t   Total fuzz cases: {:12} \
+        &format!("\t{}\n\t   Run time: {:02}:{:02}:{:02}\n\t   Total fuzz cases: {:12} \
                 \n\t   Instrs execd [mil]: {:12}", 
         Blue("Progression"), 
-        elapsed_time,
+        elapsed_hr, elapsed_min, elapsed_sec,
         stats.total_cases.to_formatted_string(&Locale::en),
         (stats.instr_count / 1_000_000).to_formatted_string(&Locale::en),
         )
@@ -109,17 +115,22 @@ fn pretty_stats(term: &Term, stats: &Statistics, elapsed_time: f64, timeout: u64
         )
     ).unwrap();
 
+    let duration  = Duration::from_secs_f64(elapsed_time - last_cov);
+    let cov_sec   = duration.as_secs() % 60;
+    let cov_min   = (duration.as_secs() / 60) % 60;
+    let cov_hr    = (duration.as_secs() / 60) / 60;
+
     // Coverage
     term.move_cursor_to(54, 10).unwrap();
     term.write_line(&format!("{}", Blue("Coverage"))).unwrap();
     term.move_cursor_to(54, 11).unwrap();
     term.write_line(&format!("   Coverage: {}", stats.coverage)).unwrap();
     term.move_cursor_to(54, 12).unwrap();
-    term.write_line(&format!("   Time since last cov [sec]: {:6.2}", elapsed_time - last_cov))
-        .unwrap();
+    term.write_line(&format!("   Time since last cov: {:02}:{:02}:{:02}", 
+                    cov_hr, cov_min, cov_sec)).unwrap();
 
     // Config information
-    term.move_cursor_down(2).unwrap();
+    term.move_cursor_down(1).unwrap();
     term.write_line(
         &format!("\t{}\n\t   Num Threads: {}\n\t   Coverage type: {:?}\n\t   \
         Snapshots enabled: {}\n\t   ASAN: {}\n\t   timeout: {}",
@@ -136,9 +147,9 @@ fn pretty_stats(term: &Term, stats: &Statistics, elapsed_time: f64, timeout: u64
     term.move_cursor_to(54, 14).unwrap();
     term.write_line(&format!("{}", Blue("Corpus"))).unwrap();
     term.move_cursor_to(54, 15).unwrap();
-    term.write_line(&format!("   Size: {}", corpus.inputs.read().len())).unwrap();
+    term.write_line(&format!("   Num Entries: {}", corpus.inputs.read().len())).unwrap();
     term.move_cursor_to(54, 16).unwrap();
-    term.write_line(&format!("   Instrs per case: {}", 
+    term.write_line(&format!("   Avg Instrs per case: {}", 
                              (stats.instr_count / stats.total_cases as u64)
                              )).unwrap();
 

@@ -35,6 +35,9 @@ pub static OVERRIDE_TIMEOUT: SyncOnceCell<Option<u64>> = SyncOnceCell::new();
 /// being run single-threaded
 pub static FULL_TRACE: SyncOnceCell<bool> = SyncOnceCell::new();
 
+/// Size of memory space allocated for each thread's virtual address space
+pub const MAX_GUEST_ADDR: usize = 64 * 1024 * 1024;
+
 #[derive(Eq, PartialEq, Copy, Clone, Debug)]
 pub enum CovMethod {
     /// Don't track coverage

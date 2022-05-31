@@ -2,7 +2,7 @@ use crate::{
     irgraph::{IRGraph, Flag, Operation, Val},
     emulator::{Emulator, Fault, Register as PReg, ExitType},
     mmu::Perms,
-    config::{CovMethod, COV_METHOD, NO_PERM_CHECKS, FULL_TRACE},
+    config::{CovMethod, COV_METHOD, NO_PERM_CHECKS, FULL_TRACE, MAX_GUEST_ADDR},
 };
 
 use rustc_hash::FxHashMap;
@@ -555,9 +555,19 @@ impl Jit {
                 },
                 Operation::JmpOff(addr) => {
                     let mut jit_exit = asm.create_label();
+                    let mut fallthrough = asm.create_label();
                     let reg = get_reg_64!(extract_reg!(instr.i_reg[0]), 0);
 
                     asm.add(reg, addr as i32).unwrap();
+
+                    // Check that the calculated address lies within the guest's address space
+                    asm.mov(rcx, MAX_GUEST_ADDR as u64).unwrap();
+                    asm.cmp(reg, rcx).unwrap();
+                    asm.jb(fallthrough).unwrap();
+
+                    jit_exit2!(10, reg);
+
+                    asm.set_label(&mut fallthrough).unwrap();
                     asm.shl(reg, 1u32).unwrap();
                     asm.mov(rcx, ptr(r15 + reg)).unwrap();
                     asm.test(rcx, rcx).unwrap();
