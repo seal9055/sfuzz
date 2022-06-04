@@ -1,7 +1,7 @@
 use crate::emulator::Fault;
 
 /// The starting address for our memory allocator
-const FIRSTALLOCATION: usize = 0x700000 - 0x8;
+const FIRSTALLOCATION: usize = 0x900000 - 0x8;
 
 /// Used in this manner, the permissions can easily be used for bitflag permission checks
 #[non_exhaustive]
@@ -50,11 +50,15 @@ pub struct Mmu {
     /// Holds the current program break at which new memory is allocated whenever needed
     alloc_addr: usize,
 
+    /// Vector that holds addresses that have been dirtied, only one address per page recorded
     pub dirty: Vec<usize>,
 
-    pub dirty_bitmap: Vec<u64>,
-
+    /// The amount of entries in the dirty vector, required since the pages are sometimes updated
+    /// in the JIT
     pub dirty_size: u64,
+
+    /// Bitmap that specifies which pages are dirtied (Page = 4096 bytes)
+    pub dirty_bitmap: Vec<u64>,
 }
 
 impl Mmu {
@@ -146,6 +150,7 @@ impl Mmu {
             if self.dirty_bitmap[idx] & (1 << bit) == 0 {
                 // Add a new entry to the dirty list
                 self.dirty.push(block);
+                self.dirty_size += 1;
 
                 // Update the dirty bitmap so that this page is not marked as dirty again on further
                 // writes
@@ -228,6 +233,26 @@ impl Mmu {
             *(((self.permissions.as_ptr() as usize).checked_add(base)? - 8) as *mut usize) =
                 Perms::ISALLOC as usize;
         };
+
+        // Mark the allocates pages as dirty so they are reset when the emulator is reset
+        let block_start = (base - 8) / 4096;
+        let block_end   = (base - 8 + aligned_size) / 4096;
+        for block in block_start..=block_end {
+            let idx = block / 64;
+            let bit = block % 64;
+
+            // If the bitmap does not already have an entry for the current write
+            if self.dirty_bitmap[idx] & (1 << bit) == 0 {
+                // Add a new entry to the dirty list
+                
+                self.dirty.push(block);
+                self.dirty_size += 1;
+
+                // Update the dirty bitmap so that this page is not marked as dirty again on further
+                // writes
+                self.dirty_bitmap[idx] |= 1 << bit;
+            }
+        }
 
         Some(base)
     }
@@ -508,7 +533,7 @@ mod tests {
     }
 
     #[test]
-    fn write_to_nonwriteable_memory() {
+    fn writing_nonwriteable_memory() {
         let mut mem = Mmu::new(8 * 1024 * 1024);
         let seg = elfparser::ProgramHeader {
             seg_type: 0x1,

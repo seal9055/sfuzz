@@ -329,10 +329,9 @@ pub fn snapshot(emu: &mut Emulator, corpus: &Corpus) {
 
 /// Callibrate how long the initial seeds take to run and use it to determine timeout
 pub fn calibrate_seeds(emu: &mut Emulator, corpus: &Corpus) -> u64 {
+    let original = emu.fork();
     let num_inputs = corpus.inputs.read().len();
     let mut instr_count = 0;
-
-    let original = emu.fork();
     let mut avg: u64 = 0;
 
     for i in 0..num_inputs {
@@ -488,26 +487,35 @@ pub fn worker(_thr_id: usize, mut emu: Emulator, corpus: Arc<Corpus>, tx: Sender
             match case_res.0.unwrap() {
                 // This means that a crash is found. Determine if the crash is unique, and if so,
                 // save it.
-                Fault::ReadFault(v)   |
-                Fault::WriteFault(v)  |
-                Fault::ExecFault(v)   |
-                Fault::OutOfBounds(v) => {
+                Fault::IntegerOverflow |
+                Fault::ReadFault(_)    |
+                Fault::WriteFault(_)   |
+                Fault::ExecFault(_)    |
+                Fault::InvalidFree(_)  |
+                Fault::OutOfBounds(_) => {
                     let mut crash_map = corpus.crash_mapping.write();
                     if crash_map.get(&case_res.0.unwrap()).is_none() {
                         crash_map.insert(case_res.0.unwrap(), 0);
                         let h = Hash32::hash(&emu.fuzz_input);
                         let crash_file = match case_res.0.unwrap() {
-                            Fault::ReadFault(_)   => {
+                            Fault::ReadFault(v)   => {
                                 format!("{}/crashes/read_{:x}_{}", OUTPUT_DIR.get().unwrap(), v, h)
                             },
-                            Fault::WriteFault(_)   => {
+                            Fault::WriteFault(v)   => {
                                 format!("{}/crashes/write_{:x}_{}", OUTPUT_DIR.get().unwrap(), v, h)
                             },
-                            Fault::ExecFault(_)   => {
+                            Fault::ExecFault(v)   => {
                                 format!("{}/crashes/exec_{:x}_{}", OUTPUT_DIR.get().unwrap(), v, h)
                             },
-                            Fault::OutOfBounds(_)   => {
+                            Fault::OutOfBounds(v)   => {
                                 format!("{}/crashes/oob_{:x}_{}", OUTPUT_DIR.get().unwrap(), v, h)
+                            },
+                            Fault::InvalidFree(v)   => {
+                                format!("{}/crashes/invalid_free_{:x}_{}", 
+                                        OUTPUT_DIR.get().unwrap(), v, h)
+                            },
+                            Fault::IntegerOverflow   => {
+                                format!("{}/crashes/int_overflow_{}", OUTPUT_DIR.get().unwrap(), h)
                             },
                             _ => unreachable!(),
                         };
@@ -518,6 +526,7 @@ pub fn worker(_thr_id: usize, mut emu: Emulator, corpus: Arc<Corpus>, tx: Sender
                 },
                 Fault::Timeout => local_timeouts += 1,
                 Fault::Snapshot => panic!("Hit snapshot during execution, this should not happen"),
+                Fault::OOM => panic!("OOM: Emulator ran out of available memory"),
                 Fault::Exit => {},
                 _ => unreachable!(),
             }

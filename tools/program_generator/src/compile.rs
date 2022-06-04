@@ -55,14 +55,13 @@ impl Compiler {
         self.code.push_str("#include <stdio.h>\n");
         self.code.push_str("#include <stdlib.h>\n");
         self.code.push_str("#include <string.h>\n\n");
-        self.code.push_str("char *buf;\n\n");
+        self.code.push_str("unsigned char *buf;\n\n");
 
         for i in 0..self.program.function_list.len() {
             self.translate_function_header(i);
             self.translate_function_body(i);
         }
     }
-
 
     /// Translate the header of a function to c
     fn translate_function_header(&mut self, index: usize) {
@@ -139,12 +138,13 @@ pub fn compile(program: Program) {
             .expect("Failed to write generated program to disk");
 
         // Compile the generated program
-        std::process::Command::new(COMPILER)
+        assert!(std::process::Command::new(COMPILER)
             .arg("generated_program.c")
             .arg("-o")
             .arg("generated_program")
-            .spawn()
-            .expect("Failed to compile generated program");
+            .status()
+            .unwrap()
+            .success());
     }
 
     println!("[+] Done generating code, if the program is rather large, your compiler might still \

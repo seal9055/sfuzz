@@ -12,14 +12,14 @@ use std::lazy::SyncLazy;
 /// This program takes an input file via argv[1], this variable specifies the amount of bytes that
 /// are read in and available for use from the input, larger values should make finding the bugs a
 /// little harder
-const INPUT_SIZE: usize = 5000;
+const INPUT_SIZE: usize = 500;
 
 /// Maximum depth that scopes can go too before early returning. Without this blocks would
 /// recursively create new blocks until a stack overflow occurs
-const MAX_DEPTH: usize = 4;
+const MAX_DEPTH: usize = 3;
 
 /// Determines the amount of functions that are created outside of `main`
-const NUM_FUNCTIONS: usize = 1;
+const NUM_FUNCTIONS: usize = 5;
 
 /// Minimum and maximum sizes for buffer allocations in the program.
 const MIN_ALLOC_SIZE: usize = 0x20;
@@ -77,7 +77,7 @@ impl fmt::Display for Type {
         match self {
             Type::Void => write!(f, "void"),
             Type::Number => write!(f, "int"),
-            Type::Str => write!(f, "char *"),
+            Type::Str => write!(f, "unsigned char *"),
             _ => unreachable!(),
         }
     }
@@ -182,7 +182,7 @@ impl Expr {
 
 impl fmt::Display for Expr {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let signs = ["==", "<", "<=", ">", ">="];
+        let signs = ["=="];
         let s = signs[RNG.next_num(signs.len())];
         match self {
             Expr::VarByteCmp(a, b) |
@@ -192,11 +192,11 @@ impl fmt::Display for Expr {
             Expr::VarStrCmp(a, b) => {
                 write!(f, "buf[{}] == {}", a, b)
             },
-            Expr::ByteCmp(a, b) => write!(f, "buf[{}] == {}", a, b),
-            Expr::WordCmp(a, b) => write!(f, "(unsigned) (atol(buf + {}) & 0xffff) {} {}", a, s, b),
-            Expr::DWordCmp(a, b) => write!(f, "(unsigned) atol(buf + {}) {} {}", a, s, b),
-            Expr::QWordCmp(a, b) => write!(f, "(unsigned) atoll(buf + {}) {} {}ULL", a, s, b),
-            Expr::StrCmp(a, b) => write!(f, "strcmp(&buf[{}], {})", a, b),
+            Expr::ByteCmp(a, b) => write!(f, "buf[{}] {} {}", a, s, b),
+            Expr::WordCmp(a, b) => write!(f, "*(unsigned short*)(buf + {}) {} {}", a, s, b),
+            Expr::QWordCmp(a, b) => write!(f, "*(unsigned int*)(buf + {}) {} {}U", a, s, b),
+            Expr::DWordCmp(a, b) => write!(f, "*(unsigned long*)(buf + {}) {} {}ULL", a, s, b),
+            Expr::StrCmp(a, b) => write!(f, "!strcmp(&buf[{}], {})", a, b),
         }
     }
 }
@@ -266,8 +266,8 @@ impl fmt::Display for Operation {
             Operation::OpenFile => write!(f, "FILE *fd = fopen(argv[1], \"r\")"),
             Operation::ReadFile => write!(f, "fgets(buf, {}, fd)", INPUT_SIZE),
             Operation::Crash => write!(f, "*(unsigned long*)0x{:x} = 0", RNG.gen()),
-            Operation::AllocStackBuf(a, b) => write!(f, "char {}[{}]", a, b),
-            Operation::AllocHeapBuf(a, b) => write!(f, "char *{} = malloc({})", a, b),
+            Operation::AllocStackBuf(a, b) => write!(f, "unsigned char {}[{}]", a, b),
+            Operation::AllocHeapBuf(a, b) => write!(f, "unsigned char *{} = malloc({})", a, b),
             Operation::MemCpy(a, b, c) => write!(f, "memcpy({}, buf+{}, {})", a, b, c),
             Operation::CallFunc(a, _, _) => write!(f, "{}()", a),
         }
@@ -339,13 +339,17 @@ impl Block {
         }
 
         // Allocate some buffers for this block that can be used in future operations
-        let var_name1 = std::str::from_utf8(&RNG.next_string(16, 0x61, 0x7b)).unwrap().to_string();
-        //let var_name2 = std::str::from_utf8(&RNG.next_string(16, 0x61, 0x7b)).unwrap().to_string();
+        /*
         let size = RNG.gen_range(MIN_ALLOC_SIZE, MAX_ALLOC_SIZE);
+
+        let var_name1 = std::str::from_utf8(&RNG.next_string(16, 0x61, 0x7b)).unwrap().to_string();
         block.stmt_list.push(Operation::AllocStackBuf(var_name1.clone(), size));
-        //block.stmt_list.push(Operation::AllocHeapBuf(var_name2.clone(), size));
         block.variables.push((var_name1, Type::Buffer));
-        //block.variables.push((var_name2, Type::Buffer));
+        
+        block.stmt_list.push(Operation::AllocHeapBuf(var_name2.clone(), size));
+        let var_name2 = std::str::from_utf8(&RNG.next_string(16, 0x61, 0x7b)).unwrap().to_string();
+        block.variables.push((var_name2, Type::Buffer));
+        */
 
         // Start by inserting some simple operations to setup some variables that can later be used
         for _ in 0..RNG.gen_range(2, 5) {

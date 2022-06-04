@@ -617,7 +617,9 @@ impl Jit {
                     // Set the permissions mask based on size
                     let mask = (0..sz).fold(0u64, |acc, i| acc + ((Perms::WRITE as u64) << (8*i)));
 
-                    if !NO_PERM_CHECKS.get().unwrap() {
+                    if *NO_PERM_CHECKS.get().unwrap() {
+                        asm.jmp(fallthrough).unwrap();
+                    } else {
                         // rcx is permissions mask that checks that `size` bits have Perms::Write
                         // rax contains the accessed memory permissions
                         asm.mov(rcx, mask).unwrap();
@@ -625,8 +627,6 @@ impl Jit {
                         asm.cmp(rax, rcx).unwrap();
                         asm.je(fallthrough).unwrap();
                         jit_exit1!(9, pc as u64);
-                    } else {
-                        asm.jmp(fallthrough).unwrap();
                     }
 
                     // Fault because the access went completely out of bounds

@@ -273,8 +273,8 @@ impl Emulator {
         self.memory.reset(&original.memory);
         self.regs = original.regs;
 
-        self.fd_list.clear();
-        self.fd_list.extend_from_slice(&original.fd_list);
+        self.fd_list = original.fd_list.clone();
+        self.prevent_rc = original.prevent_rc.clone();
     }
 
     /// Allocate a new file in the emulator
@@ -467,7 +467,10 @@ impl Emulator {
                 },
                 3 => { /* Hooked function */
                     if let Some(callback) = self.hooks.get(&reentry_pc) {
-                        callback(self).unwrap();
+                        match callback(self) {
+                            Err(v) => return (Some(v), scratchpad[9]),
+                            _ => {},
+                        }
                     } else {
                         error_exit("Attempted to hook invalid function");
                     }
@@ -475,10 +478,6 @@ impl Emulator {
                 5 => { /* JIT exited to setup a snapshot */
                     self.snapshot_addr = scratchpad[0];
                     return (Some(Fault::Snapshot), scratchpad[9]);
-                },
-                6 => { /* JIT exited to track a new coverage event */
-                    panic!("");
-                    //self.coverage_handler(&scratchpad);
                 },
                 7 => { /* Fuzz case timed out */
                     return (Some(Fault::Timeout), scratchpad[9]);

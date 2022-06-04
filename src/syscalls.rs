@@ -147,13 +147,13 @@ pub fn open(emu: &mut Emulator) -> Option<Fault> {
         cur += 1;
     }
 
-    if buf == FUZZ_INPUT.get().unwrap().as_bytes() {
-        emu.alloc_file(FileType::FUZZINPUT);
+    let fd = if buf == FUZZ_INPUT.get().unwrap().as_bytes() {
+        emu.alloc_file(FileType::FUZZINPUT)
     } else {
-        emu.alloc_file(FileType::OTHER);
-    }
+        emu.alloc_file(FileType::OTHER)
+    };
 
-    emu.set_reg(Register::A0, emu.fd_list.len()-1);
+    emu.set_reg(Register::A0, fd);
     None
 }
 
@@ -162,15 +162,15 @@ pub fn read(emu: &mut Emulator) -> Option<Fault> {
     let buf   = emu.get_reg(Register::A1);
     let count = emu.get_reg(Register::A2);
 
-    // If the fd does not exist, return an error
-    if emu.fd_list.len() < fd || emu.fd_list[fd].ftype == FileType::INVALID {
+    // If the file does not exist or has already been closed, return an error
+    let file = emu.fd_list.get_mut(fd);
+    if file.is_none() || file.unwrap().ftype == FileType::INVALID {
         emu.set_reg(Register::A0, !0);
         return None;
     }
 
     // Special case, reading in the fuzzinput
     if emu.fd_list[fd].ftype == FileType::FUZZINPUT {
-
         let offset = emu.fd_list[fd].cursor.unwrap();
         let len = core::cmp::min(count, emu.fuzz_input.len()-offset);
 
@@ -193,9 +193,9 @@ pub fn write(emu: &mut Emulator) -> Option<Fault> {
     let buf   = emu.get_reg(Register::A1);
     let count = emu.get_reg(Register::A2);
 
+    // If the file does not exist or has already been closed, return an error
     let file = emu.fd_list.get_mut(fd);
-
-    if file.is_none() {
+    if file.is_none() || file.as_ref().unwrap().ftype == FileType::INVALID {
         emu.set_reg(Register::A0, !0);
         return None;
     }
