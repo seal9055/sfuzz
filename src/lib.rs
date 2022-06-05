@@ -174,6 +174,9 @@ pub struct Statistics {
     /// Number of coverage units that has been reached
     pub coverage: usize,
 
+    /// Number of times new coverage was gained by splitting up comparison instructions
+    pub cmpcov: usize,
+
     /// Number of instructions executed
     pub instr_count: u64,
 
@@ -269,6 +272,9 @@ pub struct Corpus {
     /// Counter that keeps track of current coverage
     pub cov_counter: AtomicUsize,
 
+    pub cmpcov_bitmap: Vec<u8>,
+    pub cmpcov_counter: AtomicUsize,
+
     /// Used to dedup crashses and only save off unique crashes
     pub crash_mapping: RwLock<FxHashMap<Fault, u8>>,
 
@@ -286,6 +292,8 @@ impl Corpus {
             inputs:           RwLock::new(Vec::new()),
             coverage_bytemap: vec![0; size],
             cov_counter:      AtomicUsize::new(0),
+            cmpcov_bitmap:    vec![0; 10000000],
+            cmpcov_counter:   AtomicUsize::new(0),
             crash_mapping:    RwLock::new(FxHashMap::default()),
             total_size:       AtomicUsize::new(0),
             total_exec_time:  AtomicUsize::new(0),
@@ -298,6 +306,9 @@ impl Corpus {
     pub fn reset_coverage(&mut self) {
         self.coverage_bytemap = vec![0; self.coverage_bytemap.len()];
         self.cov_counter = AtomicUsize::new(0);
+
+        self.cmpcov_bitmap = vec![0; self.cmpcov_bitmap.len()];
+        self.cmpcov_counter = AtomicUsize::new(0);
     }
 }
 
@@ -424,6 +435,7 @@ pub fn worker(_thr_id: usize, mut emu: Emulator, corpus: Arc<Corpus>, tx: Sender
     let mut local_total_crashes = 0;
     let mut local_unique_crashes = 0;
     let mut local_coverage_count = 0;
+    let mut local_cmpcov_count = 0;
     let mut local_instr_count = 0;
     let mut local_timeouts = 0;
 
@@ -532,10 +544,20 @@ pub fn worker(_thr_id: usize, mut emu: Emulator, corpus: Arc<Corpus>, tx: Sender
             }
 
             // This input found new coverage
-            if case_res.1 > 0 {
+            if case_res.1 > 0 || case_res.2 > 0 {
                 let mut corp_inputs = corpus.inputs.write();
+
+                // New coverage
+                if case_res.1 > 0 {
+                    local_coverage_count += case_res.1;
+                }
+
+                // New CmpCov
+                if case_res.2 > 0 {
+                    local_cmpcov_count += case_res.2;
+                }
+
                 corp_inputs[input_index].cov_finds += 1;
-                local_coverage_count += case_res.1;
                 corp_inputs.push(Input::new(emu.fuzz_input.clone(), Some(case_instr_count)));
 
                 // Add this case's stats to an overall pool that is used to average these values
@@ -546,17 +568,13 @@ pub fn worker(_thr_id: usize, mut emu: Emulator, corpus: Arc<Corpus>, tx: Sender
             local_instr_count += case_instr_count;
         }
 
-        // Increment crash counter for this case
-        let mut corp_inputs = corpus.inputs.write();
-        corp_inputs[input_index].crashes += local_total_crashes;
-        corp_inputs[input_index].ucrashes += local_unique_crashes;
-
         // Populate statistics that will be sent to the main thread
         let stats = Statistics {
             total_cases: seed_energy,
             crashes:     local_total_crashes,
             ucrashes:    local_unique_crashes,
             coverage:    local_coverage_count,
+            cmpcov:      local_cmpcov_count,
             instr_count: local_instr_count,
             timeouts:    local_timeouts,
         };
@@ -568,6 +586,7 @@ pub fn worker(_thr_id: usize, mut emu: Emulator, corpus: Arc<Corpus>, tx: Sender
         local_total_crashes = 0;
         local_unique_crashes = 0;
         local_coverage_count = 0;
+        local_cmpcov_count = 0;
         local_instr_count = 0;
         local_timeouts = 0;
     }

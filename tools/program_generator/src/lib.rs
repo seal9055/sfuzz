@@ -19,7 +19,7 @@ const INPUT_SIZE: usize = 500;
 const MAX_DEPTH: usize = 3;
 
 /// Determines the amount of functions that are created outside of `main`
-const NUM_FUNCTIONS: usize = 5;
+const NUM_FUNCTIONS: usize = 1;
 
 /// Minimum and maximum sizes for buffer allocations in the program.
 const MIN_ALLOC_SIZE: usize = 0x20;

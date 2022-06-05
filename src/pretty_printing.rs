@@ -1,5 +1,5 @@
 use crate::{
-    config::{COV_METHOD, NO_PERM_CHECKS, SNAPSHOT_ADDR, NUM_THREADS, DEBUG_PRINT},
+    config::{COV_METHOD, NO_PERM_CHECKS, SNAPSHOT_ADDR, NUM_THREADS, DEBUG_PRINT, CMP_COV},
     Statistics, Corpus,
 };
 
@@ -138,6 +138,8 @@ fn pretty_stats(term: &Term, stats: &Statistics, elapsed_time: f64, timeout: u64
     term.move_cursor_to(54, 11).unwrap();
     term.write_line(&format!("   Coverage: {}", stats.coverage)).unwrap();
     term.move_cursor_to(54, 12).unwrap();
+    term.write_line(&format!("   CmpCov: {}", stats.cmpcov)).unwrap();
+    term.move_cursor_to(54, 13).unwrap();
     term.write_line(&format!("   Time since last cov: {:02}:{:02}:{:02}", 
                     cov_hr, cov_min, cov_sec)).unwrap();
 
@@ -145,13 +147,14 @@ fn pretty_stats(term: &Term, stats: &Statistics, elapsed_time: f64, timeout: u64
     term.move_cursor_down(1).unwrap();
     term.write_line(
         &format!("\t{}\n\t   Num Threads: {}\n\t   Coverage type: {:?}\n\t   \
-        Snapshots enabled: {}\n\t   ASAN: {}\n\t   timeout: {}",
+        Snapshots enabled: {}\n\t   ASAN: {}\n\t   Timeout: {}\n\t   CmpCov: {}",
         Blue("Config"), 
         NUM_THREADS.get().unwrap(),
         COV_METHOD.get().unwrap(),
         SNAPSHOT_ADDR.get().unwrap().is_some(),
         !NO_PERM_CHECKS.get().unwrap(),
         timeout.to_formatted_string(&Locale::en),
+        CMP_COV.get().unwrap(),
         )
     ).unwrap();
 

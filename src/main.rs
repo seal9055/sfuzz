@@ -250,6 +250,7 @@ fn main() -> std::io::Result<()> {
         }
 
         stats.coverage    += received.coverage;
+        stats.cmpcov      += received.cmpcov;
         stats.total_cases += received.total_cases;
         stats.crashes     += received.crashes;
         stats.ucrashes    += received.ucrashes;

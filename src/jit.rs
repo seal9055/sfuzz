@@ -2,7 +2,7 @@ use crate::{
     irgraph::{IRGraph, Flag, Operation, Val},
     emulator::{Emulator, Fault, Register as PReg, ExitType},
     mmu::Perms,
-    config::{CovMethod, COV_METHOD, NO_PERM_CHECKS, FULL_TRACE, MAX_GUEST_ADDR},
+    config::{CovMethod, COV_METHOD, NO_PERM_CHECKS, FULL_TRACE, MAX_GUEST_ADDR, CMP_COV},
 };
 
 use rustc_hash::FxHashMap;
@@ -61,6 +61,8 @@ pub struct Jit {
 
     /// Size of the injected snapshot stub
     pub snapshot_inject_size: AtomicUsize,
+
+    pub cmpcov_count: AtomicUsize,
 }
 
 impl Jit {
@@ -72,6 +74,7 @@ impl Jit {
                 AtomicUsize::new(0)
             }).collect::<Vec<_>>().into_boxed_slice(),
             snapshot_inject_size: AtomicUsize::new(0),
+            cmpcov_count: AtomicUsize::new(0),
         }
     }
 
@@ -142,10 +145,9 @@ impl Jit {
         local_lookup_arr.insert(pc / 4, cur_jit_addr + code.len());
     }
 
-    /// rdi, rbx, rcx, rbp, rsp : in use by compiler
-    /// rax, rdx : free
-    /// rdi : instructions executed
-    /// rsi : Counts coverage pc's accumulated in at r8
+    /// rdi, rbp, rsp : in use by llvm
+    /// rax, rbx, rcx, rdx : in use by JIT
+    /// rsi : instructions executed
     /// r8  : Coverage map
     /// r9  : Current size of dirty list vector (could prob change vec size directly and save r9)
     /// r10 : Dirty list
@@ -497,8 +499,8 @@ impl Jit {
                             asm.mov(rcx, rax).unwrap();
                             asm.mov(rdx, rbx).unwrap();
 
-                            asm.shr(rcx, $shift_val).unwrap();
-                            asm.shr(rdx, $shift_val).unwrap();
+                            asm.shr(rcx, $shift_val as u32).unwrap();
+                            asm.shr(rdx, $shift_val as u32).unwrap();
                             asm.and(rcx, 0xff).unwrap();
                             asm.and(rdx, 0xff).unwrap();
 
@@ -506,7 +508,7 @@ impl Jit {
                         }
                     }
 
-                    // Conditional jumps based on the passed in flags
+                    // Emit Conditional jump based on the passed in compare-flags
                     macro_rules! cond_jump {
                         () => {
                             match instr.flags {
@@ -545,43 +547,47 @@ impl Jit {
                         }
                     }
 
-                    /*
-                     * CmpCov Check:
-                     *
-                     *  bitmap: Vec<u8>, (w/ large capacity)
-                     *
-                     *  bts (bitmap + offset), bit
-                     *  if CF {
-                     *      Cov = True
-                     *      scratchpad[3] = 1;
-                     *  }
-                     *
-                     */
+                    macro_rules! insert_cmpcov {
+                        ($bit_pos: expr) => {
+                            let mut local_fallthrough = asm.create_label();
+
+                            asm.mov(rcx, ptr(r8 + 0x10)).unwrap();
+                            asm.mov(rdx, $bit_pos as u64).unwrap();
+                            asm.bts(qword_ptr(rcx), rdx).unwrap();
+                            asm.jc(local_fallthrough).unwrap();
+
+                            // New coverage
+                            asm.mov(rdx, ptr(r8+0x18)).unwrap();
+                            asm.inc(rdx).unwrap();
+                            asm.mov(ptr(r8+0x18), rdx).unwrap();
+
+                            // No new coverage
+                            asm.set_label(&mut local_fallthrough).unwrap();
+                        }
+                    }
 
                     asm.mov(rax, ptr(r14 + vr_in1.get_offset())).unwrap();
                     asm.mov(rbx, ptr(r14 + vr_in2.get_offset())).unwrap();
 
-                    // Select wether CmpCov should be applied or not
-                    if false {
+                    // Select wether CmpCov should be enabled for branch-if-equal instructions
+                    if *CMP_COV.get().unwrap() {
                         // Separately compare each of the bytes used in the comparison
                         match instr.flags {
-                            0b001001 => {
-                                // NotEqual needs to be handled differently because it can't early
-                                // exit unlike the other cases. CmpCov is also entirely unnecessary
-                                // for the NotEqual case
-                                asm.cmp(rax, rbx).unwrap();
-                                asm.je(fallthrough).unwrap();
-                            },
-                            _ => {
-                                let mut shift_amount = 56;
-                                while shift_amount >= 0 {
-                                    shifted_cmp!(shift_amount);
+                            0b000101 => {   /* Signed | Equal */
+                                let base = self.cmpcov_count.fetch_add(8, Ordering::SeqCst);
+                                for i in 0..8 {
+                                    shifted_cmp!(i*8);
                                     cond_jump!();
-                                    shift_amount -= 8;
+                                    insert_cmpcov!(base + i);
                                 }
+                            }
+                            _ => {
+                                asm.cmp(rax, rbx).unwrap();
+                                cond_jump!();
                             }
                         }
                     } else {
+                        // CmpCov disabled
                         asm.cmp(rax, rbx).unwrap();
                         cond_jump!();
                     }

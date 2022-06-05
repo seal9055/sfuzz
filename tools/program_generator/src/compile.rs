@@ -147,6 +147,5 @@ pub fn compile(program: Program) {
             .success());
     }
 
-    println!("[+] Done generating code, if the program is rather large, your compiler might still \
-             be busy compiling though");
+    println!("[+] Done");
 }

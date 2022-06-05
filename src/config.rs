@@ -27,6 +27,10 @@ pub static NO_PERM_CHECKS: SyncOnceCell<bool> = SyncOnceCell::new();
 /// work while running single-threaded
 pub static DEBUG_PRINT: SyncOnceCell<bool> = SyncOnceCell::new();
 
+/// Separates branch-if-equal comparisons into multiple separate compares that benefit from
+/// coverage tracking so larger magic numbers can still be found through fuzzing
+pub static CMP_COV: SyncOnceCell<bool> = SyncOnceCell::new();
+
 /// Manually override the automatically calibrated timeout
 pub static OVERRIDE_TIMEOUT: SyncOnceCell<Option<u64>> = SyncOnceCell::new();
 
@@ -82,6 +86,11 @@ pub struct Cli {
     /// segfault when the target crashes due to being run in an emulator
     pub no_perm_checks: bool,
 
+    #[clap(short = 'C', help_heading = "CONFIG", takes_value = false)]
+    /// - Disables CmpCov, results in slight performance increase, but makes it almost impossible
+    /// for the fuzzer to get past large magic value comparisons
+    pub no_cmp_cov: bool,
+
     #[clap(short = 'e', help_heading = "CONFIG")]
     /// - File extension for the fuzz test input file if the target requires it
     pub extension: Option<String>,
@@ -121,6 +130,7 @@ pub fn handle_cli(args: &mut Cli) {
     NO_PERM_CHECKS.set(args.no_perm_checks).unwrap();
     DEBUG_PRINT.set(args.debug_print).unwrap();
     OVERRIDE_TIMEOUT.set(args.override_timeout).unwrap();
+    CMP_COV.set(!args.no_cmp_cov).unwrap();
 
     if args.fuzzed_app.is_empty() {
         error_exit("You need to specify the target to be fuzzed");

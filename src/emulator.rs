@@ -322,7 +322,7 @@ impl Emulator {
     /// code. It performs an appropriate operation based on the exit code and then continues with
     /// the loop to reenter the jit.
     pub fn run_jit(&mut self, corpus: &Corpus, instr_count: &mut u64, trace_arr: &mut [u64], 
-                   trace_arr_len: &mut usize) -> (Option<Fault>, usize) {
+                   trace_arr_len: &mut usize) -> (Option<Fault>, usize, usize) {
         // Extra space when the available registers are not enough to pass sufficient 
         // information in/out of the jit
         let mut scratchpad = [
@@ -332,10 +332,10 @@ impl Emulator {
             // 1 - 0x08 - Free
             0usize,
 
-            // 2 - 0x10 - Free
-            0usize,
+            // 2 - 0x10 - CmpCov bitmap
+            corpus.cmpcov_bitmap.as_ptr() as usize,
 
-            // 3 - 0x18 - Free
+            // 3 - 0x18 - CmpCov counter
             0usize,
 
             // 4 - 0x20 - Trace
@@ -366,7 +366,7 @@ impl Emulator {
 
             // Error out if code was unaligned.
             // since Riscv instructions are always 4-byte aligned this is a bug
-            if pc & 3 != 0 { return (Some(Fault::ExecFault(pc)), scratchpad[9]); }
+            if pc & 3 != 0 { return (Some(Fault::ExecFault(pc)), scratchpad[9], scratchpad[3]); }
 
             // Determine address of the jit-backing code for the current function, either by lookup,
             // or by compiling the function if it hasn't yet been compiled
@@ -403,12 +403,15 @@ impl Emulator {
             let exit_code:  usize;
             let reentry_pc: usize;
 
-            // Invoke the JIT with appropriate arguments
+            // Invoke the JIT with appropriate arguments, push/pop rbx because it is being
+            // clobbered in the JIT and llvm requires it for its operations
             unsafe {
                 let func = *(&jit_addr as *const usize as *const fn());
 
                 asm!(r#"
+                    push rbx
                     call {call_dest}
+                    pop rbx
                 "#,
                 call_dest = in(reg) func,
                 out("rax")   exit_code,
@@ -451,7 +454,7 @@ impl Emulator {
                             syscalls::fstat(self);
                         },
                         93 => {
-                            return (syscalls::exit(), scratchpad[9]);
+                            return (syscalls::exit(), scratchpad[9], scratchpad[3]);
                         },
                         169 => {
                             syscalls::gettimeofday(self);
@@ -468,7 +471,7 @@ impl Emulator {
                 3 => { /* Hooked function */
                     if let Some(callback) = self.hooks.get(&reentry_pc) {
                         match callback(self) {
-                            Err(v) => return (Some(v), scratchpad[9]),
+                            Err(v) => return (Some(v), scratchpad[9], scratchpad[3]),
                             _ => {},
                         }
                     } else {
@@ -477,19 +480,19 @@ impl Emulator {
                 },
                 5 => { /* JIT exited to setup a snapshot */
                     self.snapshot_addr = scratchpad[0];
-                    return (Some(Fault::Snapshot), scratchpad[9]);
+                    return (Some(Fault::Snapshot), scratchpad[9], scratchpad[3]);
                 },
                 7 => { /* Fuzz case timed out */
-                    return (Some(Fault::Timeout), scratchpad[9]);
+                    return (Some(Fault::Timeout), scratchpad[9], scratchpad[3]);
                 },
                 8 => { /* Attempted to read memory without read permissions */
-                    return (Some(Fault::ReadFault(reentry_pc)), scratchpad[9]);
+                    return (Some(Fault::ReadFault(reentry_pc)), scratchpad[9], scratchpad[3]);
                 },
                 9 => { /* Attempted to write to memory without write permissions */
-                    return (Some(Fault::WriteFault(reentry_pc)), scratchpad[9]);
+                    return (Some(Fault::WriteFault(reentry_pc)), scratchpad[9], scratchpad[3]);
                 },
                 10 => { /* Memory read/write request went completely out of bounds */
-                    return (Some(Fault::OutOfBounds(reentry_pc)), scratchpad[9]);
+                    return (Some(Fault::OutOfBounds(reentry_pc)), scratchpad[9], scratchpad[3]);
                 },
                 _ => panic!("Invalid JIT return code: {:x}", exit_code),
             }
