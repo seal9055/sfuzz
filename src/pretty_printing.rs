@@ -70,7 +70,19 @@ pub fn log(color: LogType, msg: &str) {
 /// Print out statistics in a nicely formated static screen
 fn pretty_stats(term: &Term, stats: &Statistics, elapsed_time: f64, timeout: u64, corpus: 
                 &Arc<Corpus>, last_cov: f64) {
+
+    term.clear_screen().unwrap();
     term.move_cursor_to(0, 2).unwrap();
+
+    // Print out error message instead of standard output if the terminal size is too small to
+    // properly display output
+    let (x, y) = term.size();
+    if x < 25 || y < 95 {
+        term.write_line(&format!("Increase terminal size to 25:95 (Cur: {}:{})", x, y)).unwrap();
+        term.flush().unwrap();
+        return;
+    }
+
     term.write_line(
         &format!("{}", Green("\t\t[ SFUZZ - https://github.com/seal9055/sfuzz ]\n"))
     ).unwrap();

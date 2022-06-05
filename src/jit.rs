@@ -491,51 +491,110 @@ impl Jit {
                     let vr_in2 = extract_reg!(instr.i_reg[1]);
                     let mut fallthrough = asm.create_label();
 
+                    // This is used to extract single bytes from comparisons for CmpCov
+                    macro_rules! shifted_cmp {
+                        ($shift_val: expr) => {
+                            asm.mov(rcx, rax).unwrap();
+                            asm.mov(rdx, rbx).unwrap();
+
+                            asm.shr(rcx, $shift_val).unwrap();
+                            asm.shr(rdx, $shift_val).unwrap();
+                            asm.and(rcx, 0xff).unwrap();
+                            asm.and(rdx, 0xff).unwrap();
+
+                            asm.cmp(rcx, rdx).unwrap();
+                        }
+                    }
+
+                    // Conditional jumps based on the passed in flags
+                    macro_rules! cond_jump {
+                        () => {
+                            match instr.flags {
+                                0b000101 => {   /* Signed | Equal */
+                                    asm.jne(fallthrough).unwrap();
+                                },
+                                0b001001 => {   /* Signed | NEqual */
+                                    asm.je(fallthrough).unwrap();
+                                },
+                                0b010001 => {   /* Signed | Less */
+                                    asm.jnl(fallthrough).unwrap();
+                                },
+                                0b100001 => {   /* Signed | Greater */
+                                    asm.jng(fallthrough).unwrap();
+                                },
+                                0b010101 => {   /* Signed | Less | Equal */
+                                    asm.jnle(fallthrough).unwrap();
+                                },
+                                0b100101 => {   /* Signed | Greater | Equal */
+                                    asm.jnge(fallthrough).unwrap();
+                                },
+                                0b010010 => {   /* Unsigned | Less */
+                                    asm.jnb(fallthrough).unwrap();
+                                },
+                                0b100010 => {   /* Unsigned | Greater */
+                                    asm.jna(fallthrough).unwrap();
+                                },
+                                0b010110 => {   /* Unsigned | Less | Equal */
+                                    asm.jnbe(fallthrough).unwrap();
+                                },
+                                0b100110 => {   /* Unsigned | Greater | Equal */
+                                    asm.jnae(fallthrough).unwrap();
+                                },
+                                _ => panic!("Unimplemented conditional branch flags")
+                            }
+                        }
+                    }
+
+                    /*
+                     * CmpCov Check:
+                     *
+                     *  bitmap: Vec<u8>, (w/ large capacity)
+                     *
+                     *  bts (bitmap + offset), bit
+                     *  if CF {
+                     *      Cov = True
+                     *      scratchpad[3] = 1;
+                     *  }
+                     *
+                     */
+
                     asm.mov(rax, ptr(r14 + vr_in1.get_offset())).unwrap();
                     asm.mov(rbx, ptr(r14 + vr_in2.get_offset())).unwrap();
-                    asm.cmp(rax, rbx).unwrap();
 
-                    match instr.flags {
-                        0b000101 => {   /* Signed | Equal */
-                            asm.jne(fallthrough).unwrap();
-                        },
-                        0b001001 => {   /* Signed | NEqual */
-                            asm.je(fallthrough).unwrap();
-                        },
-                        0b010001 => {   /* Signed | Less */
-                            asm.jnl(fallthrough).unwrap();
-                        },
-                        0b100001 => {   /* Signed | Greater */
-                            asm.jng(fallthrough).unwrap();
-                        },
-                        0b010101 => {   /* Signed | Less | Equal */
-                            asm.jnle(fallthrough).unwrap();
-                        },
-                        0b100101 => {   /* Signed | Greater | Equal */
-                            asm.jnge(fallthrough).unwrap();
-                        },
-                        0b010010 => {   /* Unsigned | Less */
-                            //asm.jae(fallthrough).unwrap();
-                            asm.jnb(fallthrough).unwrap();
-                        },
-                        0b100010 => {   /* Unsigned | Greater */
-                            asm.jna(fallthrough).unwrap();
-                        },
-                        0b010110 => {   /* Unsigned | Less | Equal */
-                            asm.jnbe(fallthrough).unwrap();
-                        },
-                        0b100110 => {   /* Unsigned | Greater | Equal */
-                            asm.jnae(fallthrough).unwrap();
-                        },
-                        _ => panic!("Unimplemented conditional branch flags")
+                    // Select wether CmpCov should be applied or not
+                    if false {
+                        // Separately compare each of the bytes used in the comparison
+                        match instr.flags {
+                            0b001001 => {
+                                // NotEqual needs to be handled differently because it can't early
+                                // exit unlike the other cases. CmpCov is also entirely unnecessary
+                                // for the NotEqual case
+                                asm.cmp(rax, rbx).unwrap();
+                                asm.je(fallthrough).unwrap();
+                            },
+                            _ => {
+                                let mut shift_amount = 56;
+                                while shift_amount >= 0 {
+                                    shifted_cmp!(shift_amount);
+                                    cond_jump!();
+                                    shift_amount -= 8;
+                                }
+                            }
+                        }
+                    } else {
+                        asm.cmp(rax, rbx).unwrap();
+                        cond_jump!();
                     }
+
 
                     let shifted = t * 2;
                     asm.mov(rbx, ptr(r15 + shifted)).unwrap();
                     asm.jmp(rbx).unwrap();
 
+                    // This means the comparison failed
                     asm.set_label(&mut fallthrough).unwrap();
                     asm.nop().unwrap();
+
                 },
                 Operation::Jmp(addr) => {
                     if let Some(jit_addr) = self.lookup(addr, Some(&local_lookup_map)) {
