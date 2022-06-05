@@ -15,11 +15,14 @@ use std::lazy::SyncLazy;
 const INPUT_SIZE: usize = 500;
 
 /// Maximum depth that scopes can go too before early returning. Without this blocks would
-/// recursively create new blocks until a stack overflow occurs
-const MAX_DEPTH: usize = 3;
+/// recursively create new blocks until a stack overflow occurs. Recommended: 8-12 for approximately 
+/// 2,000 - 200,000 lines of code. For larger complexity scores, the INPUT_SIZE should also be
+/// increased to reduce duplication
+const COMPLEXITY: usize = 8;
 
-/// Determines the amount of functions that are created outside of `main`
-const NUM_FUNCTIONS: usize = 1;
+/// Minimum depth of functions, prevents too shallow functions that just immediately crash on base
+/// case
+const MIN_DEPTH: usize = 1;
 
 /// Minimum and maximum sizes for buffer allocations in the program.
 const MIN_ALLOC_SIZE: usize = 0x20;
@@ -78,6 +81,7 @@ impl fmt::Display for Type {
             Type::Void => write!(f, "void"),
             Type::Number => write!(f, "int"),
             Type::Str => write!(f, "unsigned char *"),
+            Type::Buffer => write!(f, "unsigned char*"),
             _ => unreachable!(),
         }
     }
@@ -123,7 +127,6 @@ impl Expr {
         let num_entries = std::mem::variant_count::<Expr>();
         let rstr = std::str::from_utf8(&RNG.next_string(16, 0x61, 0x7b)).unwrap().to_string();
         let rnum = RNG.gen();
-
 
         let num_vars = vars.iter().filter(|e| e.1 == Type::Number)
             .map(|e| e.0.clone()).collect::<Vec<String>>();
@@ -202,7 +205,7 @@ impl fmt::Display for Expr {
 }
 
 const NUM_SIMPLE_OPS: usize = 2;
-const NUM_COMPLEX_OPS: usize = 2;
+const NUM_COMPLEX_OPS: usize = 1;
 
 /// Operations that can occur in the code
 #[derive(Debug, Clone)]
@@ -224,8 +227,11 @@ enum Operation {
     /// If expression alongside a true-block
     If(Expr, Block),
 
-    /// Memcpy operation into a previously allocated buffer
-    MemCpy(String, Index, String),
+    /// Used to call generated functions (name, type, args)
+    CallFunc(String, Type, Vec<Type>),
+
+    /// Insert a crash
+    Crash,
 
     // All operations below this point should not be returned by the `get_rand_op()` function, and
     // are solely used for special cases such as program initialization or inserting crashes
@@ -241,18 +247,6 @@ enum Operation {
 
     /// Used to read in the fuzz-input from the provided file
     ReadFile,
-
-    /// Used in `main` to call generated functions
-    CallFunc(String, Type, Vec<Type>),
-
-    /// Allocate a new buffer on the function stack, (var-name, size)
-    AllocStackBuf(String, usize),
-
-    /// Allocate a new buffer on the heap, (var-name, size)
-    AllocHeapBuf(String, usize),
-
-    /// Insert a crash
-    Crash,
 }
 
 impl fmt::Display for Operation {
@@ -261,15 +255,12 @@ impl fmt::Display for Operation {
             Operation::AddInts(a, b, c, d) => write!(f, "{} {} = buf[{}] + {}", a, b, c, d),
             Operation::SubInts(a, b, c, d) => write!(f, "{} {} = buf[{}] - {}", a, b, c, d),
             Operation::If(a, _) => write!(f, "if ({}) ", a),
-            Operation::AllocInputBuf => write!(f, "buf = malloc({})", INPUT_SIZE),
+            Operation::AllocInputBuf => write!(f, "unsigned char *buf = malloc({})", INPUT_SIZE),
             Operation::ArgvCheck => write!(f, "if (argc != 2) return"),
             Operation::OpenFile => write!(f, "FILE *fd = fopen(argv[1], \"r\")"),
             Operation::ReadFile => write!(f, "fgets(buf, {}, fd)", INPUT_SIZE),
             Operation::Crash => write!(f, "*(unsigned long*)0x{:x} = 0", RNG.gen()),
-            Operation::AllocStackBuf(a, b) => write!(f, "unsigned char {}[{}]", a, b),
-            Operation::AllocHeapBuf(a, b) => write!(f, "unsigned char *{} = malloc({})", a, b),
-            Operation::MemCpy(a, b, c) => write!(f, "memcpy({}, buf+{}, {})", a, b, c),
-            Operation::CallFunc(a, _, _) => write!(f, "{}()", a),
+            Operation::CallFunc(a, _, _) => write!(f, "{}(buf)", a),
         }
     }
 }
@@ -289,28 +280,15 @@ impl Operation {
     }
 
     /// Return a random more complex operation
-    fn get_complex_op(remaining_depth: usize, vars: &Vec<(String, Type)>) -> Self {
+    fn get_complex_op(program: &mut Program, vars: &Vec<(String, Type)>, complexity: usize, 
+                      depth: usize) -> Self {
         let _var_name = std::str::from_utf8(&RNG.next_string(16, 0x41, 0x7b)).unwrap().to_string();
-
-        let buf_vars = vars.iter().filter(|e| e.1 == Type::Buffer)
-            .map(|e| e.0.clone()).collect::<Vec<String>>();
-
-        let num_vars = vars.iter().filter(|e| e.1 == Type::Number)
-            .map(|e| e.0.clone()).collect::<Vec<String>>();
 
         loop {
             match RNG.next_num(NUM_COMPLEX_OPS)  {
                 0 => { 
                     return Operation::If(Expr::get_rand_expr(vars), 
-                                   Block::init_new_block(remaining_depth - 1));
-                },
-                1 => { 
-                    if buf_vars.is_empty() || num_vars.is_empty() { continue; }
-                    return Operation::MemCpy(
-                        buf_vars[RNG.next_num(buf_vars.len())].clone(), 
-                        Index(RNG.next_num(INPUT_SIZE-MAX_ALLOC_SIZE)),
-                        num_vars[RNG.next_num(num_vars.len())].clone(), 
-                        );
+                                   Block::init_new_block(program, complexity - 1, depth + 1));
                 },
                 _ => unreachable!(),
             }
@@ -321,6 +299,7 @@ impl Operation {
 /// Scoped block with allocated variables and a list of statements to be executed
 #[derive(Debug, Default, Clone)]
 pub struct Block {
+    /// Statements contained in a block
     stmt_list: Vec<Operation>,
 
     /// (Name, Type)
@@ -329,27 +308,42 @@ pub struct Block {
 
 impl Block {
     /// Create a new block initialized with random operations
-    pub fn init_new_block(remaining_depth: usize) -> Self {
+    pub fn init_new_block(program: &mut Program, complexity: usize, depth: usize) -> Self {
         let mut block = Block::default();
 
-        // Insert a crash and early return if maximum depth has been reached
-        if remaining_depth == 0 {
-            block.stmt_list.push(Operation::Crash);
-            return block;
+        // If the minimum depth has been reached, there's a chance that the block will be terminated
+        // on a crash or by calling a different function
+        if depth >= MIN_DEPTH {
+            let num = RNG.gen_range(0, complexity);
+            if num < 5 {
+                if num < 2 {
+                    // Insert crash
+                    block.stmt_list.push(Operation::Crash);
+                } else {
+                    // Insert function call
+                    let func = program.function_list.get(RNG.next_num(program.function_list.len()));
+                    
+                    // Insert a function-call unless 'main' was retrieved, or no functions exist
+                    // yet, in which case just insert a crash
+                    if let Some(f) = func {
+                        if f.name == "main" {
+                            block.stmt_list.push(Operation::Crash);
+                        } else {
+                            block.stmt_list.push(
+                                Operation::CallFunc(
+                                    f.name.clone(),
+                                    Type::Void,
+                                    Vec::new(),
+                            ));
+                        }
+                    } else {
+                        block.stmt_list.push(Operation::Crash);
+                    }
+                }
+
+                return block;
+            }
         }
-
-        // Allocate some buffers for this block that can be used in future operations
-        /*
-        let size = RNG.gen_range(MIN_ALLOC_SIZE, MAX_ALLOC_SIZE);
-
-        let var_name1 = std::str::from_utf8(&RNG.next_string(16, 0x61, 0x7b)).unwrap().to_string();
-        block.stmt_list.push(Operation::AllocStackBuf(var_name1.clone(), size));
-        block.variables.push((var_name1, Type::Buffer));
-        
-        block.stmt_list.push(Operation::AllocHeapBuf(var_name2.clone(), size));
-        let var_name2 = std::str::from_utf8(&RNG.next_string(16, 0x61, 0x7b)).unwrap().to_string();
-        block.variables.push((var_name2, Type::Buffer));
-        */
 
         // Start by inserting some simple operations to setup some variables that can later be used
         for _ in 0..RNG.gen_range(2, 5) {
@@ -368,7 +362,7 @@ impl Block {
 
         // Next insert some more complex operations
         for _ in 0..RNG.gen_range(5, 10) {
-            let op = Operation::get_complex_op(remaining_depth, &block.variables);
+            let op = Operation::get_complex_op(program, &block.variables, complexity, depth);
             block.stmt_list.push(op);
         }
         block
@@ -406,49 +400,52 @@ pub struct Function {
     body: Block,
 }
 
-impl Function {
-    pub fn new(name: &str, remaining_depth: usize) -> Self {
-        Function {
-            name: name.to_string(),
-            typ:  Type::Void,
-            arguments: Vec::new(),
-            body: Block::init_new_block(remaining_depth)
-        }
-    }
-
-    /// Create main function. It has a special case since it requires additional initialization 
-    /// routines
-    pub fn create_main(functions: &[Function]) -> Self {
-        Function {
-            name: "main".to_string(),
-            typ:  Type::Void,
-            arguments: vec![(Type::Number, "argc".to_string()), (Type::Argv, "argv".to_string())],
-            body: Block::init_main_block(functions), 
-        }
-    }
-}
-
 /// The actual program being modelled
 #[derive(Debug, Default, Clone)]
 pub struct Program {
+    /// List of generated functions
     function_list: Vec<Function>,
 }
 
 impl Program {
+    pub fn default() -> Self {
+        Self {
+            function_list: Vec::new(),
+        }
+    }
+
     /// Start creation of the program
     pub fn create_program() -> Program {
         let mut program = Program::default();
 
         // Create random generated functions that can be called from main
-        for i in 0..NUM_FUNCTIONS {
+        for i in 0..COMPLEXITY {
             let func_name = format!("func_{}", i+1);
-            program.function_list.push(Function::new(&func_name, MAX_DEPTH));
+            let func = Function {
+                    name: func_name.to_string(),
+                    typ:  Type::Void,
+                    arguments: vec![(Type::Buffer, "buf".to_string())],
+                    body: Block::init_new_block(&mut program.clone(), COMPLEXITY, 0)
+                };
+            program.function_list.push(func);
         }
 
         // Create main function
-        program.function_list.push(Function::create_main(&program.function_list));
+        program.create_main();
 
         program
+    }
+
+    /// Create main function. It has a special case since it requires additional initialization 
+    /// routines
+    fn create_main(&mut self) {
+        self.function_list.push(
+            Function {
+                name: "main".to_string(),
+                typ:  Type::Void,
+                arguments: vec![(Type::Number, "argc".to_string()), (Type::Argv, "argv".to_string())],
+                body: Block::init_main_block(&self.function_list), 
+            });
     }
 }
 

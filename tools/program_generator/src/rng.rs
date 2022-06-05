@@ -49,11 +49,18 @@ impl Rng {
 
     /// Return a random number up to `max`
     pub fn next_num(&self, max: usize) -> usize {
+        if max == 0 {
+            return 0;
+        }
         self.rng.lock().unwrap().next_u64() as usize % max
     }
 
     /// Return a random value in the range min..max, inclusive of min and exclusive of max
     pub fn gen_range(&self, min: usize, max: usize) -> usize {
+        if max == min {
+            return min;
+        }
+
         (self.rng.lock().unwrap().next_u64() as usize % (max - min)) + min
     }
 }

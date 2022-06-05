@@ -55,8 +55,16 @@ impl Compiler {
         self.code.push_str("#include <stdio.h>\n");
         self.code.push_str("#include <stdlib.h>\n");
         self.code.push_str("#include <string.h>\n\n");
-        self.code.push_str("unsigned char *buf;\n\n");
 
+        for func in &self.program.function_list {
+            let name = &func.name;
+            if name != "main" {
+                self.code.push_str(&format!("void {}(unsigned char *buf);\n", name));
+            }
+        }
+        self.code.push('\n');
+
+        // Traverse function list in reverse and translate each to C
         for i in 0..self.program.function_list.len() {
             self.translate_function_header(i);
             self.translate_function_body(i);
@@ -142,6 +150,7 @@ pub fn compile(program: Program) {
             .arg("generated_program.c")
             .arg("-o")
             .arg("generated_program")
+            .arg("-g")
             .status()
             .unwrap()
             .success());
