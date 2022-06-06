@@ -245,7 +245,7 @@ fn main() -> std::io::Result<()> {
         let elapsed_time = start.elapsed().as_secs_f64();
 
         // Check if we got new coverage
-        if received.coverage != 0 {
+        if received.coverage != 0 || received.cmpcov != 0 {
             last_cov_event = elapsed_time;
         }
 

@@ -159,7 +159,7 @@ fn pretty_stats(term: &Term, stats: &Statistics, elapsed_time: f64, timeout: u64
     ).unwrap();
 
     // Corpus stats
-    term.move_cursor_to(54, 14).unwrap();
+    term.move_cursor_to(54, 15).unwrap();
     term.write_line(&format!("{}", Blue("Corpus"))).unwrap();
     term.move_cursor_to(54, 15).unwrap();
     term.write_line(&format!("   Num Entries: {}", corpus.inputs.read().len())).unwrap();

@@ -580,7 +580,18 @@ impl Jit {
                                     cond_jump!();
                                     insert_cmpcov!(base + i);
                                 }
-                            }
+                            },
+                            0b001001 => {   /* Signed | NEqual */
+                                let base = self.cmpcov_count.fetch_add(8, Ordering::SeqCst);
+                                let mut shorted_jmp = asm.create_label();
+                                for i in 0..8 {
+                                    shifted_cmp!(i*8);
+                                    asm.jne(shorted_jmp).unwrap();
+                                    insert_cmpcov!(base + i);
+                                }
+                                asm.jmp(fallthrough).unwrap();
+                                asm.set_label(&mut shorted_jmp).unwrap();
+                            },
                             _ => {
                                 asm.cmp(rax, rbx).unwrap();
                                 cond_jump!();
