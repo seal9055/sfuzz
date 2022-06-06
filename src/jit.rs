@@ -319,7 +319,6 @@ impl Jit {
             ($pc: expr) => {
                 let mut fallthrough = asm.create_label();
 
-                // {rbx} = previous_block ^ cur_block = current_hash
                 asm.mov(rax, (($pc as u64) << 32)).unwrap();
                 asm.mov(rbx, ptr(r8+0x40)).unwrap();
                 asm.add(rbx, rax).unwrap();
@@ -336,6 +335,14 @@ impl Jit {
 
                 asm.shl(rax, 43).unwrap();
                 asm.xor(rbx, rax).unwrap();
+
+                if *COV_METHOD.get().unwrap() == CovMethod::CallStack {
+                    // Apply evolving call-stack hash to calculated hash and update this inputs 
+                    // evolving hash
+                    asm.mov(rax, ptr(r8+0x38)).unwrap();
+                    asm.xor(rbx, rax).unwrap();
+                    asm.mov(ptr(r8+0x38), rbx).unwrap();
+                }
 
                 // Extract only the bottom 24-bits for our hashtable index
                 asm.and(rbx, 0xffffff).unwrap();
@@ -356,11 +363,6 @@ impl Jit {
 
                 // Not a new coverage case, do standard hash updates
                 asm.set_label(&mut fallthrough).unwrap();
-
-                // Update this inputs evolving hash
-                asm.mov(rax, ptr(r8+0x38)).unwrap();
-                asm.xor(rax, rbx).unwrap();
-                asm.mov(ptr(r8+0x38), rax).unwrap();
 
                 // Update the previous block indicator
                 asm.mov(dword_ptr(r8+0x40), $pc as u32).unwrap();
@@ -423,7 +425,8 @@ impl Jit {
                     // Track coverage if coverage tracking is enabled
                     if *COV_METHOD.get().unwrap() == CovMethod::Block {
                         new_block_coverage!(pc);
-                    } else if *COV_METHOD.get().unwrap() == CovMethod::Edge {
+                    } else if *COV_METHOD.get().unwrap() == CovMethod::Edge || 
+                        *COV_METHOD.get().unwrap() == CovMethod::CallStack {
                         new_edge_coverage!(pc);
                     }
 

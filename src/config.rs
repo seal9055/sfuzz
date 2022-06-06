@@ -53,11 +53,15 @@ pub enum CovMethod {
     /// Don't track coverage
     None,
 
-    /// Track block level coverage without hit-counters (basically free performance wise)
+    /// Track block level coverage 
     Block,
 
-    /// Track edge level coverage without hit-counters
+    /// Track edge level coverage
     Edge,
+
+    /// Track edge level coverage alongside a call-stack hash to get more fine-grained coverage
+    /// results
+    CallStack,
 }
 
 /// Used by clap to parse command-line arguments
@@ -130,7 +134,7 @@ pub struct Cli {
     pub dictionary: Option<String>,
 
     #[clap(short = 'c', help_heading = "CONFIG", default_value = "edge")]
-    /// - Coverage method, currently supports `edge` coverage and `block` coverage
+    /// - Coverage method, currently supports `edge`, `block`, and `call-stack` based coverage
     pub cov_method: String,
 
     #[clap(last = true)]
@@ -214,9 +218,12 @@ pub fn handle_cli(args: &mut Cli) {
         "block" => {
             COV_METHOD.set(CovMethod::Block).unwrap();
         },
+        "call-stack" => {
+            COV_METHOD.set(CovMethod::CallStack).unwrap();
+        },
         _ => {
-            error_exit("You're specified coverage method is not supported, please chose `edge` or \
-                       `block`")
+            error_exit("You're specified coverage method is not supported, please chose `edge`, \
+                       `block`, or `call-stack`")
         },
     }
 
