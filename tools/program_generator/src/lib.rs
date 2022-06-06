@@ -18,7 +18,7 @@ const INPUT_SIZE: usize = 500;
 /// recursively create new blocks until a stack overflow occurs. Recommended: 8-12 for approximately 
 /// 2,000 - 200,000 lines of code. For larger complexity scores, the INPUT_SIZE should also be
 /// increased to reduce duplication
-const COMPLEXITY: usize = 8;
+const COMPLEXITY: usize = 9;
 
 /// Minimum depth of functions, prevents too shallow functions that just immediately crash on base
 /// case

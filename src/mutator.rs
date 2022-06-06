@@ -1,3 +1,5 @@
+use crate::config::DICT_FILE;
+
 use rand_xoshiro::rand_core::RngCore;
 use rand_xoshiro::Xoroshiro64Star;
 use rand_xoshiro::rand_core::SeedableRng;
@@ -13,6 +15,7 @@ pub enum Mutation {
     RemoveBlock,
     DupBlock,
     Resize,
+    Dictionary,
 }
 
 #[derive(Debug, Clone)]
@@ -25,6 +28,28 @@ pub struct Mutator {
 
     /// Count-down to havoc mode
     havoc_counter: usize,
+
+    dictionary: Option<Vec<String>>,
+}
+
+use std::fs::File;
+use std::io::{self, BufRead};
+use std::path::Path;
+
+fn read_lines<P>(file_name: P) -> io::Result<io::Lines<io::BufReader<File>>>
+where P: AsRef<Path>, {
+    let file = File::open(file_name)?;
+    Ok(io::BufReader::new(file).lines())
+}
+
+pub fn parse_dict(file_name: &str) -> Vec<String> {
+    let mut dict: Vec<String> = Vec::new();
+    if let Ok(lines) = read_lines(file_name) {
+        for line in lines {
+            dict.push(line.unwrap());
+        }
+    }
+    dict
 }
 
 impl Mutator {
@@ -42,10 +67,20 @@ impl Mutator {
         mut_strats.append(&mut (0..30).map(|_|   { Mutation::DupBlock }).collect());
         mut_strats.append(&mut (0..10).map(|_|   { Mutation::Resize }).collect());
 
+        // If the user specified a dictionary to be used while fuzzing, parse it and add dictionary
+        // replacements to the fuzz methods
+        let dict_vec = if let Some(dict) = DICT_FILE.get().unwrap() {
+            mut_strats.append(&mut (0..30).map(|_|   { Mutation::Dictionary }).collect());
+            Some(parse_dict(dict))
+        } else {
+            None
+        };
+
         Self {
             rng: Xoroshiro64Star::seed_from_u64(0),
             mutation_strats: mut_strats,
             havoc_counter: 0,
+            dictionary: dict_vec,
         }
     }
 
@@ -236,6 +271,20 @@ impl Mutator {
         Ok(())
     }
 
+    /// Replace some of the input bytes with a provided dictionary entry
+    fn dict_replace(&mut self, input: &mut Vec<u8>) -> Result<(), ()> {
+        let dict_idx = self.rng.next_u32() as usize % self.dictionary.as_ref().unwrap().len();
+        let entry = self.dictionary.as_ref().unwrap()[dict_idx].as_bytes();
+
+        if input.len() <= entry.len() { return Err(()); }
+        let input_idx = self.rng.next_u64() as usize % (input.len() - entry.len());
+        for (i, j) in (input_idx..(input_idx + entry.len())).enumerate() {
+            input[j] = entry[i];
+        }
+
+        Ok(())
+    }
+
     /// Chose a random mutation strategy
     fn chose_mut(&mut self) -> Mutation {
         let tmp_rand = self.rng.next_u32() as usize % self.mutation_strats.len();
@@ -264,11 +313,12 @@ impl Mutator {
                 let res = match mutation {
                     Mutation::ByteReplace      => self.byte_replace(input),
                     Mutation::BitFlip          => self.bit_flip(input),
-                    Mutation::MagicNum        => self.magic_nums(input),
+                    Mutation::MagicNum         => self.magic_nums(input),
                     Mutation::SimpleArithmetic => self.simple_arithmetic(input),
                     Mutation::RemoveBlock      => self.remove_block(input),
                     Mutation::DupBlock         => self.duplicate_block(input),
                     Mutation::Resize           => self.resize(input),
+                    Mutation::Dictionary       => self.dict_replace(input),
                 };
 
                 // If the chosen strategy failed, chose a different mutation and rerun the

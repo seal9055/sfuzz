@@ -6,7 +6,8 @@ use sfuzz::{
     jit::{Jit, LibFuncs},
     pretty_printing::{print_stats, log, LogType},
     Input, Corpus, Statistics, error_exit, load_elf_segments, worker, snapshot, calibrate_seeds,
-    config::{handle_cli, Cli, SNAPSHOT_ADDR, OVERRIDE_TIMEOUT, NUM_THREADS, MAX_GUEST_ADDR},
+    config::{handle_cli, Cli, SNAPSHOT_ADDR, OVERRIDE_TIMEOUT, NUM_THREADS, MAX_GUEST_ADDR, 
+        RUN_CASES},
 };
 use std::thread;
 use std::sync::{Arc, Mutex};
@@ -244,6 +245,7 @@ fn main() -> std::io::Result<()> {
     for received in rx {
         let elapsed_time = start.elapsed().as_secs_f64();
 
+
         // Check if we got new coverage
         if received.coverage != 0 || received.cmpcov != 0 {
             last_cov_event = elapsed_time;
@@ -261,6 +263,13 @@ fn main() -> std::io::Result<()> {
         if last_time.elapsed() >= Duration::from_millis(500) {
             print_stats(&term, &stats, elapsed_time, emu.timeout, &corpus, last_cov_event);
             last_time = Instant::now();
+        }
+
+        if let Some(max_cases) = RUN_CASES.get().unwrap() {
+            if stats.total_cases >= *max_cases {
+                error_exit("Fuzzer reached specified maximum number of total cases");
+
+            }
         }
     }
 

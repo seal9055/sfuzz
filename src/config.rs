@@ -17,6 +17,9 @@ pub static NUM_THREADS: SyncOnceCell<usize> = SyncOnceCell::new();
 /// Path to directory to which fuzzer-outputs are saved
 pub static OUTPUT_DIR: SyncOnceCell<String> = SyncOnceCell::new();
 
+/// File that contains the user-supplied dictionary
+pub static DICT_FILE: SyncOnceCell<Option<String>> = SyncOnceCell::new();
+
 /// Input provided as argument to the target being fuzzed
 pub static FUZZ_INPUT: SyncOnceCell<String> = SyncOnceCell::new();
 
@@ -38,6 +41,9 @@ pub static OVERRIDE_TIMEOUT: SyncOnceCell<Option<u64>> = SyncOnceCell::new();
 /// hours to write out a single case, only enable when debugging the JIT. Only works when fuzzer is
 /// being run single-threaded
 pub static FULL_TRACE: SyncOnceCell<bool> = SyncOnceCell::new();
+
+/// Amount of cases that will be run before the fuzzer automatically shuts down
+pub static RUN_CASES: SyncOnceCell<Option<usize>> = SyncOnceCell::new();
 
 /// Size of memory space allocated for each thread's virtual address space
 pub const MAX_GUEST_ADDR: usize = 64 * 1024 * 1024;
@@ -81,7 +87,7 @@ pub struct Cli {
     /// - The number of threads to run this fuzzer with
     pub num_threads: usize,
 
-    #[clap(short = 'N', help_heading = "CONFIG", takes_value = false)]
+    #[clap(short = 'p', help_heading = "CONFIG", takes_value = false)]
     /// - Disables permission checking, highly discouraged since it will cause the fuzzer itself to
     /// segfault when the target crashes due to being run in an emulator
     pub no_perm_checks: bool,
@@ -95,7 +101,7 @@ pub struct Cli {
     /// - File extension for the fuzz test input file if the target requires it
     pub extension: Option<String>,
 
-    #[clap(short = 'd', help_heading = "CONFIG", takes_value = false)]
+    #[clap(short = 'D', help_heading = "CONFIG", takes_value = false)]
     /// - Enable a rolling debug-print and information on which functions are lifted instead of the
     /// default print-window
     pub debug_print: bool,
@@ -109,10 +115,19 @@ pub struct Cli {
     /// - Override the timeout that is otherwise dynamically set during calibration phase
     pub override_timeout: Option<u64>,
 
+    #[clap(short = 'r', help_heading = "CONFIG")]
+    /// - Optionally set the amount of cases to be run before the fuzzer shuts down
+    pub run_cases: Option<String>,
+
     #[clap(short = 'f', help_heading = "CONFIG", takes_value = false)]
     /// - Collect a full register trace of program execution. Only enable while debugging, majorly
     /// slows down performance. Only works when fuzzer is run single-threaded
     pub full_trace: bool,
+
+    #[clap(short = 'd', value_name = "DICT", help_heading = "CONFIG", forbid_empty_values = true)]
+    /// - Optionally supply a new-line separated list of inputs that will be mutated into the 
+    /// fuzz-inputs
+    pub dictionary: Option<String>,
 
     #[clap(short = 'c', help_heading = "CONFIG", default_value = "edge")]
     /// - Coverage method, currently supports `edge` coverage and `block` coverage
@@ -145,6 +160,15 @@ pub fn handle_cli(args: &mut Cli) {
     }
     OUTPUT_DIR.set(args.output_dir.clone()).unwrap();
 
+    if let Some(dict) = &args.dictionary {
+        if !std::path::Path::new(&dict).is_file() {
+            error_exit("You need to specify a valid dictionary file");
+        }
+        DICT_FILE.set(Some(dict.to_string())).unwrap();
+    } else {
+        DICT_FILE.set(None).unwrap();
+    }
+
     // Create the directory to save crashes too
     let mut crash_dir = args.output_dir.clone();
     crash_dir.push_str("/crashes");
@@ -172,6 +196,14 @@ pub fn handle_cli(args: &mut Cli) {
         SNAPSHOT_ADDR.set(Some(num_repr)).unwrap();
     } else {
         SNAPSHOT_ADDR.set(None).unwrap();
+    }
+
+    // Set max number of cases if requested
+    if let Some(runs) = &args.run_cases {
+        let num_repr = parse::<usize>(&runs).unwrap();
+        RUN_CASES.set(Some(num_repr)).unwrap();
+    } else {
+        RUN_CASES.set(None).unwrap();
     }
 
     // Set the coverage collection method

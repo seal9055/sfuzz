@@ -1,5 +1,6 @@
 use crate::{
-    config::{COV_METHOD, NO_PERM_CHECKS, SNAPSHOT_ADDR, NUM_THREADS, DEBUG_PRINT, CMP_COV},
+    config::{COV_METHOD, NO_PERM_CHECKS, SNAPSHOT_ADDR, NUM_THREADS, DEBUG_PRINT, CMP_COV, 
+        RUN_CASES},
     Statistics, Corpus,
 };
 
@@ -143,11 +144,16 @@ fn pretty_stats(term: &Term, stats: &Statistics, elapsed_time: f64, timeout: u64
     term.write_line(&format!("   Time since last cov: {:02}:{:02}:{:02}", 
                     cov_hr, cov_min, cov_sec)).unwrap();
 
+    let run_cases = match RUN_CASES.get().unwrap() {
+        Some(v) => format!("{}", v),
+        None => "No Limit".to_string(),
+    };
+
     // Config information
     term.move_cursor_down(1).unwrap();
     term.write_line(
         &format!("\t{}\n\t   Num Threads: {}\n\t   Coverage type: {:?}\n\t   \
-        Snapshots enabled: {}\n\t   ASAN: {}\n\t   Timeout: {}\n\t   CmpCov: {}",
+        Snapshots enabled: {}\n\t   ASAN: {}\n\t   Timeout: {}\n\t   CmpCov: {}\n\t   Max runs: {}",
         Blue("Config"), 
         NUM_THREADS.get().unwrap(),
         COV_METHOD.get().unwrap(),
@@ -155,15 +161,15 @@ fn pretty_stats(term: &Term, stats: &Statistics, elapsed_time: f64, timeout: u64
         !NO_PERM_CHECKS.get().unwrap(),
         timeout.to_formatted_string(&Locale::en),
         CMP_COV.get().unwrap(),
-        )
-    ).unwrap();
+        run_cases,
+    )).unwrap();
 
     // Corpus stats
     term.move_cursor_to(54, 15).unwrap();
     term.write_line(&format!("{}", Blue("Corpus"))).unwrap();
-    term.move_cursor_to(54, 15).unwrap();
-    term.write_line(&format!("   Num Entries: {}", corpus.inputs.read().len())).unwrap();
     term.move_cursor_to(54, 16).unwrap();
+    term.write_line(&format!("   Num Entries: {}", corpus.inputs.read().len())).unwrap();
+    term.move_cursor_to(54, 17).unwrap();
     term.write_line(&format!("   Avg Instrs per case: {}", 
                              (stats.instr_count / stats.total_cases as u64)
                              )).unwrap();
