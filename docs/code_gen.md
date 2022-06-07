@@ -124,7 +124,7 @@ In my implementation, the steps to generate this ssa form are divided up into 4 
     from the first block to the join block because it is the earliest block that strictly dominates
     it.
 
-<p style="text-align:center;"><img src="resources/domtree.png" alt="Dominator Tree" height="75%"
+<p style="text-align:center;"><img src="../resources/domtree.png" alt="Dominator Tree" height="75%"
 width="75%"/></p>
 <p style="text-align:center;"<i>F3</i></p>
 
