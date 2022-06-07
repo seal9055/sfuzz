@@ -289,7 +289,7 @@ mod tests {
 
     #[test]
     fn normal_valid_allocation() {
-        let mut mem = Mmu::new(8 * 1024 * 1024);
+        let mut mem = Mmu::new(12 * 1024 * 1024);
 
         if mem.allocate(0x40, Perms::READ | Perms::WRITE).is_none() {
             panic!("Something went wrong during allocation");
@@ -298,7 +298,7 @@ mod tests {
 
     #[test]
     fn very_large_allocation() {
-        let mut mem = Mmu::new(8 * 1024 * 1024);
+        let mut mem = Mmu::new(12 * 1024 * 1024);
 
         if mem.allocate(8 * 1024 * 1024, Perms::READ | Perms::WRITE).is_some() {
             panic!("Should have errored out due to large size");
@@ -307,7 +307,7 @@ mod tests {
 
     #[test]
     fn multiple_allocations() {
-        let mut mem = Mmu::new(8 * 1024 * 1024);
+        let mut mem = Mmu::new(12 * 1024 * 1024);
         let mut addrs = Vec::new();
         let mut i = 0;
 
@@ -323,7 +323,7 @@ mod tests {
 
     #[test]
     fn zero_allocation() {
-        let mut mem = Mmu::new(8 * 1024 * 1024);
+        let mut mem = Mmu::new(12 * 1024 * 1024);
         let mut _addr1: usize = 0;
         let mut _addr2: usize = 0;
 
@@ -345,7 +345,7 @@ mod tests {
 
     #[test]
     fn normal_valid_allocation_check_perms() {
-        let mut mem = Mmu::new(8 * 1024 * 1024);
+        let mut mem = Mmu::new(12 * 1024 * 1024);
         let mut _addr: usize = 0;
 
         if let Some(x) = mem.allocate(0x40, Perms::READ | Perms::WRITE) {
@@ -358,7 +358,7 @@ mod tests {
 
     #[test]
     fn normal_valid_free() {
-        let mut mem = Mmu::new(8 * 1024 * 1024);
+        let mut mem = Mmu::new(12 * 1024 * 1024);
         let mut _addr: usize = 0;
 
         if let Some(x) = mem.allocate(0x40, Perms::READ | Perms::WRITE) {
@@ -389,7 +389,7 @@ mod tests {
 
     #[test]
     fn double_free() {
-        let mut mem = Mmu::new(8 * 1024 * 1024);
+        let mut mem = Mmu::new(12 * 1024 * 1024);
         let mut _addr: usize = 0;
 
         if let Some(x) = mem.allocate(0x40, Perms::READ | Perms::WRITE) {
@@ -409,7 +409,7 @@ mod tests {
 
     #[test]
     fn multiple_frees() {
-        let mut mem = Mmu::new(8 * 1024 * 1024);
+        let mut mem = Mmu::new(12 * 1024 * 1024);
         let mut addrs = Vec::new();
         let mut i = 0;
 
@@ -430,7 +430,7 @@ mod tests {
 
     #[test]
     fn normal_valid_segmentloader() {
-        let mut mem = Mmu::new(8 * 1024 * 1024);
+        let mut mem = Mmu::new(12 * 1024 * 1024);
         let seg = elfparser::ProgramHeader {
             seg_type: 0x1,
             flags: 0x5,
@@ -458,7 +458,7 @@ mod tests {
 
     #[test]
     fn load_multiple_segments() {
-        let mut mem = Mmu::new(8 * 1024 * 1024);
+        let mut mem = Mmu::new(12 * 1024 * 1024);
         let seg1 = elfparser::ProgramHeader {
             seg_type: 0x1,
             flags: 0x5,
@@ -510,7 +510,7 @@ mod tests {
 
     #[test]
     fn valid_write_mem() {
-        let mut mem = Mmu::new(8 * 1024 * 1024);
+        let mut mem = Mmu::new(12 * 1024 * 1024);
         let seg = elfparser::ProgramHeader {
             seg_type: 0x1,
             flags: 0x2,
@@ -534,7 +534,7 @@ mod tests {
 
     #[test]
     fn writing_nonwriteable_memory() {
-        let mut mem = Mmu::new(8 * 1024 * 1024);
+        let mut mem = Mmu::new(12 * 1024 * 1024);
         let seg = elfparser::ProgramHeader {
             seg_type: 0x1,
             flags: 0x1,
@@ -558,7 +558,7 @@ mod tests {
 
     #[test]
     fn valid_read_mem() {
-        let mut mem = Mmu::new(8 * 1024 * 1024);
+        let mut mem = Mmu::new(12 * 1024 * 1024);
         let seg = elfparser::ProgramHeader {
             seg_type: 0x1,
             flags: 0x4,
@@ -583,7 +583,7 @@ mod tests {
 
     #[test]
     fn read_from_nonreadable_memory() {
-        let mut mem = Mmu::new(8 * 1024 * 1024);
+        let mut mem = Mmu::new(12 * 1024 * 1024);
         let seg = elfparser::ProgramHeader {
             seg_type: 0x1,
             flags: 0x2,
@@ -608,7 +608,7 @@ mod tests {
 
     #[test]
     fn valid_read_at() {
-        let mut mem = Mmu::new(8 * 1024 * 1024);
+        let mut mem = Mmu::new(12 * 1024 * 1024);
         let load_data = vec![0x1u8; 0x200];
         let addr = mem.allocate(0x100, Perms::READ | Perms::WRITE).unwrap();
 
@@ -628,7 +628,7 @@ mod tests {
     #[test]
     #[should_panic]
     fn invalid_perms_read_at() {
-        let mut mem = Mmu::new(8 * 1024 * 1024);
+        let mut mem = Mmu::new(12 * 1024 * 1024);
         let load_data = vec![0x1u8; 0x200];
         let addr = mem.allocate(0x100, Perms::READ | Perms::WRITE).unwrap();
 

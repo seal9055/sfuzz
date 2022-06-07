@@ -1351,10 +1351,10 @@ mod tests {
         asm.sub(rax, rax).unwrap();
         asm.ret().unwrap();
 
-        jit.add_jitblock(&asm.assemble(0x0).unwrap(), Some(0x1234));
-        jit.add_jitblock(&asm.assemble(0x0).unwrap(), Some(0x4444));
-        jit.add_jitblock(&asm.assemble(0x0).unwrap(), Some(0x9055));
-        jit.add_jitblock(&asm.assemble(0x0).unwrap(), Some(0x1000));
+        jit.add_jitblock(&asm.assemble(0x0).unwrap(), Some(0x1234), None);
+        jit.add_jitblock(&asm.assemble(0x0).unwrap(), Some(0x4444), None);
+        jit.add_jitblock(&asm.assemble(0x0).unwrap(), Some(0x9055), None);
+        jit.add_jitblock(&asm.assemble(0x0).unwrap(), Some(0x1000), None);
 
         jit.lookup(0x1234, None).unwrap();
         jit.lookup(0x4444, None).unwrap();
@@ -1366,7 +1366,6 @@ mod tests {
     fn asm_lookup() {
         let jit = Jit::new(16 * 1024 * 1024);
         let mut asm = CodeAssembler::new(64).unwrap();
-        let mut local_lookup_map: FxHashMap<usize, usize> = FxHashMap::default();
         let mut result1: usize;
         let mut result2: usize;
         let mut result3: usize;
@@ -1376,10 +1375,10 @@ mod tests {
         asm.sub(rax, rax).unwrap();
         asm.ret().unwrap();
 
-        jit.add_local_lookup(&mut local_lookup_map, &asm.assemble(0x0).unwrap(), 0x1234);
-        jit.add_local_lookup(&mut local_lookup_map, &asm.assemble(0x0).unwrap(), 0x4444);
-        jit.add_local_lookup(&mut local_lookup_map, &asm.assemble(0x0).unwrap(), 0x9055);
-        jit.add_local_lookup(&mut local_lookup_map, &asm.assemble(0x0).unwrap(), 0x1000);
+        jit.add_jitblock(&asm.assemble(0x0).unwrap(), Some(0x1234), None);
+        jit.add_jitblock(&asm.assemble(0x0).unwrap(), Some(0x4444), None);
+        jit.add_jitblock(&asm.assemble(0x0).unwrap(), Some(0x9055), None);
+        jit.add_jitblock(&asm.assemble(0x0).unwrap(), Some(0x1000), None);
 
         unsafe {
                 asm!(r#"

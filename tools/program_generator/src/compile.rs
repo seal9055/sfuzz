@@ -9,7 +9,7 @@ const DEBUG_PRINT: bool = false;
 const WRITE_TO_DISK: bool = true;
 
 /// Compiler used to compile the c-code once generated
-const COMPILER: &str = "/opt/riscv/bin/riscv64-unknown-elf-gcc";
+const COMPILER: &str = "gcc";
 
 /// Contains information that the compiler functions require while generating the c code from the
 /// intermediate representation

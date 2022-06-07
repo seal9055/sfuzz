@@ -14,124 +14,64 @@ I will most likely reattempt this in the future.
 
 #### Overview
 
-This emulator makes use of a custom just-in-time compiler for all of its execution. The code
-generation is a multi-step process that leads to a 20-50x performance increase over
-pure emulation.
+This emulator makes use of a custom just-in-time compiler for all of its execution. The code generation is a multi-step process that leads to a 20-50x performance increase over pure emulation. 
 
-Once execution is started, each individual emulator thread has the ability to compile new code.
-Whenever the emulator runs into a function that we have not yet compiled it invokes a mutex on the
-JIT code backend and attempts to compile the entire function into the JIT backend before resuming
-execution. While this mutex does have performance costs due to stopping all other threads,
-it allows us to have one memory region of code that all threads can make use off, thus only having 
-to compile each function once which ultimately leads to both memory and performance improvements. 
-Once the compilation is completed, the mutex is unlocked and the address of the newly generated code 
-is returned to the calling emulator which can then resume execution. At this point all other threads
-can also access this newly compiled code via the translation table.<br>
+Once execution is started, each individual emulator thread has the ability to compile new code. Whenever the emulator runs into a function that we have not yet compiled it invokes a lock on the JIT code backend and attempts to compile the entire function into the JIT backend before resuming execution. This lock only stops other threads from adding new code to the JIT-backing during compilation without stopping them from using the JIT-backing. This means that one thread compiling new code has basically no impact on any of the other threads, making this lock mostly free while providing 1 uniform memory region that contains all of the compiled code for all threads. Once the compilation is completed, the mutex is unlocked and the addresses of the newly generated code are added to the JIT lookup table. At this point, the compiling thread can resume fuzzer execution and all other threads can access this newly compiled code via the translation table.
 
 Most of the code pertaining to code-generation can be found in [jit.rs](https://github.com/seal9055/sfuzz/blob/main/src/jit.rs), [irgraph.rs](https://github.com/seal9055/sfuzz/blob/main/src/irgraph.rs), and [emulator.rs](https://github.com/seal9055/sfuzz/blob/main/src/emulator.rs). More detailed descriptions of some of these processes are provided below.
 
 #### Lifting a Function to Custom IR
-The first step of actual code generation is to lift the entire function into an intermediate
-representation. The size of the function is determined during the initialization phase when first
-loading the target. This is done by parsing the elf metadata and setting up a hashmap mapping
-function start addresses to their sizes. <br>
+The first step of actual code generation is to lift the entire function into an intermediate representation. The size of the function is determined during the initialization phase when first loading the target. This is done by parsing the elf metadata and setting up a hashmap mapping function start addresses to their sizes.<br>
 
-This process basically just iterates through all original instructions and creates an IR
-instruction based on the original instruction using large switch statement. The below example
-imitates how the intermediate representation may look like for a very minimal function that
-pretty much just performs a branch based on a comparison in the first block.
+The IR-lifting just iterates through the original instructions and creates an IR instruction based on the original instruction using a large switch statement. The below example imitates how the intermediate representation may look like for a very minimal function that pretty much just performs a branch based on a comparison in the first block.
 ```
 Label @ 0x1000
-0x001000  A0 = 0x14
-0x001004  A1 = 0xA
-0x001008  if A0 == A1 (0x100C, 0x1028)
+Label @ 0x1000
+0x001000 A0 = 0x14
+0x001004 A1 = 0xA
+0x001008 if A0 == A1 (0x100C, 0x1028)
 
 Label @ 0x100C
-0x00100C  A2 = A0 + A1
-0x001010  A3 = 0x1
-0x001014  Jmp 0x1018
+0x00100C A2 = A0 + A1
+0x001010 A3 = 0x1
+0x001014 Jmp 0x1018
 
 Label @ 0x1018
-0x000000  A4 = A2 + 0x5
-0x000000  A5 = A4 + 0x1
-0x000000  A6 = A3 + 0x0
-0x001024  Jmp 0x1034
+0x001024 Jmp 0x1034
 
 Label @ 0x1028
-0x001028  A2 = A0 - A1
-0x00102C  A3 = 0x2
-0x001030  Jmp 0x1018
+0x001028 A2 = A0 - A
+0x00102C A3 = 0x2
+0x001030 Jmp 0x1018
 
 Label @ 0x1034
-0x001034  Ret
+0x001034 Ret
 ```
 <p style="text-align:center;"<i>F1</i></p>
 
-There are a couple of things to note here that may not be obvious. The addresses in the left
-column represent the addresses from the original RISCV executable. Since this is a JIT compiler,
-these addresses need to be maintained to dynamically translate jumps to functions that we
-may not yet have compiled. Some of the addresses above however list 0x0. This is because the
-intermediate representation sometimes needs more instructions to represent an original RISCV
-instruction and thus only the first IR instruction corresponding to a RISCV instruction gets
-an address. Also note how the register names still represent the original RISCV registers. 
-This is important to correctly map special registers such as the Zero register or distinguish 
-between callee-saved/caller-saves registers later.<br>
+At this point, I attempted a couple of different approaches before settling on the current code generation procedure. My first approach was to first transform the above IR code into single static assignment form. This allows for stronger optimizations and is a very popular choice for modern compilers. Next, I used a linear scan register allocator to assign registers to the code and compile the final code.
 
-At this point I attempted a couple of different approaches before settling on the current code
-generation procedure. My first approach was to first transform the above IR code into single static
-assignment form. This allows for stronger optimizations and is a very populat choice for modern
-compilers. Next I used a linear scan register allocator to assign registers to the code and compile
-the final code.
+This approach resulted in multiple issues that led to me eventually abandoning it in favor of the current implementation. Some of the reasons as to why I changed my approach are listed below.
 
-This approach led to multiple issues that led to me eventually abandoning it in favor of the current
-implementation. Some of the reasons are listed below.
+1. **Debugging** - Since this is meant to be a fuzzer, being able to properly debug crashes, or at least 
+    print out register states is important. After doing register allocation, determining which x86 register is allocated to each RISCV register at runtime to print out useful information is very difficult.
 
-1. **Debugging** - Since this is meant to be a fuzzer, being able to properly debug crashes, or at
-   least print out register states is important. After doing register allocation, determining which
-   X86 register is allocated for each RISCV register at runtime to print out useful information is
-   very difficult.
+2. **Extendability** - When it comes to register allocation, a lot of the backend features (eg. A0-A7 for 
+    arguments, or syscall number in A7) are architecture-dependent. This makes it a lot harder to write the backend in a way that can be extended with new architectures by just adding a front end.
 
-2. **Extendability** - When it comes to register allocation, a lot of the backend features (eg.
-   A0-A7 for arguments, or syscall number in A7) are architecture dependent. This makes it a lot
-   harder to write the backend in a way that can be extended with new architectures by just adding a
-   front end.
+3. **Performance** - In theory, the ssa/regalloc approach will lead to better final code. In this case, 
+    however, since it's a binary translator, a lot of registers such as function arguments or stack pointers have to be hardcoded to x86 registers since we don't have important information such as the number of arguments when translating binary -> binary. This in addition to the meta-data required by the JIT (pointer to memory, permissions, JIT lookup table, register spill-stack, etc) led to most x86 registers being in use, leaving only 4 x86 registers available for the actual register allocation in my approach. This could obviously be greatly improved upon, but this would require a lot more time to achieve comparable results.
 
-3. **Performance** - In theory the ssa/regalloc approach can lead to better final code. In this case
-   however, since its a binary translator, a lot of registers such as function arguments or stack
-   pointers had to be hardcoded to x86 registers since we don't have information such as number of
-   arguments when translating binary -> binary. This in addition with the meta-data required by the
-   JIT (pointer to memory, permissions, JIT lookup table and register spill-stack) led to most X86
-   registers being in use, leaving only 4 X86 registers available for the actual register allocation
-   in my approach. This could obviously be greatly improved upon, but this would require a lot more
-   time to achieve comparable results.
+4. **Complexity** - This approach added a lot of extra complexity to the project which caused major 
+    issues and would have delayed the completion of this project by several months to debug all of these issues
 
-
-4. **Complexity** - This approach added a lot of extra complexity to the project which caused major
-   issues for project with a relatively short timeframe.
-
-The implementation details for this approach are listed in the below section on the optimizing compiler, 
-and the code for this approach can be viewed at commit `7d129ab847d171b66901f4c936dd2ad5c5a1b79a` on 
-the github repository.
+Nevertheless, I did implement both ssa-generation and register allocation before eventually abandoning it, and since it was a very large part of my time investment I decided to still keep notes on it. The implementation details are listed in the below 'Optimizing Compiler' section, and the final code for this approach can be viewed at commit 7d129ab847d171b66901f4c936dd2ad5c5a1b79a on the Github repository.
 
 #### Compiling to x86 Machine Code
 
-This phase pretty much just loops through all the previously lifted IR instructions and compiles
-them to X86 code. Whenever a syscall or a hooked function is encountered, appropriate instructions
-are generated to leave the JIT and handle the procedure. Currently all registers are still memory
-mapped, however in the future I plan on hardcoding the most popular riscv registers to X86 registers
-as demonstrated in the rv8 paper. The 10 most used registers make up 80% of all riscv register
-usages, so this should lead to a great performance increase.
+This phase pretty much just loops through all the previously lifted IR instructions and compiles them to x86 code. Whenever a syscall or a hooked function is encountered, appropriate instructions are generated to leave the JIT and handle the procedure. All registers are currently memory-mapped within the emulator. While this would have a very significant performance impact for normal programs, in the case of a fuzzer I can use the free'd registers up through this approach to point to other important frequently accessed fields such as dirty lists or instruction counters, so in the end, the performance overhead incurred by this is negligible.
 
-In the current state a simple add instruction would compile to the following. This is still far from
-optimal, but the previously mentioned improvement should greatly improve this for common registers.
-
-`r3 = r1 + r2`
-```asm
-mov rbx, [r14 + r1_offset]
-mov rcx, [r14 + r2_offset]
-add rbx, rcx
-mov [r14 + r3_offset], rbx
-```
+In addition to the previously mentioned actual code compilation, a lot of other very important steps are taken at this point. Mainly, the RISC-V to x86 translation table is populated, and instructions to instrument the code for fuzzing are inserted to enable snapshotting, coverage, hooks and proper permission checks. 
 <br>  
 
 ## Optimizing Compiler

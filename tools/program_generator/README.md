@@ -1,9 +1,5 @@
 # Program Generator
 
-This tool automatically generates valid c code for the purposes of fuzzing. It includes functions,
-arithmetic operations on provided input, various comparisons, potentially dangerous functions that
-operate on provided values (eg. memcpy/strcpy), and it inserts crashes at random, deeply nested,
-locations in the program.
+SFUZZ currently only supports RISC-V and I had some trouble compiling many actual programs to RISC-V so that I could test SFUZZ. Due to this, I decided to write this program generator so that I could randomly generate different test cases of varying complexity. This testing method is far from perfect, but it was a fun little side project while working on SFUZZ, that I think is still decent to quickly test basic fuzzer capabilities.
 
-Use the globals in lib.rs and compile.rs to specify the desired complexity of the generated code,
-and which compiler should be used to generate the code.
+The generated program reads in a specified number of bytes from an input file into a buffer which is then passed into various different comparisons. These eventually lead to a crash if enough checks are passed. The complexity of the generated program can easily be modified through a configuration variable and enables the generation of programs ranging from ~100 to several million lines of code depending on the users testing preferences. The generated comparison depth is also handled based on this complexity.
