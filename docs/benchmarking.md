@@ -100,6 +100,7 @@ any corpus minimization.
 The output screens at the end of the timeframe for both AFL and SFUZZ are listed below
 (snapshot/persistent mode were enabled for both SFUZZ and AFL for the below results).
 
-<p style="text-align:center;"><img src="resources/sfuzz_test.png" alt="" height="75%"width="75%"/></p>
-<p style="text-align:center;"><img src="resources/afl_test.png" alt="" height="75%"width="75%"/></p>
+
+<p><img src="../resources/sfuzz_test.png" alt="" height="75%"width="75%"/></p>
+<p><img src="../resources/afl_test.png" alt="" height="75%"width="75%"/></p>
 
