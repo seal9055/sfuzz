@@ -95,7 +95,7 @@ field of each register is now filled to make sure each register is only defined 
 final block in the function now has phi-functions at its beginning for each register that it may be
 required for.<br><br>
 
-<p style="text-align:center;"><img src="resources/graph.png" alt="Dominator Tree" height="75%"
+<p style="text-align:center;"><img src="../resources/graph.png" alt="Dominator Tree" height="75%"
 width="75%"/></p>
 <p style="text-align:center;"<i>F2</i></p>
 
