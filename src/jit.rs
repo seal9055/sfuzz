@@ -898,6 +898,108 @@ impl Jit {
                             asm.mov(vr_out.convert_64(), r_in1).unwrap();
                     }
                 },
+                Operation::Mul => {
+                    let vr_out = instr.o_reg.unwrap();
+                    let vr_in1 = extract_reg!(instr.i_reg[0]);
+                    let vr_in2 = extract_reg!(instr.i_reg[1]);
+                    let r_in1  = get_reg_64!(vr_in1, 0);
+                    let r_in2  = get_reg_64!(vr_in2, 1);
+
+                    match instr.flags {
+                        Flag::NoFlag => {
+                            asm.mov(rax, r_in1).unwrap();
+                            asm.imul(r_in2).unwrap();
+                        }
+                        Flag::Signed => { /* Signed */
+                            asm.mov(eax, to_32(r_in1)).unwrap();
+                            asm.movsxd(eax, eax).unwrap();
+                            asm.movsxd(r_in2, to_32(r_in2)).unwrap();
+
+                            asm.imul(to_32(r_in2)).unwrap();
+                        },
+                        Flag::Unsigned => { /* unsigned */
+                            // Zero extend. I don't actually think this is necessary or does
+                            // anything, but I'll leave it in just in case for now
+                            asm.mov(to_32(r_in2), to_32(r_in2)).unwrap();
+
+                            asm.mov(eax, to_32(r_in1)).unwrap();
+                            asm.imul(to_32(r_in2)).unwrap();
+                        },
+                        0x3 => { /* unsigned | signed*/
+                            // Riscv has an instruction that does signed x unsigned multiplication.
+                            // In this case, rs1 is sign-extended and rs2 zero-extended
+                            
+                            // Zero extend. I don't actually think this is necessary or does
+                            // anything, but I'll leave it in just in case for now
+                            asm.mov(to_32(r_in2), to_32(r_in2)).unwrap();
+
+                            // Sign extend r_in1
+                            asm.mov(eax, to_32(r_in1)).unwrap();
+                            asm.movsxd(eax, eax).unwrap();
+
+                            asm.imul(to_32(r_in2)).unwrap();
+                        },
+                        _ => panic!("Unsupported flag provided for Add Instruction")
+                    }
+
+                    // Save the result of the operation if necessary
+                    asm.mov(ptr(r14 + vr_out.get_offset()), rax).unwrap();
+                },
+                Operation::Div => {
+                    let vr_out = instr.o_reg.unwrap();
+                    let vr_in1 = extract_reg!(instr.i_reg[0]);
+                    let vr_in2 = extract_reg!(instr.i_reg[1]);
+                    let r_in1  = get_reg_64!(vr_in1, 0);
+                    let r_in2  = get_reg_64!(vr_in2, 1);
+                    let mut fallthrough = asm.create_label();
+
+                    // Exit JIT with fault if a divide by zero would occur
+                    asm.cmp(r_in2, 0).unwrap();
+                    asm.je(fallthrough).unwrap();
+                    jit_exit1!(6, pc);
+                    asm.set_label(&mut fallthrough).unwrap();
+
+                    match instr.flags {
+                        Flag::NoFlag => {
+                            asm.mov(rax, r_in1).unwrap();
+                            asm.idiv(r_in2).unwrap();
+                        }
+                        Flag::Signed => { /* Signed */
+                            asm.mov(eax, to_32(r_in1)).unwrap();
+                            asm.movsxd(eax, eax).unwrap();
+                            asm.movsxd(r_in2, to_32(r_in2)).unwrap();
+
+                            asm.idiv(r_in2).unwrap();
+                        },
+                        Flag::Unsigned => { /* unsigned */
+                            // Zero extend. I don't actually think this is necessary or does
+                            // anything, but I'll leave it in just in case for now
+                            asm.mov(to_32(r_in2), to_32(r_in2)).unwrap();
+                            asm.mov(eax, to_32(r_in1)).unwrap();
+
+                            asm.idiv(r_in2).unwrap();
+                        },
+                        0x101 => { /* DWord | Signed */
+                            asm.mov(eax, to_32(r_in1)).unwrap();
+                            asm.movsxd(eax, eax).unwrap();
+                            asm.movsxd(r_in2, to_32(r_in2)).unwrap();
+
+                            asm.idiv(to_32(r_in2)).unwrap();
+                        }
+                        0x102 => { /* DWord | Unsigned */
+                            // Zero extend. I don't actually think this is necessary or does
+                            // anything, but I'll leave it in just in case for now
+                            asm.mov(to_32(r_in2), to_32(r_in2)).unwrap();
+                            asm.mov(eax, to_32(r_in1)).unwrap();
+
+                            asm.idiv(to_32(r_in2)).unwrap();
+                        }
+                        _ => panic!("Unsupported flag provided for Add Instruction")
+                    }
+
+                    // Save the result of the operation if necessary
+                    asm.mov(ptr(r14 + vr_out.get_offset()), rax).unwrap();
+                },
                 Operation::Sub => {
                     let vr_out = instr.o_reg.unwrap();
                     let vr_in1 = extract_reg!(instr.i_reg[0]);

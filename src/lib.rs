@@ -504,6 +504,7 @@ pub fn worker(_thr_id: usize, mut emu: Emulator, corpus: Arc<Corpus>, tx: Sender
                 Fault::WriteFault(_)   |
                 Fault::ExecFault(_)    |
                 Fault::InvalidFree(_)  |
+                Fault::DivZero(_)  |
                 Fault::OutOfBounds(_) => {
                     let mut crash_map = corpus.crash_mapping.write();
                     if crash_map.get(&case_res.0.unwrap()).is_none() {
@@ -521,6 +522,9 @@ pub fn worker(_thr_id: usize, mut emu: Emulator, corpus: Arc<Corpus>, tx: Sender
                             },
                             Fault::OutOfBounds(v)   => {
                                 format!("{}/crashes/oob_{:x}_{}", OUTPUT_DIR.get().unwrap(), v, h)
+                            },
+                            Fault::DivZero(v)   => {
+                                format!("{}/crashes/div_{:x}_{}", OUTPUT_DIR.get().unwrap(), v, h)
                             },
                             Fault::InvalidFree(v)   => {
                                 format!("{}/crashes/invalid_free_{:x}_{}", 

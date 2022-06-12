@@ -102,6 +102,9 @@ pub enum Fault {
     /// A memory request went completely out of bounds
     OutOfBounds(usize),
 
+    /// Fault occurs when a divide by zero operation occurs
+    DivZero(usize),
+
     /// Fault occurs when some operation results in an integer overflow
     IntegerOverflow,
 
@@ -482,6 +485,9 @@ impl Emulator {
                     self.snapshot_addr = scratchpad[0];
                     return (Some(Fault::Snapshot), scratchpad[9], scratchpad[3]);
                 },
+                6 => { /* Divide by 0 */
+                    return (Some(Fault::DivZero(reentry_pc)), scratchpad[9], scratchpad[3]);
+                },
                 7 => { /* Fuzz case timed out */
                     return (Some(Fault::Timeout), scratchpad[9], scratchpad[3]);
                 },
@@ -691,37 +697,60 @@ impl Emulator {
                         _ => unreachable!(),
                     };
                 },
-                Instr::Add  {rd, rs1, rs2 } |
-                Instr::Sub  {rd, rs1, rs2 } |
-                Instr::Sll  {rd, rs1, rs2 } |
-                Instr::Slt  {rd, rs1, rs2 } |
-                Instr::Sltu {rd, rs1, rs2 } |
-                Instr::Xor  {rd, rs1, rs2 } |
-                Instr::Srl  {rd, rs1, rs2 } |
-                Instr::Sra  {rd, rs1, rs2 } |
-                Instr::Or   {rd, rs1, rs2 } |
-                Instr::And  {rd, rs1, rs2 } |
-                Instr::Addw {rd, rs1, rs2 } |
-                Instr::Subw {rd, rs1, rs2 } |
-                Instr::Sllw {rd, rs1, rs2 } |
-                Instr::Srlw {rd, rs1, rs2 } |
-                Instr::Sraw {rd, rs1, rs2 } => {
+                Instr::Add    {rd, rs1, rs2 } |
+                Instr::Sub    {rd, rs1, rs2 } |
+                Instr::Sll    {rd, rs1, rs2 } |
+                Instr::Slt    {rd, rs1, rs2 } |
+                Instr::Sltu   {rd, rs1, rs2 } |
+                Instr::Xor    {rd, rs1, rs2 } |
+                Instr::Srl    {rd, rs1, rs2 } |
+                Instr::Sra    {rd, rs1, rs2 } |
+                Instr::Or     {rd, rs1, rs2 } |
+                Instr::And    {rd, rs1, rs2 } |
+                Instr::Addw   {rd, rs1, rs2 } |
+                Instr::Subw   {rd, rs1, rs2 } |
+                Instr::Sllw   {rd, rs1, rs2 } |
+                Instr::Srlw   {rd, rs1, rs2 } |
+                Instr::Sraw   {rd, rs1, rs2 } |
+                Instr::Mul    {rd, rs1, rs2 } |
+                Instr::Mulw   {rd, rs1, rs2 } |
+                Instr::Mulh   {rd, rs1, rs2 } |
+                Instr::Mulhsu {rd, rs1, rs2 } |
+                Instr::Mulhu  {rd, rs1, rs2 } |
+                Instr::Div    {rd, rs1, rs2 } |
+                Instr::Divu   {rd, rs1, rs2 } |
+                Instr::Divw   {rd, rs1, rs2 } |
+                Instr::Divuw  {rd, rs1, rs2 } => {
                     match instr   {
-                        Instr::Add  { .. } => irgraph.add(rd, rs1, rs2, Flag::QWord),
-                        Instr::Sub  { .. } => irgraph.sub(rd, rs1, rs2, Flag::QWord),
-                        Instr::Sll  { .. } => irgraph.shl(rd, rs1, rs2, Flag::QWord),
-                        Instr::Slt  { .. } => irgraph.slt(rd, rs1, rs2, Flag::Signed),
-                        Instr::Sltu { .. } => irgraph.slt(rd, rs1, rs2, Flag::Unsigned),
-                        Instr::Xor  { .. } => irgraph.xor(rd, rs1, rs2),
-                        Instr::Srl  { .. } => irgraph.shr(rd, rs1, rs2, Flag::QWord),
-                        Instr::Sra  { .. } => irgraph.sar(rd, rs1, rs2, Flag::QWord),
-                        Instr::Or   { .. } => irgraph.or(rd, rs1, rs2),
-                        Instr::And  { .. } => irgraph.and(rd, rs1, rs2),
-                        Instr::Addw { .. } => irgraph.add(rd, rs1, rs2, Flag::DWord),
-                        Instr::Subw { .. } => irgraph.sub(rd, rs1, rs2, Flag::DWord),
-                        Instr::Sllw { .. } => irgraph.shl(rd, rs1, rs2, Flag::DWord),
-                        Instr::Srlw { .. } => irgraph.shr(rd, rs1, rs2, Flag::DWord),
-                        Instr::Sraw { .. } => irgraph.sar(rd, rs1, rs2, Flag::DWord),
+                        Instr::Add    { .. } => irgraph.add(rd, rs1, rs2, Flag::QWord),
+                        Instr::Sub    { .. } => irgraph.sub(rd, rs1, rs2, Flag::QWord),
+                        Instr::Sll    { .. } => irgraph.shl(rd, rs1, rs2, Flag::QWord),
+                        Instr::Slt    { .. } => irgraph.slt(rd, rs1, rs2, Flag::Signed),
+                        Instr::Sltu   { .. } => irgraph.slt(rd, rs1, rs2, Flag::Unsigned),
+                        Instr::Xor    { .. } => irgraph.xor(rd, rs1, rs2),
+                        Instr::Srl    { .. } => irgraph.shr(rd, rs1, rs2, Flag::QWord),
+                        Instr::Sra    { .. } => irgraph.sar(rd, rs1, rs2, Flag::QWord),
+                        Instr::Or     { .. } => irgraph.or(rd, rs1, rs2),
+                        Instr::And    { .. } => irgraph.and(rd, rs1, rs2),
+                        Instr::Addw   { .. } => irgraph.add(rd, rs1, rs2, Flag::DWord),
+                        Instr::Subw   { .. } => irgraph.sub(rd, rs1, rs2, Flag::DWord),
+                        Instr::Sllw   { .. } => irgraph.shl(rd, rs1, rs2, Flag::DWord),
+                        Instr::Srlw   { .. } => irgraph.shr(rd, rs1, rs2, Flag::DWord),
+                        Instr::Sraw   { .. } => irgraph.sar(rd, rs1, rs2, Flag::DWord),
+                        Instr::Mul    { .. } => irgraph.mul(rd, rs1, rs2, Flag::NoFlag),
+                        Instr::Mulw   { .. } => irgraph.mul(rd, rs1, rs2, Flag::NoFlag),
+                        Instr::Mulh   { .. } => 
+                            irgraph.mul(rd, rs1, rs2, Flag::Signed),
+                        Instr::Mulhu  { .. } => 
+                            irgraph.mul(rd, rs1, rs2, Flag::Unsigned),
+                        Instr::Mulhsu { .. } => 
+                            irgraph.mul(rd, rs1, rs2, Flag::Signed | Flag::Unsigned),
+                        Instr::Div    { .. } => irgraph.div(rd, rs1, rs2, Flag::Signed),
+                        Instr::Divu   { .. } => irgraph.div(rd, rs1, rs2, Flag::NoFlag),
+                        Instr::Divw   { .. } => 
+                            irgraph.div(rd, rs1, rs2, Flag::DWord | Flag::Signed),
+                        Instr::Divuw  { .. } => 
+                            irgraph.div(rd, rs1, rs2, Flag::DWord | Flag::Unsigned),
                         _ => unreachable!(),
                     };
                 },

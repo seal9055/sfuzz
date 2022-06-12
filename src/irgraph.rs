@@ -53,6 +53,8 @@ pub enum Operation {
     Mov,
     Add,
     Sub,
+    Mul,
+    Div,
     And,
     Or,
     Xor,
@@ -372,6 +374,32 @@ impl IRGraph {
             i_reg: vec![Reg(r2), Reg(r3)],
             o_reg: Some(r1),
             flags,
+            pc: self.cur_pc,
+        });
+        self.cur_pc = None;
+        r1
+    }
+
+    /// r1 = r2 * r3
+    pub fn mul(&mut self, r1: PReg, r2: PReg, r3: PReg, flag: u16) -> PReg {
+        self.instrs.push( Instruction {
+            op: Operation::Mul,
+            i_reg: vec![Reg(r2), Reg(r3)],
+            o_reg: Some(r1),
+            flags: flag,
+            pc: self.cur_pc,
+        });
+        self.cur_pc = None;
+        r1
+    }
+
+    /// r1 = r2 / r3
+    pub fn div(&mut self, r1: PReg, r2: PReg, r3: PReg, flag: u16) -> PReg {
+        self.instrs.push( Instruction {
+            op: Operation::Div,
+            i_reg: vec![Reg(r2), Reg(r3)],
+            o_reg: Some(r1),
+            flags: flag,
             pc: self.cur_pc,
         });
         self.cur_pc = None;
