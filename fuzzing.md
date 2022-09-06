@@ -18,14 +18,15 @@
     15. Benchmarking    https://github.com/google/fuzzbench/issues/654
     16. Benchmarking    https://hexgolems.com/2020/08/on-measuring-and-visualizing-fuzzer-performance/
     17. Crash-triaging  https://www.usenix.org/system/files/sec20-blazytko.pdf
-    18. Redqueen        https://synthesis.to/papers/NDSS19-Redqueen.pdf
-    19. Nautilus        https://wcventure.github.io/FuzzingPaper/Paper/NDSS19_Nautilus.pdf
-    20. Nyx             https://www.usenix.org/system/files/sec21summer_schumilo.pdf
-    21. AFLFast         https://mboehme.github.io/paper/CCS16.pdf
-    22. Baseband-emu    https://arxiv.org/pdf/2005.07797.pdf
-    23. Cerberos        https://dl.acm.org/doi/pdf/10.1145/3338906.3338975
-    24. Hash-collisions https://chao.100871.net/papers/oakland18.pdf
-    25. Bigmap-covmap   https://alifahmed.github.io/res/BigMap_DSN.pdf
+    18. Hash-collisions https://chao.100871.net/papers/oakland18.pdf
+    19. Bigmap-covmap   https://alifahmed.github.io/res/BigMap_DSN.pdf
+    20. Redqueen        https://synthesis.to/papers/NDSS19-Redqueen.pdf
+    21. Nautilus        https://wcventure.github.io/FuzzingPaper/Paper/NDSS19_Nautilus.pdf
+    22. Nyx             https://www.usenix.org/system/files/sec21summer_schumilo.pdf
+    23. AFLFast         https://mboehme.github.io/paper/CCS16.pdf
+    24. Baseband-emu    https://arxiv.org/pdf/2005.07797.pdf
+    25. Cerberos        https://dl.acm.org/doi/pdf/10.1145/3338906.3338975
+    26. Fuzzilli        https://saelo.github.io/papers/thesis.pdf
 
 ### Corpus Management
 
