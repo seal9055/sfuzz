@@ -27,6 +27,7 @@
     24. Baseband-emu    https://arxiv.org/pdf/2005.07797.pdf
     25. Cerberos        https://dl.acm.org/doi/pdf/10.1145/3338906.3338975
     26. Fuzzilli        https://saelo.github.io/papers/thesis.pdf
+    27. Symbolic/Taint  https://edmcman.github.io/papers/oakland10.pdf
 
 ### Corpus Management
 
