@@ -33,6 +33,7 @@ use std::arch::asm;
 use rustc_hash::FxHashMap;
 use fasthash::{xx::Hash32, FastHash};
 use parking_lot::RwLock;
+use serde::{Deserialize, Serialize};
 
 const SAVE_CRASHES: bool = true;
 
@@ -160,7 +161,7 @@ pub fn load_elf_segments(filename: &str, emu_inst: &mut Emulator)
 
 
 /// Holds various information related to tracking statistics for the fuzzer
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Deserialize, Serialize)]
 pub struct Statistics {
     /// Total number of fuzz cases
     pub total_cases: usize,

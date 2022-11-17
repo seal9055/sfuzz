@@ -1,49 +1,53 @@
 use crate::error_exit;
 
-use std::lazy::SyncOnceCell;
+use std::sync::OnceLock;
 
 use clap::Parser;
 use parse_int::parse;
 
 /// Method used to track coverage, currently only Edge and Block coverage is implemented
-pub static COV_METHOD: SyncOnceCell<CovMethod> = SyncOnceCell::new();
+pub static COV_METHOD: OnceLock<CovMethod> = OnceLock::new();
 
 /// Address at which the fuzzer attempts to create a snapshot once reached
-pub static SNAPSHOT_ADDR: SyncOnceCell<Option<usize>> = SyncOnceCell::new();
+pub static SNAPSHOT_ADDR: OnceLock<Option<usize>> = OnceLock::new();
 
 /// Number of cores to run the fuzzer with
-pub static NUM_THREADS: SyncOnceCell<usize> = SyncOnceCell::new();
+pub static NUM_THREADS: OnceLock<usize> = OnceLock::new();
 
 /// Path to directory to which fuzzer-outputs are saved
-pub static OUTPUT_DIR: SyncOnceCell<String> = SyncOnceCell::new();
+pub static OUTPUT_DIR: OnceLock<String> = OnceLock::new();
 
 /// File that contains the user-supplied dictionary
-pub static DICT_FILE: SyncOnceCell<Option<String>> = SyncOnceCell::new();
+pub static DICT_FILE: OnceLock<Option<String>> = OnceLock::new();
 
 /// Input provided as argument to the target being fuzzed
-pub static FUZZ_INPUT: SyncOnceCell<String> = SyncOnceCell::new();
+pub static FUZZ_INPUT: OnceLock<String> = OnceLock::new();
 
 /// Toggle-able permission checks. Should be left on, except for very special cases/debugging
-pub static NO_PERM_CHECKS: SyncOnceCell<bool> = SyncOnceCell::new();
+pub static NO_PERM_CHECKS: OnceLock<bool> = OnceLock::new();
 
 /// Additional information is printed out, alongside rolling statistics. Some parts of this only
 /// work while running single-threaded
-pub static DEBUG_PRINT: SyncOnceCell<bool> = SyncOnceCell::new();
+pub static DEBUG_PRINT: OnceLock<bool> = OnceLock::new();
+
+/// In addition to the default printouts, the fuzzer will now also send the data to a remote server.
+/// Implemented to interact with api of "https://github.com/rsalz47/cs326-final-gimel"
+pub static SEND_REMOTE: OnceLock<Option<String>> = OnceLock::new();
 
 /// Separates branch-if-equal comparisons into multiple separate compares that benefit from
 /// coverage tracking so larger magic numbers can still be found through fuzzing
-pub static CMP_COV: SyncOnceCell<bool> = SyncOnceCell::new();
+pub static CMP_COV: OnceLock<bool> = OnceLock::new();
 
 /// Manually override the automatically calibrated timeout
-pub static OVERRIDE_TIMEOUT: SyncOnceCell<Option<u64>> = SyncOnceCell::new();
+pub static OVERRIDE_TIMEOUT: OnceLock<Option<u64>> = OnceLock::new();
 
 /// Collect a full register trace of program execution, for large programs, it can take several
 /// hours to write out a single case, only enable when debugging the JIT. Only works when fuzzer is
 /// being run single-threaded
-pub static FULL_TRACE: SyncOnceCell<bool> = SyncOnceCell::new();
+pub static FULL_TRACE: OnceLock<bool> = OnceLock::new();
 
 /// Amount of cases that will be run before the fuzzer automatically shuts down
-pub static RUN_CASES: SyncOnceCell<Option<usize>> = SyncOnceCell::new();
+pub static RUN_CASES: OnceLock<Option<usize>> = OnceLock::new();
 
 /// Size of memory space allocated for each thread's virtual address space
 pub const MAX_GUEST_ADDR: usize = 64 * 1024 * 1024;
@@ -110,6 +114,12 @@ pub struct Cli {
     /// default print-window
     pub debug_print: bool,
 
+    #[clap(short = 'k', help_heading = "CONFIG", takes_value = true)]
+    /// - In addition to displaying the data on the screen, also send it to a remote api. Provide 
+    /// port and ip to send it to in format "127.0.0.1:9055". Implemented to interact with api of
+    /// https://github.com/rsalz47/cs326-final-gimel
+    pub send_remote: Option<String>,
+
     #[clap(short = 's', help_heading = "CONFIG")]
     /// - Take a snapshot of the target at specified address and launch future fuzz-cases off of this
     /// snapshot
@@ -148,6 +158,7 @@ pub fn handle_cli(args: &mut Cli) {
     NUM_THREADS.set(args.num_threads).unwrap();
     NO_PERM_CHECKS.set(args.no_perm_checks).unwrap();
     DEBUG_PRINT.set(args.debug_print).unwrap();
+    SEND_REMOTE.set(args.send_remote.clone()).unwrap();
     OVERRIDE_TIMEOUT.set(args.override_timeout).unwrap();
     CMP_COV.set(!args.no_cmp_cov).unwrap();
 
@@ -242,6 +253,7 @@ pub fn handle_cli(args: &mut Cli) {
         println!("fuzz_input: {:?}", FUZZ_INPUT);
         println!("no_perm_checks: {:?}", NO_PERM_CHECKS);
         println!("debug_print: {:?}", DEBUG_PRINT);
+        println!("send_remote: {:?}", SEND_REMOTE);
         println!("override_timeout: {:?}", OVERRIDE_TIMEOUT);
         println!("full_trace: {:?}", FULL_TRACE);
     }
