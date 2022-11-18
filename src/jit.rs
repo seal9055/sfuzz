@@ -11,6 +11,28 @@ use iced_x86::code_asm::*;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+/// Allocate RWX memory for Windows systems
+#[cfg(target_os="windows")]
+pub fn alloc_rwx(size: usize) -> &'static mut [u8] {
+    extern {
+        fn VirtualAlloc(lpAddress: *const u8, dwSize: usize,
+                        flAllocationType: u32, flProtect: u32) -> *mut u8;
+    }
+
+    unsafe {
+        const PAGE_EXECUTE_READWRITE: u32 = 0x40;
+
+        const MEM_COMMIT:  u32 = 0x00001000;
+        const MEM_RESERVE: u32 = 0x00002000;
+
+        let ret = VirtualAlloc(0 as *const _, size, MEM_COMMIT | MEM_RESERVE,
+                               PAGE_EXECUTE_READWRITE);
+        assert!(!ret.is_null());
+
+        std::slice::from_raw_parts_mut(ret, size)
+    }
+}
+
 /// Allocate RWX memory for Linux systems
 #[cfg(target_os="linux")]
 pub fn alloc_rwx(size: usize) -> &'static mut [u8] {
