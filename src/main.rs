@@ -4,7 +4,7 @@ use sfuzz::{
     mmu::Perms,
     emulator::{Emulator, Register, Fault, ExitType},
     jit::{Jit, LibFuncs},
-    pretty_printing::{print_stats, log, LogType},
+    pretty_printing::{print_stats, log, LogType, emit_trace},
     Input, Corpus, Statistics, error_exit, load_elf_segments, worker, snapshot, calibrate_seeds,
     config::{handle_cli, Cli, SNAPSHOT_ADDR, OVERRIDE_TIMEOUT, NUM_THREADS, MAX_GUEST_ADDR, 
         RUN_CASES},
@@ -210,7 +210,8 @@ fn main() -> std::io::Result<()> {
 
     // Calibrate the emulator for the timeout.
     // Alternatively configs can be used to override automatically determined timeout
-    emu.timeout = calibrate_seeds(&mut emu, &corpus);
+    let mut first_hit_cov;
+    (emu.timeout, first_hit_cov) = calibrate_seeds(&mut emu, &corpus);
     if let Some(v) = OVERRIDE_TIMEOUT.get().unwrap() {
         emu.timeout = *v;
     }
@@ -249,6 +250,14 @@ fn main() -> std::io::Result<()> {
         // Check if we got new coverage
         if received.coverage != 0 || received.cmpcov != 0 {
             last_cov_event = elapsed_time;
+        }
+
+        if true {
+            first_hit_cov.extend(&(received.first_hit_cov.unwrap()));
+            if !first_hit_cov.is_empty() {
+                emit_trace(&first_hit_cov);
+                first_hit_cov.clear();
+            }
         }
 
         stats.coverage    += received.coverage;

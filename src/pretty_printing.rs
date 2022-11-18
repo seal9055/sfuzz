@@ -196,7 +196,32 @@ fn basic_stats(stats: &Statistics, elapsed_time: f64) {
     );
 }
 
-fn send_remote(ip: String, port: usize, stats: &Statistics, elapsed_time: f64) {
+/// Returns ip and port
+fn get_remote_ip_port() -> (String, usize) {
+    if let Some(connection_info) = SEND_REMOTE.get().unwrap() {
+        let mut iter    = connection_info.split(":");
+        let ip          = iter.next().expect("Given ip in incorrect format").to_string();
+        let port: usize = iter.next().expect("Given port in incorrect format").parse()
+            .expect("Given port in incorrect format");
+
+        assert!(port < 65536, "Invalid port number");
+        return (ip, port);
+    } else {
+        unreachable!();
+    }
+}
+
+#[tokio::main]
+pub async fn emit_trace(trace: &[u64]) {
+    let (ip, port) = get_remote_ip_port();
+    let request_url = format!("http://{}:{}/stats/cov", ip, port).to_string();
+    let client = reqwest::Client::new();
+
+    let _ = client.post(request_url).json(&trace).send().await;
+}
+
+#[tokio::main]
+async fn send_remote(ip: String, port: usize, stats: &Statistics, elapsed_time: f64) {
     let request_url = format!("http://{}:{}/stats", ip, port).to_string();
     let client = reqwest::Client::new();
 
@@ -210,7 +235,7 @@ fn send_remote(ip: String, port: usize, stats: &Statistics, elapsed_time: f64) {
     map.insert("timeouts", stats.timeouts as usize);
     map.insert("exec_time", elapsed_time as usize * 1_000);
 
-    let _ = client.post(request_url).json(&map).send();
+    let _ = client.post(request_url).json(&map).send().await;
 }
 
 /// Wrapper for actual stat-printing functions
@@ -222,13 +247,8 @@ pub fn print_stats(term: &Term, stats: &Statistics, elapsed_time: f64, timeout: 
         pretty_stats(term, stats, elapsed_time, timeout, corpus, last_cov);
     }
 
-    if let Some(connection_info) = SEND_REMOTE.get().unwrap() {
-        let mut iter = connection_info.split(":");
-        let ip   = iter.next().expect("Given ip in incorrect format").to_string();
-        let port: usize = iter.next().expect("Given port in incorrect format").parse()
-            .expect("Given port in incorrect format");
-
-        assert!(port < 65536, "Invalid port number");
+    if SEND_REMOTE.get().is_some() {
+        let (ip, port) = get_remote_ip_port();
         send_remote(ip, port, stats, elapsed_time);
     }
 }

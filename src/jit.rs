@@ -305,6 +305,19 @@ impl Jit {
                 asm.add(eax, 1).unwrap();
                 asm.mov(ptr(r8+0x48), rax).unwrap();
 
+                // Track address once its first hit, used for tracing/manual analysis purposes.
+                if true {
+                    asm.mov(rax, ptr(r8+0x58)).unwrap();    // First-hit coverage array
+                    asm.mov(rbx, ptr(r8+0x60)).unwrap();    // First-hit coverage array length
+
+                    asm.mov(rcx, pc as u64).unwrap();       // Get current pc
+                    asm.shl(rbx, 3).unwrap();
+                    asm.mov(ptr(rax + rbx), rcx).unwrap();  // Mov pc into array
+                    asm.shr(rbx, 3).unwrap();
+                    asm.inc(rbx).unwrap();                  // Increment counter
+                    asm.mov(ptr(r8+0x60), rbx).unwrap()     // Save counter
+                }
+
                 // Not a new coverage case, do nothing
                 asm.set_label(&mut fallthrough).unwrap();
             }

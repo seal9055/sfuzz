@@ -324,9 +324,10 @@ impl Emulator {
     /// Once the jit exits it collects the reentry_pc (where to continue execution), and the exit
     /// code. It performs an appropriate operation based on the exit code and then continues with
     /// the loop to reenter the jit.
-    pub fn run_jit(&mut self, corpus: &Corpus, instr_count: &mut u64, trace_arr: &mut [u64],
-                   trace_arr_len: &mut usize) -> (Option<Fault>, usize, usize) {
-        // Extra space when the available registers are not enough to pass sufficient
+    pub fn run_jit(&mut self, corpus: &Corpus, instr_count: &mut u64, trace_arr: &mut [u64], 
+                   trace_arr_len: &mut usize, first_hit_cov: &mut [u64], 
+                   first_hit_cov_len: &mut usize) -> (Option<Fault>, usize, usize) {
+        // Extra space when the available registers are not enough to pass sufficient 
         // information in/out of the jit
         let mut scratchpad = [
             // 0 - 0x00 - Used to extract snapshot addr
@@ -362,6 +363,12 @@ impl Emulator {
             // 10 - 0x50 - Used by coverage event, address that needs to be overwritten with a 1 to
             // indicate that the coverage event has already been hit
             0usize,
+
+            // 11 - 0x58 - Array used to track addresses when they are first hit
+            first_hit_cov.as_mut_ptr() as usize,
+
+            // 12 - 0x60 - Length for above array
+            *first_hit_cov_len,
         ];
 
         loop {
@@ -389,13 +396,13 @@ impl Emulator {
 
                     // Compile the previously lifted function. The lock is shared between all
                     // threads and ensures that only one thread can compile code & insert it into
-                    // the shared JIT mapping at a time.
+                    // the shared JIT mapping at a time. 
                     //
                     // It is done this way instead of locking the entire JIT so that the threads
                     // can still all access the JIT backing without issues or locks as long as they
                     // don't need to compile new code.
                     let mut v = self.prevent_rc.lock().unwrap();
-                    let ret = self.jit.compile(&irgraph, &self.hooks, &self.custom_lib,
+                    let ret = self.jit.compile(&irgraph, &self.hooks, &self.custom_lib, 
                                                &mut inputs);
                     *v += 1;
                     ret.unwrap()
@@ -435,6 +442,7 @@ impl Emulator {
 
             self.set_reg(Register::Pc, reentry_pc);
             *trace_arr_len = scratchpad[5];
+            *first_hit_cov_len = scratchpad[12];
 
             // Take action based on the exit code returned by JIT
             match exit_code {
@@ -541,7 +549,7 @@ impl Emulator {
         while pc < end_pc {
             let opcodes: u32 = self.memory.read_at(pc, Perms::READ | Perms::EXECUTE).map_err(|_|
                 Fault::ExecFault(pc)).unwrap();
-            let instr = decode_instr(opcodes).unwrap_or_else(|_|
+            let instr = decode_instr(opcodes).unwrap_or_else(|_| 
                                                              panic!("Error occured at {:#0X}", pc));
             instrs.push(instr);
             pc +=4;
@@ -637,99 +645,122 @@ impl Emulator {
                         _ => { unreachable!(); },
                     }
                 },
-                Instr::Lb  {rd, rs1, imm, ..} => {
-                    irgraph.load(rd, rs1, imm, Flag::Byte | Flag::Signed);
+                Instr::Lb  {rd, rs1, imm, mode} |
+                Instr::Lh  {rd, rs1, imm, mode} |
+                Instr::Lw  {rd, rs1, imm, mode} |
+                Instr::Lbu {rd, rs1, imm, mode} |
+                Instr::Lhu {rd, rs1, imm, mode} |
+                Instr::Lwu {rd, rs1, imm, mode} |
+                Instr::Ld  {rd, rs1, imm, mode} => {
+                    match mode {
+                        0b000 => irgraph.load(rd, rs1, imm, Flag::Byte | Flag::Signed),    // LB
+                        0b001 => irgraph.load(rd, rs1, imm, Flag::Word | Flag::Signed),    // LH
+                        0b010 => irgraph.load(rd, rs1, imm, Flag::DWord | Flag::Signed),   // LW
+                        0b100 => irgraph.load(rd, rs1, imm, Flag::Byte | Flag::Unsigned),  // LBU
+                        0b101 => irgraph.load(rd, rs1, imm, Flag::Word | Flag::Unsigned),  // LHU
+                        0b110 => irgraph.load(rd, rs1, imm, Flag::DWord | Flag::Unsigned), // LWU
+                        0b011 => irgraph.load(rd, rs1, imm, Flag::QWord),                  // LD
+                        _ => unreachable!(),
+                    };
                 },
-                Instr::Lh  {rd, rs1, imm, ..} => {
-                    irgraph.load(rd, rs1, imm, Flag::Word | Flag::Signed);
+                Instr::Sb  {rs1, rs2, imm, mode} |
+                Instr::Sh  {rs1, rs2, imm, mode} |
+                Instr::Sw  {rs1, rs2, imm, mode} |
+                Instr::Sd  {rs1, rs2, imm, mode} => {
+                    match mode {
+                        0b000 => { irgraph.store(rs1, rs2, imm, Flag::Byte) },  // SB
+                        0b001 => { irgraph.store(rs1, rs2, imm, Flag::Word) },  // SH
+                        0b010 => { irgraph.store(rs1, rs2, imm, Flag::DWord) }, // SW
+                        0b011 => { irgraph.store(rs1, rs2, imm, Flag::QWord) }, // SD
+                        _ => { unreachable!(); },
+                    }
                 },
-                Instr::Lw  {rd, rs1, imm, ..} => {
-                    irgraph.load(rd, rs1, imm, Flag::DWord | Flag::Signed);
+                Instr::Addi  {rd, rs1, imm } |
+                Instr::Slti  {rd, rs1, imm } |
+                Instr::Sltiu {rd, rs1, imm } |
+                Instr::Xori  {rd, rs1, imm } |
+                Instr::Ori   {rd, rs1, imm } |
+                Instr::Andi  {rd, rs1, imm } |
+                Instr::Slli  {rd, rs1, imm } |
+                Instr::Srli  {rd, rs1, imm } |
+                Instr::Srai  {rd, rs1, imm } |
+                Instr::Addiw {rd, rs1, imm } |
+                Instr::Slliw {rd, rs1, imm } |
+                Instr::Srliw {rd, rs1, imm } |
+                Instr::Sraiw {rd, rs1, imm } => {
+                    match instr {
+                        Instr::Sltiu { .. } => irgraph.slti(rd, rs1, imm, Flag::Unsigned),
+                        Instr::Slti  { .. } => irgraph.slti(rd, rs1, imm, Flag::Signed),
+                        Instr::Addi  { .. } => irgraph.addi(rd, rs1, imm, Flag::QWord),
+                        Instr::Slli  { .. } => irgraph.shli(rd, rs1, imm, Flag::QWord),
+                        Instr::Srli  { .. } => irgraph.shri(rd, rs1, imm, Flag::QWord),
+                        Instr::Srai  { .. } => irgraph.sari(rd, rs1, imm, Flag::QWord),
+                        Instr::Addiw { .. } => irgraph.addi(rd, rs1, imm, Flag::DWord),
+                        Instr::Slliw { .. } => irgraph.shli(rd, rs1, imm, Flag::DWord),
+                        Instr::Srliw { .. } => irgraph.shri(rd, rs1, imm, Flag::DWord),
+                        Instr::Sraiw { .. } => irgraph.sari(rd, rs1, imm, Flag::DWord),
+                        Instr::Xori  { .. } => irgraph.xori(rd, rs1, imm),
+                        Instr::Andi  { .. } => irgraph.andi(rd, rs1, imm),
+                        Instr::Ori   { .. } => irgraph.ori(rd, rs1, imm),
+                        _ => unreachable!(),
+                    };
                 },
-                Instr::Lbu {rd, rs1, imm, ..} => {
-                    irgraph.load(rd, rs1, imm, Flag::Byte | Flag::Unsigned);
-                },
-                Instr::Lhu {rd, rs1, imm, ..} => {
-                    irgraph.load(rd, rs1, imm, Flag::Word | Flag::Unsigned);
-                },
-                Instr::Lwu {rd, rs1, imm, ..} => {
-                    irgraph.load(rd, rs1, imm, Flag::DWord | Flag::Unsigned);
-                },
-                Instr::Ld  {rd, rs1, imm, ..} => {
-                    irgraph.load(rd, rs1, imm, Flag::QWord);
-                },
-                Instr::Sb  {rs1, rs2, imm, ..} => {
-                    irgraph.store(rs1, rs2, imm, Flag::Byte);
-                },
-                Instr::Sh  {rs1, rs2, imm, ..} => {
-                    irgraph.store(rs1, rs2, imm, Flag::Word);
-                },
-                Instr::Sw  {rs1, rs2, imm, ..} => {
-                    irgraph.store(rs1, rs2, imm, Flag::DWord);
-                },
-                Instr::Sd  {rs1, rs2, imm, ..} => {
-                    irgraph.store(rs1, rs2, imm, Flag::QWord);
-                },
-                Instr::Addi  {rd, rs1, imm } => {
-                    irgraph.addi(rd, rs1, imm, Flag::QWord);
-                },
-                Instr::Slti  {rd, rs1, imm } => {
-                    irgraph.slti(rd, rs1, imm, Flag::Signed);
-                },
-                Instr::Sltiu {rd, rs1, imm } => {
-                    irgraph.slti(rd, rs1, imm, Flag::Unsigned);
-                },
-                Instr::Xori  {rd, rs1, imm } => {
-                    irgraph.xori(rd, rs1, imm);
-                },
-                Instr::Ori   {rd, rs1, imm } => {
-                    irgraph.ori(rd, rs1, imm);
-                },
-                Instr::Andi  {rd, rs1, imm } => {
-                    irgraph.andi(rd, rs1, imm);
-                },
-                Instr::Slli  {rd, rs1, imm } => {
-                    irgraph.shli(rd, rs1, imm, Flag::QWord);
-                },
-                Instr::Srli  {rd, rs1, imm } => {
-                    irgraph.shri(rd, rs1, imm, Flag::QWord);
-                },
-                Instr::Srai  {rd, rs1, imm } => {
-                    irgraph.sari(rd, rs1, imm, Flag::QWord);
-                },
-                Instr::Addiw  {rd, rs1, imm }  => { irgraph.addi(rd, rs1, imm, Flag::DWord);   },
-                Instr::Slliw  {rd, rs1, imm }  => { irgraph.shli(rd, rs1, imm, Flag::DWord);   },
-                Instr::Srliw  {rd, rs1, imm }  => { irgraph.shri(rd, rs1, imm, Flag::DWord);   },
-                Instr::Sraiw  {rd, rs1, imm }  => { irgraph.sari(rd, rs1, imm, Flag::DWord);   },
-                Instr::Add    {rd, rs1, rs2 }  => { irgraph.add(rd, rs1, rs2, Flag::QWord);    },
-                Instr::Sub    {rd, rs1, rs2 }  => { irgraph.sub(rd, rs1, rs2, Flag::QWord);    },
-                Instr::Sll    {rd, rs1, rs2 }  => { irgraph.shl(rd, rs1, rs2, Flag::QWord);    },
-                Instr::Slt    {rd, rs1, rs2 }  => { irgraph.slt(rd, rs1, rs2, Flag::Signed);   },
-                Instr::Sltu   {rd, rs1, rs2 }  => { irgraph.slt(rd, rs1, rs2, Flag::Unsigned); },
-                Instr::Xor    {rd, rs1, rs2 }  => { irgraph.xor(rd, rs1, rs2);                 },
-                Instr::Srl    {rd, rs1, rs2 }  => { irgraph.shr(rd, rs1, rs2, Flag::QWord);    },
-                Instr::Sra    {rd, rs1, rs2 }  => { irgraph.sar(rd, rs1, rs2, Flag::QWord);    },
-                Instr::Or     {rd, rs1, rs2 }  => { irgraph.or(rd, rs1, rs2);                  },
-                Instr::And    {rd, rs1, rs2 }  => { irgraph.and(rd, rs1, rs2);                 },
-                Instr::Addw   {rd, rs1, rs2 }  => { irgraph.add(rd, rs1, rs2, Flag::DWord);    },
-                Instr::Subw   {rd, rs1, rs2 }  => { irgraph.sub(rd, rs1, rs2, Flag::DWord);    },
-                Instr::Sllw   {rd, rs1, rs2 }  => { irgraph.shl(rd, rs1, rs2, Flag::DWord);    },
-                Instr::Srlw   {rd, rs1, rs2 }  => { irgraph.shr(rd, rs1, rs2, Flag::DWord);    },
-                Instr::Sraw   {rd, rs1, rs2 }  => { irgraph.sar(rd, rs1, rs2, Flag::DWord);    },
-                Instr::Mul    {rd, rs1, rs2 }  => { irgraph.mul(rd, rs1, rs2, Flag::NoFlag);   },
-                Instr::Mulw   {rd, rs1, rs2 }  => { irgraph.mul(rd, rs1, rs2, Flag::NoFlag);   },
-                Instr::Mulh   {rd, rs1, rs2 }  => { irgraph.mul(rd, rs1, rs2, Flag::Signed);   },
-                Instr::Mulhu  {rd, rs1, rs2 }  => { irgraph.mul(rd, rs1, rs2, Flag::Unsigned); },
-                Instr::Div    {rd, rs1, rs2 }  => { irgraph.div(rd, rs1, rs2, Flag::Signed);   }
-                Instr::Divu   {rd, rs1, rs2 }  => { irgraph.div(rd, rs1, rs2, Flag::NoFlag);   },
-                Instr::Mulhsu {rd, rs1, rs2 }  => {
-                    irgraph.mul(rd, rs1, rs2, Flag::Signed | Flag::Unsigned);
-                },
-                Instr::Divw   {rd, rs1, rs2 }  => {
-                    irgraph.div(rd, rs1, rs2, Flag::DWord | Flag::Signed);
-                },
-                Instr::Divuw  {rd, rs1, rs2 }  => {
-                    irgraph.div(rd, rs1, rs2, Flag::DWord | Flag::Unsigned);
+                Instr::Add    {rd, rs1, rs2 } |
+                Instr::Sub    {rd, rs1, rs2 } |
+                Instr::Sll    {rd, rs1, rs2 } |
+                Instr::Slt    {rd, rs1, rs2 } |
+                Instr::Sltu   {rd, rs1, rs2 } |
+                Instr::Xor    {rd, rs1, rs2 } |
+                Instr::Srl    {rd, rs1, rs2 } |
+                Instr::Sra    {rd, rs1, rs2 } |
+                Instr::Or     {rd, rs1, rs2 } |
+                Instr::And    {rd, rs1, rs2 } |
+                Instr::Addw   {rd, rs1, rs2 } |
+                Instr::Subw   {rd, rs1, rs2 } |
+                Instr::Sllw   {rd, rs1, rs2 } |
+                Instr::Srlw   {rd, rs1, rs2 } |
+                Instr::Sraw   {rd, rs1, rs2 } |
+                Instr::Mul    {rd, rs1, rs2 } |
+                Instr::Mulw   {rd, rs1, rs2 } |
+                Instr::Mulh   {rd, rs1, rs2 } |
+                Instr::Mulhsu {rd, rs1, rs2 } |
+                Instr::Mulhu  {rd, rs1, rs2 } |
+                Instr::Div    {rd, rs1, rs2 } |
+                Instr::Divu   {rd, rs1, rs2 } |
+                Instr::Divw   {rd, rs1, rs2 } |
+                Instr::Divuw  {rd, rs1, rs2 } => {
+                    match instr   {
+                        Instr::Add    { .. } => irgraph.add(rd, rs1, rs2, Flag::QWord),
+                        Instr::Sub    { .. } => irgraph.sub(rd, rs1, rs2, Flag::QWord),
+                        Instr::Sll    { .. } => irgraph.shl(rd, rs1, rs2, Flag::QWord),
+                        Instr::Slt    { .. } => irgraph.slt(rd, rs1, rs2, Flag::Signed),
+                        Instr::Sltu   { .. } => irgraph.slt(rd, rs1, rs2, Flag::Unsigned),
+                        Instr::Xor    { .. } => irgraph.xor(rd, rs1, rs2),
+                        Instr::Srl    { .. } => irgraph.shr(rd, rs1, rs2, Flag::QWord),
+                        Instr::Sra    { .. } => irgraph.sar(rd, rs1, rs2, Flag::QWord),
+                        Instr::Or     { .. } => irgraph.or(rd, rs1, rs2),
+                        Instr::And    { .. } => irgraph.and(rd, rs1, rs2),
+                        Instr::Addw   { .. } => irgraph.add(rd, rs1, rs2, Flag::DWord),
+                        Instr::Subw   { .. } => irgraph.sub(rd, rs1, rs2, Flag::DWord),
+                        Instr::Sllw   { .. } => irgraph.shl(rd, rs1, rs2, Flag::DWord),
+                        Instr::Srlw   { .. } => irgraph.shr(rd, rs1, rs2, Flag::DWord),
+                        Instr::Sraw   { .. } => irgraph.sar(rd, rs1, rs2, Flag::DWord),
+                        Instr::Mul    { .. } => irgraph.mul(rd, rs1, rs2, Flag::NoFlag),
+                        Instr::Mulw   { .. } => irgraph.mul(rd, rs1, rs2, Flag::NoFlag),
+                        Instr::Mulh   { .. } => 
+                            irgraph.mul(rd, rs1, rs2, Flag::Signed),
+                        Instr::Mulhu  { .. } => 
+                            irgraph.mul(rd, rs1, rs2, Flag::Unsigned),
+                        Instr::Mulhsu { .. } => 
+                            irgraph.mul(rd, rs1, rs2, Flag::Signed | Flag::Unsigned),
+                        Instr::Div    { .. } => irgraph.div(rd, rs1, rs2, Flag::Signed),
+                        Instr::Divu   { .. } => irgraph.div(rd, rs1, rs2, Flag::NoFlag),
+                        Instr::Divw   { .. } => 
+                            irgraph.div(rd, rs1, rs2, Flag::DWord | Flag::Signed),
+                        Instr::Divuw  { .. } => 
+                            irgraph.div(rd, rs1, rs2, Flag::DWord | Flag::Unsigned),
+                        _ => unreachable!(),
+                    };
                 },
                 Instr::Ecall {} => {
                     irgraph.syscall();

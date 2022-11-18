@@ -183,6 +183,8 @@ pub struct Statistics {
 
     /// How often a fuzz-input times out due to taking too long
     pub timeouts: u64,
+
+    pub first_hit_cov: Option<Vec<u64>>,
 }
 
 #[derive(Debug, Clone)]
@@ -323,11 +325,18 @@ pub fn snapshot(emu: &mut Emulator, corpus: &Corpus) {
     } else {
         Vec::new()
     };
+    let mut cov_first: Vec<u64> = if true {
+        vec![0u64; 1024 * 1024 * 64]
+    } else {
+        Vec::new()
+    };
     let mut trace_arr_len: usize = 0;
+    let mut cov_first_len: usize = 0;
     let mut tmp = 0;
 
     // Run jit until finish and collect how long this input needed
-    let case_res = emu.run_jit(corpus, &mut tmp, &mut trace_arr, &mut trace_arr_len);
+    let case_res = emu.run_jit(corpus, &mut tmp, &mut trace_arr, &mut trace_arr_len, &mut cov_first, 
+                               &mut cov_first_len);
     match case_res.0.unwrap() {
         Fault::Snapshot => {
             // Overwrite the snapshot code with nops so we dont break there again.
@@ -340,11 +349,13 @@ pub fn snapshot(emu: &mut Emulator, corpus: &Corpus) {
 }
 
 /// Callibrate how long the initial seeds take to run and use it to determine timeout
-pub fn calibrate_seeds(emu: &mut Emulator, corpus: &Corpus) -> u64 {
+pub fn calibrate_seeds(emu: &mut Emulator, corpus: &Corpus) -> (u64, Vec<u64>) {
     let original = emu.fork();
     let num_inputs = corpus.inputs.read().len();
     let mut instr_count = 0;
     let mut avg: u64 = 0;
+
+    let mut executed_instrs: Vec<u64> = Vec::new();
 
     for i in 0..num_inputs {
         emu.fuzz_input.extend_from_slice(&corpus.inputs.read()[i].data);
@@ -356,10 +367,23 @@ pub fn calibrate_seeds(emu: &mut Emulator, corpus: &Corpus) -> u64 {
         } else {
             Vec::new()
         };
+        let mut first_cov: Vec<u64> = if true {
+            vec![0u64; 1024 * 1024]
+        } else {
+            Vec::new()
+        };
         let mut trace_arr_len: usize = 0;
+        let mut first_cov_len: usize = 0;
 
         // Run jit until finish and collect how long this input needed
-        emu.run_jit(corpus, &mut instr_count, &mut trace_arr, &mut trace_arr_len);
+        emu.run_jit(corpus, &mut instr_count, &mut trace_arr, &mut trace_arr_len, &mut first_cov, 
+                    &mut first_cov_len);
+
+        if true {
+            for i in 0..first_cov_len {
+                executed_instrs.push(first_cov[i]);
+            }
+        }
 
         let mut inputs = corpus.inputs.write();
         inputs[i].exec_time = Some(instr_count);
@@ -372,7 +396,7 @@ pub fn calibrate_seeds(emu: &mut Emulator, corpus: &Corpus) -> u64 {
     }
 
     // Timeout is the average initial seed execution time * 5
-    (avg / num_inputs as u64) * 5
+    ((avg / num_inputs as u64) * 5, executed_instrs)
 }
 
 /// Emit trace for the entire program execution. This is formatted the same way as gdb + qemu's
@@ -450,6 +474,11 @@ pub fn worker(_thr_id: usize, mut emu: Emulator, corpus: Arc<Corpus>, tx: Sender
     } else {
         Vec::new()
     };
+    let mut first_hit_cov: Vec<u64> = if true {
+        vec![0u64; 1024 * 1024]
+    } else {
+        Vec::new()
+    };
 
     // Save callee saved registers so that they can later be restored. This shouldn't really matter
     // while fuzzing since this function should never return, but still good to have
@@ -474,6 +503,7 @@ pub fn worker(_thr_id: usize, mut emu: Emulator, corpus: Arc<Corpus>, tx: Sender
         //input_index = corpus.select_seed(input_index, &mut rng).unwrap();
         input_index = (input_index + 1) % corpus.inputs.read().len();
         let seed_energy = corpus.inputs.read()[input_index].calculate_energy(&corpus);
+        let mut first_hit_cov_len: usize = 0;
 
         for _ in 0..seed_energy {
             // Reset the emulator state
@@ -489,7 +519,8 @@ pub fn worker(_thr_id: usize, mut emu: Emulator, corpus: Arc<Corpus>, tx: Sender
             let mut case_instr_count: u64 = 0;
             let mut trace_arr_len: usize = 0;
             let case_res = emu.run_jit(&corpus, &mut case_instr_count, &mut trace_arr,
-                                       &mut trace_arr_len);
+                                       &mut trace_arr_len, &mut first_hit_cov, 
+                                       &mut first_hit_cov_len);
 
             // Write out a trace on the first fuzz case if requested
             if *FULL_TRACE.get().unwrap() && first_trace {
@@ -573,15 +604,27 @@ pub fn worker(_thr_id: usize, mut emu: Emulator, corpus: Arc<Corpus>, tx: Sender
             local_instr_count += case_instr_count;
         }
 
+        // Setup first_hit coverage vector if option is enabled
+        let first_hit_cov: Option<Vec<u64>> = if true {
+            let mut v = Vec::new();
+            for i in 0..first_hit_cov_len {
+                v.push(first_hit_cov[i]);
+            }
+            Some(v)
+        } else {
+            None
+        };
+
         // Populate statistics that will be sent to the main thread
         let stats = Statistics {
-            total_cases: seed_energy,
-            crashes:     local_total_crashes,
-            ucrashes:    local_unique_crashes,
-            coverage:    local_coverage_count,
-            cmpcov:      local_cmpcov_count,
-            instr_count: local_instr_count,
-            timeouts:    local_timeouts,
+            total_cases:   seed_energy,
+            crashes:       local_total_crashes,
+            ucrashes:      local_unique_crashes,
+            coverage:      local_coverage_count,
+            cmpcov:        local_cmpcov_count,
+            instr_count:   local_instr_count,
+            timeouts:      local_timeouts,
+            first_hit_cov,
         };
 
         // Send stats over to the main thread
