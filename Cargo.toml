@@ -15,7 +15,6 @@ clap = { version = "3.1.18", features = ["derive"] }
 rustc-hash = "1.1.0"
 num-traits = "0.2.14"
 byteorder = "1.4.3"
-fasthash = "0.4.0"
 num-format = "0.4.0"
 parking_lot = "0.12.0"
 rand_xoshiro = "0.6.0"
@@ -29,3 +28,8 @@ serde_json = "*"
 [dependencies.iced-x86]
 version = "1.15.0"
 features = ["code_asm"]
+
+[dependencies.xxhash-rust]
+version = "0.8.5"
+features = ["xxh3", "const_xxh3"]
+

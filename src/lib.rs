@@ -30,8 +30,9 @@ use std::sync::mpsc::Sender;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::arch::asm;
 
+use xxhash_rust::const_xxh3::xxh3_64 as const_xxh3;
+
 use rustc_hash::FxHashMap;
-use fasthash::{xx::Hash32, FastHash};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 
@@ -541,7 +542,8 @@ pub fn worker(_thr_id: usize, mut emu: Emulator, corpus: Arc<Corpus>, tx: Sender
                     let mut crash_map = corpus.crash_mapping.write();
                     if crash_map.get(&case_res.0.unwrap()).is_none() {
                         crash_map.insert(case_res.0.unwrap(), 0);
-                        let h = Hash32::hash(&emu.fuzz_input);
+
+                        let h: u64 = const_xxh3(&emu.fuzz_input);
                         let crash_file = match case_res.0.unwrap() {
                             Fault::ReadFault(v)   => {
                                 format!("{}/crashes/read_{:x}_{}", OUTPUT_DIR.get().unwrap(), v, h)
