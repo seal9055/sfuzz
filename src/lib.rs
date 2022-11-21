@@ -87,9 +87,15 @@ pub fn load_elf_segments(filename: &str, emu_inst: &mut Emulator)
             continue;
         }
 
+        let mut data = target[program_hdr.offset..
+            program_hdr.offset.checked_add(program_hdr.filesz)?].to_vec();
+        
+        data.extend_from_slice(&vec![0; program_hdr.memsz - program_hdr.filesz]);
+        assert_eq!(data.len(), program_hdr.memsz, "Incorrect memory loading");
+
         emu_inst.load_segment(
             program_hdr,
-            &target[program_hdr.offset..program_hdr.offset.checked_add(program_hdr.memsz)?],
+            &data,
         )?;
     }
 
