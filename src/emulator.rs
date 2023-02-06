@@ -541,10 +541,10 @@ impl Emulator {
         while pc < end_pc {
             let opcodes: u32 = self.memory.read_at(pc, Perms::READ | Perms::EXECUTE).map_err(|_|
                 Fault::ExecFault(pc)).unwrap();
-            let instr = decode_instr(opcodes).unwrap_or_else(|_|
+            let (instr, instr_size) = decode_instr(opcodes).unwrap_or_else(|_|
                                                              panic!("Error occured at {:#0X}", pc));
             instrs.push(instr);
-            pc +=4;
+            pc +=instr_size;
         }
 
         if let Some(v) = self.functions.get(&start_pc) {
