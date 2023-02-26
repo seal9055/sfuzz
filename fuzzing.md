@@ -28,6 +28,7 @@
     25. Cerberos        https://dl.acm.org/doi/pdf/10.1145/3338906.3338975
     26. Fuzzilli        https://saelo.github.io/papers/thesis.pdf
     27. Symbolic/Taint  https://edmcman.github.io/papers/oakland10.pdf
+    28. OS-modif perf   https://gts3.org/assets/papers/2017/xu:os-fuzz.pdf
 
 ### Corpus Management
 
