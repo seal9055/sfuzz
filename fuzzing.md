@@ -59,10 +59,9 @@
 ##### Seed Collection
     > Web crawler to collect input files
     > Seed-collections:
+        - https://www.nist.gov/itl/ssd/software-quality-group/national-software-reference-library-nsrl
         - https://datacommons.anu.edu.au/DataCommons/rest/records/anudc:6106/data/
         - https://lcamtuf.coredump.cx/afl/demo/
-        - https://github.com/AFLplusplus/AFLplusplus/tree/stable/testcases
-        - https://github.com/radareorg/radare2-testbins
 
 ### Coverage Tracking 
 
